@@ -205,6 +205,10 @@ def DivZeroChecker : Checker<"DivideZero">,
   HelpText<"Check for division by zero">,
   Documentation<HasDocumentation>;
 
+def DivZeroCheckerV2 : Checker<"DivideZeroV2">,
+  HelpText<"Check for division by zero(version 2)">,
+  Documentation<HasDocumentation>;
+
 def UndefResultChecker : Checker<"UndefinedBinaryOperatorResult">,
   HelpText<"Check for undefined results of binary operators">,
   Documentation<HasDocumentation>;
@@ -296,6 +300,10 @@ def C11LockChecker : Checker<"C11Lock">,
   HelpText<"Simple lock -> unlock checker">,
   Dependencies<[PthreadLockBase]>,
   Documentation<HasAlphaDocumentation>;
+
+def MainCallChecker : Checker<"MainCall">,
+  HelpText<"Check for calls to main">,
+  Documentation<NotDocumented>;
 
 } // end "alpha.core"
 

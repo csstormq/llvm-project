@@ -37,6 +37,7 @@ add_clang_library(clangStaticAnalyzerCheckers
   DereferenceChecker.cpp
   DirectIvarAssignment.cpp
   DivZeroChecker.cpp
+  DivZeroCheckerV2.cpp
   DynamicTypePropagation.cpp
   DynamicTypeChecker.cpp
   EnumCastOutOfRangeChecker.cpp
@@ -57,6 +58,7 @@ add_clang_library(clangStaticAnalyzerCheckers
   LocalizationChecker.cpp
   MacOSKeychainAPIChecker.cpp
   MacOSXAPIChecker.cpp
+  MainCallChecker.cpp
   MallocChecker.cpp
   MallocOverflowSecurityChecker.cpp
   MallocSizeofChecker.cpp
