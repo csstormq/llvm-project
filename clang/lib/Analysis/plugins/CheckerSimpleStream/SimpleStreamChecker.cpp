@@ -17,11 +17,16 @@ enum Kind {
 class SimpleStreamChecker : public Checker<check::PostCall,
                                            check::DeadSymbols> {
   mutable std::unique_ptr<BugType> DoubleCloseBT;
+  CallDescription OpenFn;
+  CallDescription CloseFn;
 
   void reportDoubleClose(CheckerContext &C) const;
 
 public:
+  SimpleStreamChecker() : OpenFn("fopen"), CloseFn("fclose") {}
+
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
+
   void checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const;
 };
 
@@ -35,12 +40,7 @@ void SimpleStreamChecker::checkPostCall(const CallEvent &Call,
     return;
   }
 
-  const IdentifierInfo *II = Call.getCalleeIdentifier();
-  if (!II) {
-    return;
-  }
-
-  if (II->isStr("fopen")) {
+  if (Call.isCalled(OpenFn)) {
     SymbolRef FileDesc = Call.getReturnValue().getAsSymbol();
     if (!FileDesc) {
       return;
@@ -52,7 +52,7 @@ void SimpleStreamChecker::checkPostCall(const CallEvent &Call,
     return;
   }
 
-  if (II->isStr("fclose")) {
+  if (Call.isCalled(CloseFn)) {
     SymbolRef FileDesc = Call.getArgSVal(0).getAsSymbol();
     if (!FileDesc) {
       return;
