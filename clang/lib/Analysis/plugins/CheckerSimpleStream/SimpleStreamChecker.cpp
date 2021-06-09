@@ -17,7 +17,8 @@ enum Kind {
 };
 
 class SimpleStreamChecker : public Checker<check::PostCall,
-                                           check::DeadSymbols> {
+                                           check::DeadSymbols,
+                                           check::PointerEscape> {
   mutable std::unique_ptr<BugType> DoubleCloseBT;
   mutable std::unique_ptr<BugType> LeakBT;
 
@@ -35,6 +36,11 @@ public:
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
 
   void checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const;
+
+  ProgramStateRef checkPointerEscape(ProgramStateRef State,
+                                     const InvalidatedSymbols &Escaped,
+                                     const CallEvent *Call,
+                                     PointerEscapeKind Kind) const;
 };
 
 } // anonymous namespace
@@ -92,17 +98,13 @@ void SimpleStreamChecker::reportDoubleClose(CheckerContext &C) const {
   }
 }
 
-static bool isNull(ProgramStateRef State, SymbolRef Sym) {
-  // Return true if a symbol is NULL.
-  return State->getConstraintManager().isNull(State, Sym).isConstrainedTrue();
-}
-
-static bool isNotNull(ProgramStateRef State, SymbolRef Sym) {
-  return !isNull(State, Sym);
-}
-
 void SimpleStreamChecker::checkDeadSymbols(SymbolReaper &SR,
                                            CheckerContext &C) const {
+  auto isNotNull = [&](ProgramStateRef State, SymbolRef Sym) {
+    // Return true if a symbol is not NULL.
+    return !State->getConstraintManager().isNull(State, Sym).isConstrainedTrue();
+  };
+
   SymbolVector LeakedStreams;
   ProgramStateRef State = C.getState();
   for (const auto &TrackedStream : State->get<SimpleStreamMap>()) {
@@ -135,7 +137,8 @@ void SimpleStreamChecker::reportLeaks(ArrayRef<SymbolRef> LeakedStreams,
   }
 
   if (!LeakBT) {
-    LeakBT.reset(new BugType(this, "Resource Leak", "Unix Stream API Error"));
+    LeakBT.reset(new BugType(this, "Resource Leak", "Unix Stream API Error",
+      /*SuppressOnSink=*/true));
   }
 
   for (const auto &LeakedStream : LeakedStreams) {
@@ -144,6 +147,21 @@ void SimpleStreamChecker::reportLeaks(ArrayRef<SymbolRef> LeakedStreams,
       *LeakBT, LeakBT->getDescription(), N);
     C.emitReport(std::move(R));
   }
+}
+
+ProgramStateRef
+SimpleStreamChecker::checkPointerEscape(ProgramStateRef State,
+                                        const InvalidatedSymbols &Escaped,
+                                        const CallEvent *Call,
+                                        PointerEscapeKind Kind) const {
+  if (Kind == PSK_DirectEscapeOnCall && Call->isInSystemHeader()) {
+    return State;
+  }
+
+  for (SymbolRef Sym : Escaped) {
+    State = State->remove<SimpleStreamMap>(Sym);
+  }
+  return State;
 }
 
 // Register plugin!
