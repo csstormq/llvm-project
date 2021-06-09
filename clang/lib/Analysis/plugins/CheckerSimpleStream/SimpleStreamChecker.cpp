@@ -9,6 +9,8 @@ using namespace ento;
 
 namespace {
 
+typedef SmallVector<SymbolRef, 2> SymbolVector;
+
 enum Kind {
   Opened,
   Closed,
@@ -17,10 +19,15 @@ enum Kind {
 class SimpleStreamChecker : public Checker<check::PostCall,
                                            check::DeadSymbols> {
   mutable std::unique_ptr<BugType> DoubleCloseBT;
+  mutable std::unique_ptr<BugType> LeakBT;
+
   CallDescription OpenFn;
   CallDescription CloseFn;
 
   void reportDoubleClose(CheckerContext &C) const;
+
+  void reportLeaks(ArrayRef<SymbolRef> LeakedStreams, CheckerContext &C,
+                   ProgramStateRef State) const;
 
 public:
   SimpleStreamChecker() : OpenFn("fopen"), CloseFn("fclose") {}
@@ -85,17 +92,58 @@ void SimpleStreamChecker::reportDoubleClose(CheckerContext &C) const {
   }
 }
 
+static bool isNull(ProgramStateRef State, SymbolRef Sym) {
+  // Return true if a symbol is NULL.
+  return State->getConstraintManager().isNull(State, Sym).isConstrainedTrue();
+}
+
+static bool isNotNull(ProgramStateRef State, SymbolRef Sym) {
+  return !isNull(State, Sym);
+}
+
 void SimpleStreamChecker::checkDeadSymbols(SymbolReaper &SR,
                                            CheckerContext &C) const {
+  SymbolVector LeakedStreams;
   ProgramStateRef State = C.getState();
   for (const auto &TrackedStream : State->get<SimpleStreamMap>()) {
     SymbolRef Sym = TrackedStream.first;
-    if (SR.isDead(Sym)) {
-      State = State->remove<SimpleStreamMap>(Sym);
+    if (SR.isLive(Sym)) {
+      continue;
     }
+
+    if (TrackedStream.second == Opened && isNotNull(State, Sym)) {
+      LeakedStreams.push_back(Sym);
+    }
+
+    State = State->remove<SimpleStreamMap>(Sym);
   }
 
-  C.addTransition(State);
+  if (LeakedStreams.empty()) {
+    C.addTransition(State);
+  }
+  else {
+    reportLeaks(LeakedStreams, C, State);
+  }
+}
+
+void SimpleStreamChecker::reportLeaks(ArrayRef<SymbolRef> LeakedStreams,
+                                     CheckerContext &C,
+                                     ProgramStateRef State) const {
+  ExplodedNode *N = C.generateNonFatalErrorNode(State);
+  if (!N) {
+    return;
+  }
+
+  if (!LeakBT) {
+    LeakBT.reset(new BugType(this, "Resource Leak", "Unix Stream API Error"));
+  }
+
+  for (const auto &LeakedStream : LeakedStreams) {
+    (void)LeakedStream;
+    auto R = std::make_unique<PathSensitiveBugReport>(
+      *LeakBT, LeakBT->getDescription(), N);
+    C.emitReport(std::move(R));
+  }
 }
 
 // Register plugin!
