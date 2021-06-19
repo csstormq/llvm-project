@@ -149,11 +149,7 @@ MallocChecker::ReallocMemAux(const CallEvent &Call, CheckerContext &C,
   const bool PtrIsNull = StatePtrIsNull && !StatePtrNotNull;
   const bool SizeIsZero = StateSizeIsZero && !StateSizeNotZero;
 
-  if (PtrIsNull && SizeIsZero) {
-    return State;
-  }
-
-  if (PtrIsNull && !SizeIsZero) {
+  if (PtrIsNull) {
     ProgramStateRef StateMalloc = MallocMemAux(Call, C, StatePtrIsNull);
     return StateMalloc;
   }
