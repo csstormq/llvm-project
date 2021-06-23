@@ -44,6 +44,9 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   static LeakInfo getAllocationSite(const ExplodedNode *N, SymbolRef Sym,
                                     CheckerContext &C);
 
+  bool mayFreeAnyEscapedMemoryOrIsModeledExplicitly(const CallEvent *Call) const;
+  bool isMemCall(const CallEvent &Call) const;
+
 public:
   MallocChecker() : MallocFn("malloc"), FreeFn("free"), ReallocFn("realloc") {}
 
@@ -359,7 +362,8 @@ MallocChecker::checkPointerEscape(ProgramStateRef State,
                                   const InvalidatedSymbols &Escaped,
                                   const CallEvent *Call,
                                   PointerEscapeKind Kind) const {
-  if (Kind == PSK_DirectEscapeOnCall && Call->isInSystemHeader()) {
+  if (Kind == PSK_DirectEscapeOnCall && 
+      !mayFreeAnyEscapedMemoryOrIsModeledExplicitly(Call)) {
     return State;
   }
 
@@ -368,6 +372,34 @@ MallocChecker::checkPointerEscape(ProgramStateRef State,
     State = State->remove<ReallocPairs>(Sym);
   }
   return State;
+}
+
+bool MallocChecker::mayFreeAnyEscapedMemoryOrIsModeledExplicitly(
+                                              const CallEvent *Call) const {
+  assert(Call);
+
+  if (isMemCall(*Call)) {
+    return false;
+  }
+
+  if (!Call->isInSystemHeader()) {
+    return true;
+  }
+
+  return false;
+}
+
+bool MallocChecker::isMemCall(const CallEvent &Call) const {
+  if (!Call.isGlobalCFunction()) {
+    return false;
+  }
+
+  if (Call.isCalled(MallocFn) || Call.isCalled(FreeFn) ||
+      Call.isCalled(ReallocFn)) {
+    return true;
+  }
+
+  return false;
 }
 
 // Register plugin!
