@@ -375,6 +375,10 @@ bool MallocChecker::mayFreeAnyEscapedMemoryOrIsModeledExplicitly(
     return true;
   }
 
+  if (Call->argumentsMayEscape()) {
+    return true;
+  }
+
   return false;
 }
 
