@@ -240,21 +240,15 @@ void MallocChecker::checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const 
   };
 
   ProgramStateRef State = C.getState();
-  SymbolVector LeakedSyms, DeadSyms;
+  SymbolVector LeakedSyms;
   for (const auto &TrackedRegion : State->get<RegionState>()) {
     SymbolRef Sym = TrackedRegion.first;
     if (SR.isLive(Sym)) {
       continue;
     }
-    DeadSyms.push_back(Sym);
-
     if (TrackedRegion.second == Allocated && isNotNull(State, Sym)) {
       LeakedSyms.push_back(Sym);
     }
-  }
-
-  if (DeadSyms.empty()) {
-    return;
   }
 
   for (const auto &ReallocPair : State->get<ReallocPairs>()) {
@@ -266,52 +260,12 @@ void MallocChecker::checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const 
     }
   }
 
-  if (!LeakedSyms.empty()) {
+  if (LeakedSyms.empty()) {
+    C.addTransition(State);
+  }
+  else {
     reportLeaks(LeakedSyms, C, State);
   }
-
-  for (const auto &DeadSym : DeadSyms) {
-    State = State->remove<RegionState>(DeadSym);
-    assert(!State->contains<ReallocPairs>(DeadSym) &&
-           "By this point, ReallocPairs should have removed the DeadSym.");
-  }
-
-  C.addTransition(State);
-}
-
-MallocChecker::LeakInfo
-MallocChecker::getAllocationSite(const ExplodedNode *N, SymbolRef Sym,
-                                 CheckerContext &C) {
-  const LocationContext *LeakContext = N->getLocationContext();
-  const ExplodedNode *AllocNode = N;
-  const MemRegion *ReferenceRegion = nullptr;
-
-  while (N) {
-    ProgramStateRef State = N->getState();
-    if (!State->get<RegionState>(Sym)) {
-      break;
-    }
-
-    if (!ReferenceRegion) {
-      if (const MemRegion *MR = C.getLocationRegionIfPostStore(N)) {
-        SVal Val = State->getSVal(MR);
-        if (Val.getAsLocSymbol() == Sym) {
-          const VarRegion *VR = MR->getBaseRegion()->getAs<VarRegion>();
-          if (!VR || (VR->getStackFrame() == LeakContext->getStackFrame())) {
-            ReferenceRegion = MR;
-          }
-        }
-      }
-    }
-
-    const LocationContext *NContext = N->getLocationContext();
-    if (NContext == LeakContext || NContext->isParentOf(LeakContext)) {
-      AllocNode = N;
-    }
-    N = N->pred_empty() ? nullptr : *(N->pred_begin());
-  }
-
-  return LeakInfo(AllocNode, ReferenceRegion);
 }
 
 void MallocChecker::reportLeaks(ArrayRef<SymbolRef> LeakedSyms,
@@ -355,6 +309,41 @@ void MallocChecker::reportLeaks(ArrayRef<SymbolRef> LeakedSyms,
       LocUsedForUniqueing, AllocNode->getLocationContext()->getDecl());
     C.emitReport(std::move(R));
   }
+}
+
+MallocChecker::LeakInfo
+MallocChecker::getAllocationSite(const ExplodedNode *N, SymbolRef Sym,
+                                 CheckerContext &C) {
+  const LocationContext *LeakContext = N->getLocationContext();
+  const ExplodedNode *AllocNode = N;
+  const MemRegion *ReferenceRegion = nullptr;
+
+  while (N) {
+    ProgramStateRef State = N->getState();
+    if (!State->get<RegionState>(Sym)) {
+      break;
+    }
+
+    if (!ReferenceRegion) {
+      if (const MemRegion *MR = C.getLocationRegionIfPostStore(N)) {
+        SVal Val = State->getSVal(MR);
+        if (Val.getAsLocSymbol() == Sym) {
+          const VarRegion *VR = MR->getBaseRegion()->getAs<VarRegion>();
+          if (!VR || (VR->getStackFrame() == LeakContext->getStackFrame())) {
+            ReferenceRegion = MR;
+          }
+        }
+      }
+    }
+
+    const LocationContext *NContext = N->getLocationContext();
+    if (NContext == LeakContext || NContext->isParentOf(LeakContext)) {
+      AllocNode = N;
+    }
+    N = N->pred_empty() ? nullptr : *(N->pred_begin());
+  }
+
+  return LeakInfo(AllocNode, ReferenceRegion);
 }
 
 ProgramStateRef
