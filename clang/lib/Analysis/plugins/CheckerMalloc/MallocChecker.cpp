@@ -24,6 +24,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   CallDescription MallocFn;
   CallDescription FreeFn;
   CallDescription ReallocFn;
+  CallDescription FunOpenFn;
 
   void checkMalloc(const CallEvent &Call, CheckerContext &C) const;
   void checkFree(const CallEvent &Call, CheckerContext &C) const;
@@ -48,7 +49,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   bool isMemCall(const CallEvent &Call) const;
 
 public:
-  MallocChecker() : MallocFn("malloc"), FreeFn("free"), ReallocFn("realloc") {}
+  MallocChecker();
 
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
   ProgramStateRef evalAssume(ProgramStateRef State, const SVal &Cond,
@@ -64,6 +65,11 @@ public:
 
 REGISTER_MAP_WITH_PROGRAMSTATE(RegionState, SymbolRef, int)
 REGISTER_MAP_WITH_PROGRAMSTATE(ReallocPairs, SymbolRef, SymbolRef)
+
+MallocChecker::MallocChecker()
+  : MallocFn("malloc"), FreeFn("free"), ReallocFn("realloc"),
+    FunOpenFn("funopen") {
+}
 
 void MallocChecker::checkPostCall(const CallEvent &Call,
                                   CheckerContext &C) const {
@@ -373,6 +379,12 @@ bool MallocChecker::mayFreeAnyEscapedMemoryOrIsModeledExplicitly(
 
   if (!Call->isInSystemHeader()) {
     return true;
+  }
+
+  if (Call->isCalled(FunOpenFn)) {
+    if (Call->getNumArgs() >= 4 && Call->getArgSVal(4).isConstant(0)) {
+      return false;
+    }
   }
 
   if (Call->argumentsMayEscape()) {
