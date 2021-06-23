@@ -255,8 +255,11 @@ void MallocChecker::checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const 
   }
 
   for (const auto &ReallocPair : State->get<ReallocPairs>()) {
-    if (SR.isDead(ReallocPair.first) || SR.isDead(ReallocPair.second)) {
+    if (SR.isDead(ReallocPair.first)) {
       State = State->remove<ReallocPairs>(ReallocPair.first);
+    }
+    if (SR.isDead(ReallocPair.second)) {
+      State = State->remove<ReallocPairs>(ReallocPair.second);
     }
   }
 
@@ -266,6 +269,8 @@ void MallocChecker::checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const 
 
   for (const auto &DeadSym : DeadSyms) {
     State = State->remove<RegionState>(DeadSym);
+    assert(!State->contains<ReallocPairs>(DeadSym) &&
+           "By this point, ReallocPairs should have removed the DeadSym.");
   }
 
   C.addTransition(State);
