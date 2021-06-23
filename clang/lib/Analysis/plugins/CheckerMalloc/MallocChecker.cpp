@@ -120,7 +120,7 @@ MallocChecker::FreeMemAux(const CallEvent &Call, CheckerContext &C,
     return nullptr;
   }
 
-  SymbolRef Sym = Call.getArgSVal(0).getAsSymbol();
+  SymbolRef Sym = Call.getArgSVal(0).getAsSymbol(true);
   if (!Sym) {
     return nullptr;
   }
@@ -180,7 +180,7 @@ MallocChecker::ReallocMemAux(const CallEvent &Call, CheckerContext &C,
       return nullptr;
     }
 
-    SymbolRef FromPtr = Call.getArgSVal(0).getAsSymbol();
+    SymbolRef FromPtr = Call.getArgSVal(0).getAsSymbol(true);
     SymbolRef ToPtr = Call.getReturnValue().getAsSymbol();
     assert(FromPtr && ToPtr &&
            "By this point, FreeMemAux and MallocMemAux should have checked "
@@ -319,11 +319,11 @@ void MallocChecker::reportLeaks(ArrayRef<SymbolRef> LeakedSyms,
       /*SuppressOnSink=*/true));
   }
 
-  for (const auto &LeakedMem : LeakedSyms) {
+  for (const auto &LeakedSym : LeakedSyms) {
     PathDiagnosticLocation LocUsedForUniqueing;
     const ExplodedNode *AllocNode = nullptr;
     const MemRegion *Region = nullptr;
-    std::tie(AllocNode, Region) = getAllocationSite(N, LeakedMem, C);
+    std::tie(AllocNode, Region) = getAllocationSite(N, LeakedSym, C);
 
     const Stmt *AllocationStmt = AllocNode->getStmtForDiagnostics();
     if (AllocationStmt) {
