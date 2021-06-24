@@ -25,6 +25,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   CallDescription FreeFn;
   CallDescription ReallocFn;
   CallDescription FunOpenFn;
+  CallDescription CallocFn;
 
   void checkMalloc(const CallEvent &Call, CheckerContext &C) const;
   void checkFree(const CallEvent &Call, CheckerContext &C) const;
@@ -68,7 +69,7 @@ REGISTER_MAP_WITH_PROGRAMSTATE(ReallocPairs, SymbolRef, SymbolRef)
 
 MallocChecker::MallocChecker()
   : MallocFn("malloc"), FreeFn("free"), ReallocFn("realloc"),
-    FunOpenFn("funopen") {
+    FunOpenFn("funopen"), CallocFn("calloc") {
 }
 
 void MallocChecker::checkPostCall(const CallEvent &Call,
@@ -77,7 +78,7 @@ void MallocChecker::checkPostCall(const CallEvent &Call,
     return;
   }
 
-  if (Call.isCalled(MallocFn)) {
+  if (Call.isCalled(MallocFn) || Call.isCalled(CallocFn)) {
     checkMalloc(Call, C);
     return;
   }
