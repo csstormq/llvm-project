@@ -49,6 +49,22 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   bool mayFreeAnyEscapedMemoryOrIsModeledExplicitly(const CallEvent *Call) const;
   bool isMemCall(const CallEvent &Call) const;
 
+  using CheckFn = std::function<void(const MallocChecker *,
+                                     const CallEvent &Call, CheckerContext &C)>;
+
+  const CallDescriptionMap<CheckFn> FreeingMemFnMap{
+    {{"free", 1}, &MallocChecker::checkFree},
+  };
+
+  CallDescriptionMap<CheckFn> AllocatingMemFnMap{
+    {{"malloc", 1}, &MallocChecker::checkMalloc},
+    {{"calloc", 2}, &MallocChecker::checkMalloc},
+  };
+
+  CallDescriptionMap<CheckFn> ReallocatingMemFnMap{
+    {{"realloc", 2}, &MallocChecker::checkRealloc},
+  };
+
 public:
   MallocChecker();
 
@@ -78,18 +94,18 @@ void MallocChecker::checkPostCall(const CallEvent &Call,
     return;
   }
 
-  if (Call.isCalled(MallocFn) || Call.isCalled(CallocFn)) {
-    checkMalloc(Call, C);
+  if (const CheckFn *Callback = FreeingMemFnMap.lookup(Call)) {
+    (*Callback)(this, Call, C);
     return;
   }
 
-  if (Call.isCalled(FreeFn)) {
-    checkFree(Call, C);
+  if (const CheckFn *Callback = AllocatingMemFnMap.lookup(Call)) {
+    (*Callback)(this, Call, C);
     return;
   }
 
-  if (Call.isCalled(ReallocFn)) {
-    checkRealloc(Call, C);
+  if (const CheckFn *Callback = ReallocatingMemFnMap.lookup(Call)) {
+    (*Callback)(this, Call, C);
     return;
   }
 }
@@ -400,8 +416,8 @@ bool MallocChecker::isMemCall(const CallEvent &Call) const {
     return false;
   }
 
-  if (Call.isCalled(MallocFn) || Call.isCalled(FreeFn) ||
-      Call.isCalled(ReallocFn)) {
+  if (FreeingMemFnMap.lookup(Call) || AllocatingMemFnMap.lookup(Call) ||
+      ReallocatingMemFnMap.lookup(Call)) {
     return true;
   }
 
