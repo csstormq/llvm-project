@@ -21,11 +21,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   mutable std::unique_ptr<BugType> DoubleFreeBT;
   mutable std::unique_ptr<BugType> LeakBT;
 
-  CallDescription MallocFn;
-  CallDescription FreeFn;
-  CallDescription ReallocFn;
   CallDescription FunOpenFn;
-  CallDescription CallocFn;
 
   void checkMalloc(const CallEvent &Call, CheckerContext &C) const;
   void checkFree(const CallEvent &Call, CheckerContext &C) const;
@@ -66,7 +62,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   };
 
 public:
-  MallocChecker();
+  MallocChecker() : FunOpenFn("funopen") {}
 
   void checkPostCall(const CallEvent &Call, CheckerContext &C) const;
   ProgramStateRef evalAssume(ProgramStateRef State, const SVal &Cond,
@@ -82,11 +78,6 @@ public:
 
 REGISTER_MAP_WITH_PROGRAMSTATE(RegionState, SymbolRef, int)
 REGISTER_MAP_WITH_PROGRAMSTATE(ReallocPairs, SymbolRef, SymbolRef)
-
-MallocChecker::MallocChecker()
-  : MallocFn("malloc"), FreeFn("free"), ReallocFn("realloc"),
-    FunOpenFn("funopen"), CallocFn("calloc") {
-}
 
 void MallocChecker::checkPostCall(const CallEvent &Call,
                                   CheckerContext &C) const {
