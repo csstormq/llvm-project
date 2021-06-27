@@ -269,9 +269,6 @@ void MallocChecker::checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const 
     if (SR.isDead(ReallocPair.first)) {
       State = State->remove<ReallocPairs>(ReallocPair.first);
     }
-    if (SR.isDead(ReallocPair.second)) {
-      State = State->remove<ReallocPairs>(ReallocPair.second);
-    }
   }
 
   if (LeakedSyms.empty()) {
