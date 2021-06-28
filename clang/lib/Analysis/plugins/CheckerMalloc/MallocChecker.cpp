@@ -26,9 +26,11 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   void checkMalloc(const CallEvent &Call, CheckerContext &C) const;
   void checkFree(const CallEvent &Call, CheckerContext &C) const;
   void checkRealloc(const CallEvent &Call, CheckerContext &C) const;
+  void checkCalloc(const CallEvent &Call, CheckerContext &C) const;
 
   ProgramStateRef MallocMemAux(const CallEvent &Call, CheckerContext &C,
-                               ProgramStateRef State) const;
+                               ProgramStateRef State,
+                               Optional<SVal> Init = None) const;
   ProgramStateRef FreeMemAux(const CallEvent &Call, CheckerContext &C,
                              ProgramStateRef State) const;
   ProgramStateRef ReallocMemAux(const CallEvent &Call, CheckerContext &C,
@@ -54,8 +56,8 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
 
   const CallDescriptionMap<CheckFn> AllocatingMemFnMap{
     {{"malloc", 1}, &MallocChecker::checkMalloc},
-    {{"calloc", 2}, &MallocChecker::checkMalloc},
     {{"valloc", 1}, &MallocChecker::checkMalloc},
+    {{"calloc", 2}, &MallocChecker::checkCalloc},
   };
 
   const CallDescriptionMap<CheckFn> ReallocatingMemFnMap{
@@ -111,7 +113,8 @@ void MallocChecker::checkMalloc(const CallEvent &Call,
 
 ProgramStateRef
 MallocChecker::MallocMemAux(const CallEvent &Call, CheckerContext &C,
-                            ProgramStateRef State) const {
+                            ProgramStateRef State,
+                            Optional<SVal> Init /*= None*/) const {
   if (!State) {
     return nullptr;
   }
@@ -119,6 +122,13 @@ MallocChecker::MallocMemAux(const CallEvent &Call, CheckerContext &C,
   SymbolRef Sym = Call.getReturnValue().getAsSymbol();
   if (!Sym) {
     return nullptr;
+  }
+
+  if (Init) {
+    if (Optional<DefinedSVal> DV = Call.getReturnValue().getAs<DefinedSVal>()) {
+      const LocationContext *LCtx = C.getPredecessor()->getLocationContext();
+      State = State->bindDefaultInitial(*DV, *Init, LCtx);
+    }
   }
 
   return State->set<RegionState>(Sym, Allocated);
@@ -219,6 +229,15 @@ void MallocChecker::reportDoubleFree(CheckerContext &C) const {
       *DoubleFreeBT, DoubleFreeBT->getDescription(), N);
     C.emitReport(std::move(R));
   }
+}
+
+void MallocChecker::checkCalloc(const CallEvent &Call,
+                                CheckerContext &C) const {
+  ProgramStateRef State = C.getState();
+  SValBuilder &SVB = C.getSValBuilder();
+  SVal ZeroVal = SVB.makeZeroVal(SVB.getContext().CharTy);
+  State = MallocMemAux(Call, C, State, ZeroVal);
+  C.addTransition(State);
 }
 
 ProgramStateRef MallocChecker::evalAssume(ProgramStateRef State,
