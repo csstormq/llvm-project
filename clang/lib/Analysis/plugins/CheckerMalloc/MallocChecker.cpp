@@ -55,6 +55,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   const CallDescriptionMap<CheckFn> AllocatingMemFnMap{
     {{"malloc", 1}, &MallocChecker::checkMalloc},
     {{"calloc", 2}, &MallocChecker::checkMalloc},
+    {{"valloc", 1}, &MallocChecker::checkMalloc},
   };
 
   const CallDescriptionMap<CheckFn> ReallocatingMemFnMap{
