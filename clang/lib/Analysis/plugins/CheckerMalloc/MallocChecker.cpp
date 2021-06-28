@@ -131,10 +131,7 @@ MallocChecker::MallocMemAux(const CallEvent &Call, CheckerContext &C,
   if (Optional<DefinedSVal> DV =
       SVB.getConjuredHeapSymbolVal(CE, LCtx, Count).getAs<DefinedSVal>()) {
     State = State->BindExpr(CE, C.getLocationContext(), *DV);
-  }
-
-  if (Init) {
-    if (Optional<DefinedSVal> DV = Call.getReturnValue().getAs<DefinedSVal>()) {
+    if (Init) {
       State = State->bindDefaultInitial(*DV, *Init, LCtx);
     }
   }
