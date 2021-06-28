@@ -32,7 +32,8 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
                                ProgramStateRef State,
                                Optional<SVal> Init = None) const;
   ProgramStateRef FreeMemAux(const CallEvent &Call, CheckerContext &C,
-                             ProgramStateRef State) const;
+                             ProgramStateRef State,
+                             bool *IsKnownToBeAllocated = nullptr) const;
   ProgramStateRef ReallocMemAux(const CallEvent &Call, CheckerContext &C,
                                 ProgramStateRef State) const;
 
@@ -77,10 +78,32 @@ public:
                                      PointerEscapeKind Kind) const;
 };
 
+struct ReallocPair {
+  enum OwnershipAfterReallocKind {
+    OAR_NeedToFreeAfterFailure,
+    OAR_DoNotTrackAfterFailure,
+  };
+
+  SymbolRef RealloctedSym;
+  OwnershipAfterReallocKind Kind;
+
+  ReallocPair(SymbolRef FromPtr, OwnershipAfterReallocKind K)
+    : RealloctedSym(FromPtr), Kind(K) {}
+
+  void Profile(llvm::FoldingSetNodeID &ID) const {
+    ID.AddPointer(RealloctedSym);
+    ID.AddInteger(Kind);
+  }
+
+  bool operator==(const ReallocPair &Other) const {
+    return RealloctedSym == Other.RealloctedSym && Kind == Other.Kind;
+  }
+};
+
 } // anonymous namespace
 
 REGISTER_MAP_WITH_PROGRAMSTATE(RegionState, SymbolRef, int)
-REGISTER_MAP_WITH_PROGRAMSTATE(ReallocPairs, SymbolRef, SymbolRef)
+REGISTER_MAP_WITH_PROGRAMSTATE(ReallocPairs, SymbolRef, ReallocPair)
 
 void MallocChecker::checkPostCall(const CallEvent &Call,
                                   CheckerContext &C) const {
@@ -148,7 +171,8 @@ void MallocChecker::checkFree(const CallEvent &Call,
 
 ProgramStateRef
 MallocChecker::FreeMemAux(const CallEvent &Call, CheckerContext &C,
-                          ProgramStateRef State) const {
+                          ProgramStateRef State,
+                          bool *IsKnownToBeAllocated /*= nullptr*/) const {
   if (!State) {
     return nullptr;
   }
@@ -159,7 +183,13 @@ MallocChecker::FreeMemAux(const CallEvent &Call, CheckerContext &C,
   }
 
   const auto K = State->get<RegionState>(Sym);
-  if (!K || *K == Allocated) {
+  if (!K) {
+    return State->set<RegionState>(Sym, Released);
+  }
+  if (*K == Allocated) {
+    if (IsKnownToBeAllocated) {
+      *IsKnownToBeAllocated = true;
+    }
     return State->set<RegionState>(Sym, Released);
   }
   if (*K == Released) {
@@ -207,7 +237,9 @@ MallocChecker::ReallocMemAux(const CallEvent &Call, CheckerContext &C,
     return StateFree;
   }
 
-  if (ProgramStateRef StateFree = FreeMemAux(Call, C, State)) {
+  bool IsKnownToBeAllocated = false;
+  if (ProgramStateRef StateFree
+      = FreeMemAux(Call, C, State, &IsKnownToBeAllocated)) {
     ProgramStateRef StateRealloc = MallocMemAux(Call, C, StateFree);
     if (!StateRealloc) {
       return nullptr;
@@ -218,7 +250,9 @@ MallocChecker::ReallocMemAux(const CallEvent &Call, CheckerContext &C,
     assert(FromPtr && ToPtr &&
            "By this point, FreeMemAux and MallocMemAux should have checked "
            "whether the argument or the return value is symbolic!");
-    return StateRealloc->set<ReallocPairs>(ToPtr, FromPtr);
+    return StateRealloc->set<ReallocPairs>(ToPtr, ReallocPair(FromPtr,
+      IsKnownToBeAllocated ? ReallocPair::OAR_NeedToFreeAfterFailure
+                           : ReallocPair::OAR_DoNotTrackAfterFailure));
   }
 
   return nullptr;
@@ -264,8 +298,17 @@ ProgramStateRef MallocChecker::evalAssume(ProgramStateRef State,
     SymbolRef ToPtr = ReallocPair.first;
     if (isNull(State, ToPtr)) {
       State = State->remove<ReallocPairs>(ToPtr);
-      SymbolRef FromPtr = ReallocPair.second;
-      State = State->set<RegionState>(FromPtr, Allocated);
+      SymbolRef FromPtr = ReallocPair.second.RealloctedSym;
+      switch (ReallocPair.second.Kind) {
+        case ReallocPair::OAR_NeedToFreeAfterFailure:
+          State = State->set<RegionState>(FromPtr, Allocated);
+          break;
+        case ReallocPair::OAR_DoNotTrackAfterFailure:
+          State = State->remove<RegionState>(FromPtr);
+          break;
+        default:
+          llvm_unreachable("Unkonwn OwnershipAfterReallocKind.");
+      }
     }
   }
 
