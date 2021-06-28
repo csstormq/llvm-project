@@ -124,9 +124,17 @@ MallocChecker::MallocMemAux(const CallEvent &Call, CheckerContext &C,
     return nullptr;
   }
 
+  const Expr *CE = Call.getOriginExpr();
+  const unsigned Count = C.blockCount();
+  SValBuilder &SVB = C.getSValBuilder();
+  const LocationContext *LCtx = C.getPredecessor()->getLocationContext();
+  if (Optional<DefinedSVal> DV =
+      SVB.getConjuredHeapSymbolVal(CE, LCtx, Count).getAs<DefinedSVal>()) {
+    State = State->BindExpr(CE, C.getLocationContext(), *DV);
+  }
+
   if (Init) {
     if (Optional<DefinedSVal> DV = Call.getReturnValue().getAs<DefinedSVal>()) {
-      const LocationContext *LCtx = C.getPredecessor()->getLocationContext();
       State = State->bindDefaultInitial(*DV, *Init, LCtx);
     }
   }
