@@ -36,7 +36,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
 
   void reportDoubleFree(CheckerContext &C) const;
   void reportLeaks(ArrayRef<SymbolRef> LeakedStreams, CheckerContext &C,
-                   ProgramStateRef State) const;
+                   ExplodedNode *N) const;
 
   using LeakInfo = std::pair<const ExplodedNode *, const MemRegion *>;
   static LeakInfo getAllocationSite(const ExplodedNode *N, SymbolRef Sym,
@@ -255,15 +255,21 @@ void MallocChecker::checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const 
   };
 
   ProgramStateRef State = C.getState();
-  SymbolVector LeakedSyms;
+  SymbolVector DeadSyms, LeakedSyms;
   for (const auto &TrackedRegion : State->get<RegionState>()) {
     SymbolRef Sym = TrackedRegion.first;
     if (SR.isLive(Sym)) {
       continue;
     }
+    DeadSyms.push_back(Sym);
+
     if (TrackedRegion.second == Allocated && isNotNull(State, Sym)) {
       LeakedSyms.push_back(Sym);
     }
+  }
+
+  if (DeadSyms.empty()) {
+    return;
   }
 
   for (const auto &ReallocPair : State->get<ReallocPairs>()) {
@@ -272,21 +278,25 @@ void MallocChecker::checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const 
     }
   }
 
-  if (LeakedSyms.empty()) {
-    C.addTransition(State);
+  ExplodedNode *N = nullptr;
+  if (!LeakedSyms.empty()) {
+    N = C.generateNonFatalErrorNode();
+    if (N) {
+      reportLeaks(LeakedSyms, C, N);
+    }
   }
-  else {
-    reportLeaks(LeakedSyms, C, State);
+
+  for (const auto &Sym : DeadSyms) {
+    State = State->remove<RegionState>(Sym);
   }
+
+  C.addTransition(State, N);
 }
 
 void MallocChecker::reportLeaks(ArrayRef<SymbolRef> LeakedSyms,
                                 CheckerContext &C,
-                                ProgramStateRef State) const {
-  ExplodedNode *N = C.generateNonFatalErrorNode(State);
-  if (!N) {
-    return;
-  }
+                                ExplodedNode *N) const {
+  assert(N);
 
   if (!LeakBT) {
     LeakBT.reset(new BugType(this, "Memory Leak", "Memory Error",
