@@ -322,20 +322,18 @@ void MallocChecker::checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const 
   };
 
   ProgramStateRef State = C.getState();
-  SymbolVector DeadSyms, LeakedSyms;
+  SymbolVector LeakedSyms;
   for (const auto &TrackedRegion : State->get<RegionState>()) {
     SymbolRef Sym = TrackedRegion.first;
-    if (SR.isLive(Sym)) {
-      continue;
-    }
-    DeadSyms.push_back(Sym);
-
-    if (TrackedRegion.second == Allocated && isNotNull(State, Sym)) {
-      LeakedSyms.push_back(Sym);
+    if (SR.isDead(Sym)) {
+      if (TrackedRegion.second == Allocated && isNotNull(State, Sym)) {
+        LeakedSyms.push_back(Sym);
+      }
+      State = State->remove<RegionState>(Sym);
     }
   }
 
-  if (DeadSyms.empty()) {
+  if (LeakedSyms.empty()) {
     return;
   }
 
@@ -351,10 +349,6 @@ void MallocChecker::checkDeadSymbols(SymbolReaper &SR, CheckerContext &C) const 
     if (N) {
       reportLeaks(LeakedSyms, C, N);
     }
-  }
-
-  for (const auto &Sym : DeadSyms) {
-    State = State->remove<RegionState>(Sym);
   }
 
   C.addTransition(State, N);
