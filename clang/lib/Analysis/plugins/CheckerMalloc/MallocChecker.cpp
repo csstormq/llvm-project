@@ -17,9 +17,12 @@ enum Kind {
 };
 
 class MallocChecker : public Checker<check::PostCall, eval::Assume,
-                                     check::DeadSymbols, check::PointerEscape> {
+                                     check::DeadSymbols, check::PointerEscape,
+                                     check::Location, check::PreCall,
+                                     check::EndFunction> {
   mutable std::unique_ptr<BugType> DoubleFreeBT;
   mutable std::unique_ptr<BugType> LeakBT;
+  mutable std::unique_ptr<BugType> UseAfterFreeBT;
 
   CallDescription FunOpenFn;
 
@@ -27,6 +30,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   void checkFree(const CallEvent &Call, CheckerContext &C) const;
   void checkRealloc(const CallEvent &Call, CheckerContext &C) const;
   void checkCalloc(const CallEvent &Call, CheckerContext &C) const;
+  void checkUseAfterFree(SymbolRef Sym, CheckerContext &C) const;
 
   ProgramStateRef MallocMemAux(const CallEvent &Call, CheckerContext &C,
                                ProgramStateRef State,
@@ -40,6 +44,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   void reportDoubleFree(CheckerContext &C) const;
   void reportLeaks(ArrayRef<SymbolRef> LeakedStreams, CheckerContext &C,
                    ExplodedNode *N) const;
+  void reportUseAfterFree(CheckerContext &C) const;
 
   using LeakInfo = std::pair<const ExplodedNode *, const MemRegion *>;
   static LeakInfo getAllocationSite(const ExplodedNode *N, SymbolRef Sym,
@@ -47,6 +52,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
 
   bool mayFreeAnyEscapedMemoryOrIsModeledExplicitly(const CallEvent *Call) const;
   bool isMemCall(const CallEvent &Call) const;
+  bool isFreeingMemCall(const CallEvent &Call) const;
 
   using CheckFn = std::function<void(const MallocChecker *,
                                      const CallEvent &Call, CheckerContext &C)>;
@@ -76,6 +82,10 @@ public:
                                      const InvalidatedSymbols &Escaped,
                                      const CallEvent *Call,
                                      PointerEscapeKind Kind) const;
+  void checkLocation(const SVal &Location, bool IsLoad, const Stmt *S,
+                     CheckerContext &C) const;
+  void checkPreCall(const CallEvent &Call, CheckerContext &C) const;
+  void checkEndFunction(const ReturnStmt *RS, CheckerContext &C) const;
 };
 
 struct ReallocPair {
@@ -471,13 +481,71 @@ bool MallocChecker::isMemCall(const CallEvent &Call) const {
   if (!Call.isGlobalCFunction()) {
     return false;
   }
+  return isFreeingMemCall(Call) || AllocatingMemFnMap.lookup(Call);
+}
 
-  if (FreeingMemFnMap.lookup(Call) || AllocatingMemFnMap.lookup(Call) ||
-      ReallocatingMemFnMap.lookup(Call)) {
-    return true;
+void MallocChecker::checkLocation(const SVal &Location, bool IsLoad,
+                                  const Stmt *S, CheckerContext &C) const {
+  SymbolRef Sym = Location.getAsSymbol(true);
+  if (Sym) {
+    checkUseAfterFree(Sym, C);
+  }
+}
+
+void MallocChecker::checkUseAfterFree(SymbolRef Sym, CheckerContext &C) const {
+  assert(Sym);
+  const auto K = C.getState()->get<RegionState>(Sym);
+  if (K && *K == Released) {
+    reportUseAfterFree(C);
+  }
+}
+
+void MallocChecker::reportUseAfterFree(CheckerContext &C) const {
+  if (!UseAfterFreeBT) {
+    UseAfterFreeBT.reset(new BugType(this, "Use of memory after it is freed",
+      "Memory Error"));
   }
 
-  return false;
+  if (ExplodedNode *N = C.generateErrorNode()) {
+    auto R = std::make_unique<PathSensitiveBugReport>(
+      *UseAfterFreeBT, UseAfterFreeBT->getDescription(), N);
+    C.emitReport(std::move(R));
+  }
+}
+
+void MallocChecker::checkPreCall(const CallEvent &Call,
+                                 CheckerContext &C) const {
+  if (isFreeingMemCall(Call)) {
+    return;
+  }
+
+  for (unsigned I = 0, E = Call.getNumArgs(); I < E; ++I) {
+    SymbolRef Sym = Call.getArgSVal(I).getAsSymbol(true);
+    if (Sym) {
+      checkUseAfterFree(Sym, C);
+    }
+  }
+}
+
+bool MallocChecker::isFreeingMemCall(const CallEvent &Call) const {
+  if (!Call.isGlobalCFunction()) {
+    return false;
+  }
+  return FreeingMemFnMap.lookup(Call) || ReallocatingMemFnMap.lookup(Call);
+}
+
+void MallocChecker::checkEndFunction(const ReturnStmt *RS,
+                                     CheckerContext &C) const {
+  if (!RS) {
+    return;
+  }
+
+  if (const Expr *E = RS->getRetValue()) {
+    SymbolRef Sym = C.getSVal(E).getAsSymbol(true);
+    if (Sym) {
+      checkUseAfterFree(Sym, C);
+    }
+  }
 }
 
 // Register plugin!
