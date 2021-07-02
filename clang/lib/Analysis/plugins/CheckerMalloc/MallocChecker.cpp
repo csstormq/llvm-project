@@ -30,7 +30,8 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   void checkFree(const CallEvent &Call, CheckerContext &C) const;
   void checkRealloc(const CallEvent &Call, CheckerContext &C) const;
   void checkCalloc(const CallEvent &Call, CheckerContext &C) const;
-  void checkUseAfterFree(SymbolRef Sym, CheckerContext &C) const;
+  void checkUseAfterFree(SymbolRef Sym, CheckerContext &C,
+                         const char *Msg = nullptr) const;
 
   ProgramStateRef MallocMemAux(const CallEvent &Call, CheckerContext &C,
                                ProgramStateRef State,
@@ -44,7 +45,7 @@ class MallocChecker : public Checker<check::PostCall, eval::Assume,
   void reportDoubleFree(CheckerContext &C) const;
   void reportLeaks(ArrayRef<SymbolRef> LeakedStreams, CheckerContext &C,
                    ExplodedNode *N) const;
-  void reportUseAfterFree(CheckerContext &C) const;
+  void reportUseAfterFree(CheckerContext &C, const char *Msg = nullptr) const;
 
   using LeakInfo = std::pair<const ExplodedNode *, const MemRegion *>;
   static LeakInfo getAllocationSite(const ExplodedNode *N, SymbolRef Sym,
@@ -492,15 +493,17 @@ void MallocChecker::checkLocation(const SVal &Location, bool IsLoad,
   }
 }
 
-void MallocChecker::checkUseAfterFree(SymbolRef Sym, CheckerContext &C) const {
+void MallocChecker::checkUseAfterFree(SymbolRef Sym, CheckerContext &C,
+                                      const char *Msg /*= nullptr*/) const {
   assert(Sym);
   const auto K = C.getState()->get<RegionState>(Sym);
   if (K && *K == Released) {
-    reportUseAfterFree(C);
+    reportUseAfterFree(C, Msg);
   }
 }
 
-void MallocChecker::reportUseAfterFree(CheckerContext &C) const {
+void MallocChecker::reportUseAfterFree(CheckerContext &C,
+                                       const char *Msg /*= nullptr*/) const {
   if (!UseAfterFreeBT) {
     UseAfterFreeBT.reset(new BugType(this, "Use of memory after it is freed",
       "Memory Error"));
@@ -508,7 +511,7 @@ void MallocChecker::reportUseAfterFree(CheckerContext &C) const {
 
   if (ExplodedNode *N = C.generateErrorNode()) {
     auto R = std::make_unique<PathSensitiveBugReport>(
-      *UseAfterFreeBT, UseAfterFreeBT->getDescription(), N);
+      *UseAfterFreeBT, Msg ? Msg : UseAfterFreeBT->getDescription(), N);
     C.emitReport(std::move(R));
   }
 }
@@ -522,7 +525,7 @@ void MallocChecker::checkPreCall(const CallEvent &Call,
   for (unsigned I = 0, E = Call.getNumArgs(); I < E; ++I) {
     SymbolRef Sym = Call.getArgSVal(I).getAsSymbol(true);
     if (Sym) {
-      checkUseAfterFree(Sym, C);
+      checkUseAfterFree(Sym, C, "Potential use of memory after it is freed");
     }
   }
 }
@@ -543,7 +546,7 @@ void MallocChecker::checkEndFunction(const ReturnStmt *RS,
   if (const Expr *E = RS->getRetValue()) {
     SymbolRef Sym = C.getSVal(E).getAsSymbol(true);
     if (Sym) {
-      checkUseAfterFree(Sym, C);
+      checkUseAfterFree(Sym, C, "Potential use of memory after it is freed");
     }
   }
 }
