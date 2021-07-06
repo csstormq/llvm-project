@@ -71,13 +71,13 @@ void ArrayBoundChecker::checkOutOfBound(const ElementRegion *ER,
   ProgramStateRef StateInBound, StateOutOfBound;
   std::tie(StateInBound, StateOutOfBound) =
     C.getConstraintManager().assumeInclusiveRangeDual(State, *NV, Zero, Upper);
-  const bool IsInBound = StateInBound && !StateOutOfBound;
+  const bool IsOutOfBound = StateOutOfBound && !StateInBound;
 
-  if (IsInBound) {
-    C.addTransition(StateInBound);
+  if (IsOutOfBound) {
+    reportOutOfBound(C);
   }
   else {
-    reportOutOfBound(C);
+    C.addTransition(StateInBound);
   }
 }
 
