@@ -13,6 +13,8 @@ namespace {
 class ArrayBoundChecker : public Checker<check::Location> {
   mutable std::unique_ptr<BugType> OutOfBoundBT;
 
+  void checkOutOfBound(const ElementRegion *ER, CheckerContext &C) const;
+
   void reportOutOfBound(CheckerContext &C) const;
 
 public:
@@ -24,15 +26,30 @@ public:
 
 void ArrayBoundChecker::checkLocation(const SVal &Location, bool IsLoad,
                                       const Stmt *S, CheckerContext &C) const {
-  const MemRegion *R = Location.getAsRegion();
-  if (!R) {
+  const MemRegion *MR = Location.getAsRegion();
+  if (!MR) {
     return;
   }
 
-  const ElementRegion *ER = R->getAs<ElementRegion>();
-  if (!ER || ER->getIndex().isZeroConstant()) {
-    return;
+  llvm::SmallPtrSet<const MemRegion *, 32> SuperRegions;
+
+  SuperRegions.insert(MR);
+  while (const SubRegion *SubR = MR->getAs<SubRegion>()) {
+    MR = SubR->getSuperRegion();
+    SuperRegions.insert(MR);
   }
+
+  for (const auto MR : SuperRegions) {
+    const ElementRegion *ER = MR->getAs<ElementRegion>();
+    if (ER && !ER->getIndex().isZeroConstant()) {
+      checkOutOfBound(ER, C);
+    }
+  }
+}
+
+void ArrayBoundChecker::checkOutOfBound(const ElementRegion *ER,
+                                        CheckerContext &C) const {
+  assert(ER);
 
   Optional<NonLoc> NV = ER->getIndex().getAs<NonLoc>();
   if (!NV) {
@@ -40,10 +57,9 @@ void ArrayBoundChecker::checkLocation(const SVal &Location, bool IsLoad,
   }
 
   ProgramStateRef State = C.getState();
-  SValBuilder &SVB = C.getSValBuilder();
 
   DefinedOrUnknownSVal ElementCount = getDynamicElementCount(State,
-    ER->getSuperRegion(), SVB, ER->getValueType());
+    ER->getSuperRegion(), C.getSValBuilder(), ER->getValueType());
   Optional<nonloc::ConcreteInt> CV = ElementCount.getAs<nonloc::ConcreteInt>();
   if (!CV) {
     return;
@@ -67,7 +83,7 @@ void ArrayBoundChecker::checkLocation(const SVal &Location, bool IsLoad,
 
 void ArrayBoundChecker::reportOutOfBound(CheckerContext &C) const {
   if (!OutOfBoundBT) {
-    OutOfBoundBT.reset(new BugType(this, "Out-of-bound access",
+    OutOfBoundBT.reset(new BugType(this, "Out of bound memory access",
       "Access out-of-bound array element (buffer overflow)"));
   }
 
