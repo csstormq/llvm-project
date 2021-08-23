@@ -89,6 +89,7 @@ void llvm::initializeScalarOpts(PassRegistry &Registry) {
   initializeMemCpyOptLegacyPassPass(Registry);
   initializeMergeICmpsLegacyPassPass(Registry);
   initializeMergedLoadStoreMotionLegacyPassPass(Registry);
+  initializeMyADCELegacyPassPass(Registry);
   initializeNaryReassociateLegacyPassPass(Registry);
   initializePartiallyInlineLibCallsLegacyPassPass(Registry);
   initializeReassociateLegacyPassPass(Registry);
@@ -224,6 +225,10 @@ void LLVMAddLowerAtomicPass(LLVMPassManagerRef PM) {
 
 void LLVMAddMemCpyOptPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createMemCpyOptPass());
+}
+
+void LLVMAddMYAggressiveDCELegacyPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createMyADCELegacyPass());
 }
 
 void LLVMAddPartiallyInlineLibCallsPass(LLVMPassManagerRef PM) {

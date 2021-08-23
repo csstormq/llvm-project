@@ -557,6 +557,9 @@ FunctionPass *createScalarizeMaskedMemIntrinLegacyPass();
 
 //===----------------------------------------------------------------------===//
 FunctionPass *createFnArgCntLegacyPass();
+
+//===----------------------------------------------------------------------===//
+FunctionPass *createMyADCELegacyPass();
 } // End llvm namespace
 
 #endif

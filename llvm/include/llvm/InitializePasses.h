@@ -450,6 +450,7 @@ void initializeWriteBitcodePassPass(PassRegistry&);
 void initializeWriteThinLTOBitcodePass(PassRegistry&);
 void initializeXRayInstrumentationPass(PassRegistry&);
 void initializeFnArgCntLegacyPassPass(PassRegistry&);
+void initializeMyADCELegacyPassPass(PassRegistry&);
 
 } // end namespace llvm
 

@@ -13,6 +13,7 @@ add_llvm_component_library(LLVMScalarOpts
   EarlyCSE.cpp
   FlattenCFGPass.cpp
   Float2Int.cpp
+  FnArgCnt.cpp
   GuardWidening.cpp
   GVN.cpp
   GVNHoist.cpp
@@ -55,6 +56,7 @@ add_llvm_component_library(LLVMScalarOpts
   MemCpyOptimizer.cpp
   MergeICmps.cpp
   MergedLoadStoreMotion.cpp
+  MyADCE.cpp
   NaryReassociate.cpp
   NewGVN.cpp
   PartiallyInlineLibCalls.cpp
@@ -77,7 +79,6 @@ add_llvm_component_library(LLVMScalarOpts
   StructurizeCFG.cpp
   TailRecursionElimination.cpp
   WarnMissedTransforms.cpp
-  FnArgCnt.cpp
 
   ADDITIONAL_HEADER_DIRS
   ${LLVM_MAIN_INCLUDE_DIR}/llvm/Transforms

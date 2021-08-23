@@ -103,6 +103,9 @@ void LLVMAddLowerAtomicPass(LLVMPassManagerRef PM);
 /** See llvm::createMemCpyOptPass function. */
 void LLVMAddMemCpyOptPass(LLVMPassManagerRef PM);
 
+/** See llvm::createMyADCELegacyPass function. */
+void LLVMAddMYAggressiveDCELegacyPass(LLVMPassManagerRef PM);
+
 /** See llvm::createPartiallyInlineLibCallsPass function. */
 void LLVMAddPartiallyInlineLibCallsPass(LLVMPassManagerRef PM);
 
