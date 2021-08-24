@@ -151,6 +151,10 @@ void LLVMAddDeadStoreEliminationPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createDeadStoreEliminationPass());
 }
 
+void LLVMAddFnArgCntLegacyPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createFnArgCntLegacyPass());
+}
+
 void LLVMAddScalarizerPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createScalarizerPass());
 }
