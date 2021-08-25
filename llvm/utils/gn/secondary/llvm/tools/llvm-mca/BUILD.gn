@@ -1,3 +1,5 @@
+import("//llvm/lib/Target/targets.gni")
+
 executable("llvm-mca") {
   deps = [
     "//llvm/lib/MC",
@@ -8,6 +10,7 @@ executable("llvm-mca") {
     "//llvm/lib/Target:AllTargetsDescs",
     "//llvm/lib/Target:AllTargetsDisassemblers",
     "//llvm/lib/Target:AllTargetsInfos",
+    "//llvm/lib/Target:AllTargetsMCAs",
   ]
   include_dirs = [
     ".",
@@ -30,4 +33,5 @@ executable("llvm-mca") {
     "Views/View.cpp",
     "llvm-mca.cpp",
   ]
+  defines = []
 }

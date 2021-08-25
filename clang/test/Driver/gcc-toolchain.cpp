@@ -8,7 +8,7 @@
 //
 // Additionally check that the legacy spelling of the flag works.
 // RUN: %clangxx %s -### --target=x86_64-linux-gnu --sysroot= \
-// RUN:   -gcc-toolchain %S/Inputs/ubuntu_14.04_multiarch_tree/usr -stdlib=libstdc++ --rtlib=libgcc 2>&1 | \
+// RUN:   --gcc-toolchain=%S/Inputs/ubuntu_14.04_multiarch_tree/usr -stdlib=libstdc++ --rtlib=libgcc 2>&1 | \
 // RUN:   FileCheck %s
 //
 // Test for header search toolchain detection.
@@ -26,7 +26,6 @@
 // CHECK-SAME: "{{[^"]*}}/usr/lib/gcc/x86_64-linux-gnu/4.8{{/|\\\\}}crtbegin.o"
 // CHECK-SAME: "-L[[TOOLCHAIN]]/usr/lib/gcc/x86_64-linux-gnu/4.8"
 /// On x86_64, there is an extra usr/lib/gcc/x86_64-linux-gnu/4.8/../../../x86_64-linux-gnu but we should not test it.
-// CHECK-SAME: "-L[[TOOLCHAIN]]/usr/lib/gcc/x86_64-linux-gnu/4.8/../../.."
 
 /// Test we don't detect GCC installation under -B.
 // RUN: %clangxx %s -### --sysroot= 2>&1 \

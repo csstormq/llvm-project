@@ -1241,7 +1241,9 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
         llvm_unreachable("Unknown reg class!");
       break;
     case 32:
-      if (ARM::QQPRRegClass.hasSubClassEq(RC) || ARM::DQuadRegClass.hasSubClassEq(RC)) {
+      if (ARM::QQPRRegClass.hasSubClassEq(RC) ||
+          ARM::MQQPRRegClass.hasSubClassEq(RC) ||
+          ARM::DQuadRegClass.hasSubClassEq(RC)) {
         if (Alignment >= 16 && getRegisterInfo().canRealignStack(MF) &&
             Subtarget.hasNEON()) {
           // FIXME: It's possible to only store part of the QQ register if the
@@ -1252,6 +1254,11 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
               .addReg(SrcReg, getKillRegState(isKill))
               .addMemOperand(MMO)
               .add(predOps(ARMCC::AL));
+        } else if (Subtarget.hasMVEIntegerOps()) {
+          BuildMI(MBB, I, DebugLoc(), get(ARM::MQQPRStore))
+              .addReg(SrcReg, getKillRegState(isKill))
+              .addFrameIndex(FI)
+              .addMemOperand(MMO);
         } else {
           MachineInstrBuilder MIB = BuildMI(MBB, I, DebugLoc(),
                                             get(ARM::VSTMDIA))
@@ -1267,7 +1274,13 @@ storeRegToStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
         llvm_unreachable("Unknown reg class!");
       break;
     case 64:
-      if (ARM::QQQQPRRegClass.hasSubClassEq(RC)) {
+      if (ARM::MQQQQPRRegClass.hasSubClassEq(RC) &&
+          Subtarget.hasMVEIntegerOps()) {
+        BuildMI(MBB, I, DebugLoc(), get(ARM::MQQQQPRStore))
+            .addReg(SrcReg, getKillRegState(isKill))
+            .addFrameIndex(FI)
+            .addMemOperand(MMO);
+      } else if (ARM::QQQQPRRegClass.hasSubClassEq(RC)) {
         MachineInstrBuilder MIB = BuildMI(MBB, I, DebugLoc(), get(ARM::VSTMDIA))
                                       .addFrameIndex(FI)
                                       .add(predOps(ARMCC::AL))
@@ -1306,17 +1319,12 @@ unsigned ARMBaseInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
   case ARM::tSTRspi:
   case ARM::VSTRD:
   case ARM::VSTRS:
+  case ARM::VSTR_P0_off:
+  case ARM::MVE_VSTRWU32:
     if (MI.getOperand(1).isFI() && MI.getOperand(2).isImm() &&
         MI.getOperand(2).getImm() == 0) {
       FrameIndex = MI.getOperand(1).getIndex();
       return MI.getOperand(0).getReg();
-    }
-    break;
-  case ARM::VSTR_P0_off:
-    if (MI.getOperand(0).isFI() && MI.getOperand(1).isImm() &&
-        MI.getOperand(1).getImm() == 0) {
-      FrameIndex = MI.getOperand(0).getIndex();
-      return ARM::P0;
     }
     break;
   case ARM::VST1q64:
@@ -1329,6 +1337,13 @@ unsigned ARMBaseInstrInfo::isStoreToStackSlot(const MachineInstr &MI,
     break;
   case ARM::VSTMQIA:
     if (MI.getOperand(1).isFI() && MI.getOperand(0).getSubReg() == 0) {
+      FrameIndex = MI.getOperand(1).getIndex();
+      return MI.getOperand(0).getReg();
+    }
+    break;
+  case ARM::MQQPRStore:
+  case ARM::MQQQQPRStore:
+    if (MI.getOperand(1).isFI()) {
       FrameIndex = MI.getOperand(1).getIndex();
       return MI.getOperand(0).getReg();
     }
@@ -1478,31 +1493,42 @@ loadRegFromStackSlot(MachineBasicBlock &MBB, MachineBasicBlock::iterator I,
       llvm_unreachable("Unknown reg class!");
     break;
    case 32:
-    if (ARM::QQPRRegClass.hasSubClassEq(RC) || ARM::DQuadRegClass.hasSubClassEq(RC)) {
-      if (Alignment >= 16 && getRegisterInfo().canRealignStack(MF) &&
-          Subtarget.hasNEON()) {
-        BuildMI(MBB, I, DL, get(ARM::VLD1d64QPseudo), DestReg)
-            .addFrameIndex(FI)
-            .addImm(16)
-            .addMemOperand(MMO)
-            .add(predOps(ARMCC::AL));
-      } else {
-        MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VLDMDIA))
-                                      .addFrameIndex(FI)
-                                      .add(predOps(ARMCC::AL))
-                                      .addMemOperand(MMO);
-        MIB = AddDReg(MIB, DestReg, ARM::dsub_0, RegState::DefineNoRead, TRI);
-        MIB = AddDReg(MIB, DestReg, ARM::dsub_1, RegState::DefineNoRead, TRI);
-        MIB = AddDReg(MIB, DestReg, ARM::dsub_2, RegState::DefineNoRead, TRI);
-        MIB = AddDReg(MIB, DestReg, ARM::dsub_3, RegState::DefineNoRead, TRI);
-        if (Register::isPhysicalRegister(DestReg))
-          MIB.addReg(DestReg, RegState::ImplicitDefine);
-      }
-    } else
-      llvm_unreachable("Unknown reg class!");
-    break;
+     if (ARM::QQPRRegClass.hasSubClassEq(RC) ||
+         ARM::MQQPRRegClass.hasSubClassEq(RC) ||
+         ARM::DQuadRegClass.hasSubClassEq(RC)) {
+       if (Alignment >= 16 && getRegisterInfo().canRealignStack(MF) &&
+           Subtarget.hasNEON()) {
+         BuildMI(MBB, I, DL, get(ARM::VLD1d64QPseudo), DestReg)
+             .addFrameIndex(FI)
+             .addImm(16)
+             .addMemOperand(MMO)
+             .add(predOps(ARMCC::AL));
+       } else if (Subtarget.hasMVEIntegerOps()) {
+         BuildMI(MBB, I, DL, get(ARM::MQQPRLoad), DestReg)
+             .addFrameIndex(FI)
+             .addMemOperand(MMO);
+       } else {
+         MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VLDMDIA))
+                                       .addFrameIndex(FI)
+                                       .add(predOps(ARMCC::AL))
+                                       .addMemOperand(MMO);
+         MIB = AddDReg(MIB, DestReg, ARM::dsub_0, RegState::DefineNoRead, TRI);
+         MIB = AddDReg(MIB, DestReg, ARM::dsub_1, RegState::DefineNoRead, TRI);
+         MIB = AddDReg(MIB, DestReg, ARM::dsub_2, RegState::DefineNoRead, TRI);
+         MIB = AddDReg(MIB, DestReg, ARM::dsub_3, RegState::DefineNoRead, TRI);
+         if (Register::isPhysicalRegister(DestReg))
+           MIB.addReg(DestReg, RegState::ImplicitDefine);
+       }
+     } else
+       llvm_unreachable("Unknown reg class!");
+     break;
   case 64:
-    if (ARM::QQQQPRRegClass.hasSubClassEq(RC)) {
+    if (ARM::MQQQQPRRegClass.hasSubClassEq(RC) &&
+        Subtarget.hasMVEIntegerOps()) {
+      BuildMI(MBB, I, DL, get(ARM::MQQQQPRLoad), DestReg)
+          .addFrameIndex(FI)
+          .addMemOperand(MMO);
+    } else if (ARM::QQQQPRRegClass.hasSubClassEq(RC)) {
       MachineInstrBuilder MIB = BuildMI(MBB, I, DL, get(ARM::VLDMDIA))
                                     .addFrameIndex(FI)
                                     .add(predOps(ARMCC::AL))
@@ -1543,17 +1569,12 @@ unsigned ARMBaseInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
   case ARM::tLDRspi:
   case ARM::VLDRD:
   case ARM::VLDRS:
+  case ARM::VLDR_P0_off:
+  case ARM::MVE_VLDRWU32:
     if (MI.getOperand(1).isFI() && MI.getOperand(2).isImm() &&
         MI.getOperand(2).getImm() == 0) {
       FrameIndex = MI.getOperand(1).getIndex();
       return MI.getOperand(0).getReg();
-    }
-    break;
-  case ARM::VLDR_P0_off:
-    if (MI.getOperand(0).isFI() && MI.getOperand(1).isImm() &&
-        MI.getOperand(1).getImm() == 0) {
-      FrameIndex = MI.getOperand(0).getIndex();
-      return ARM::P0;
     }
     break;
   case ARM::VLD1q64:
@@ -1572,6 +1593,13 @@ unsigned ARMBaseInstrInfo::isLoadFromStackSlot(const MachineInstr &MI,
     break;
   case ARM::VLDMQIA:
     if (MI.getOperand(1).isFI() && MI.getOperand(0).getSubReg() == 0) {
+      FrameIndex = MI.getOperand(1).getIndex();
+      return MI.getOperand(0).getReg();
+    }
+    break;
+  case ARM::MQQPRLoad:
+  case ARM::MQQQQPRLoad:
+    if (MI.getOperand(1).isFI()) {
       FrameIndex = MI.getOperand(1).getIndex();
       return MI.getOperand(0).getReg();
     }
@@ -5936,6 +5964,9 @@ bool ARMBaseInstrInfo::checkAndUpdateStackOffset(MachineInstr *MI,
       || AddrMode == ARMII::AddrModeT2_so // SP can't be used as based register
       || AddrMode == ARMII::AddrModeT2_pc // PCrel access
       || AddrMode == ARMII::AddrMode2     // Used by PRE and POST indexed LD/ST
+      || AddrMode == ARMII::AddrModeT2_i7 // v8.1-M MVE
+      || AddrMode == ARMII::AddrModeT2_i7s2 // v8.1-M MVE
+      || AddrMode == ARMII::AddrModeT2_i7s4 // v8.1-M sys regs VLDR/VSTR
       || AddrMode == ARMII::AddrModeNone)
     return false;
 
@@ -5978,6 +6009,10 @@ bool ARMBaseInstrInfo::checkAndUpdateStackOffset(MachineInstr *MI,
     NumBits = 8;
     break;
   case ARMII::AddrModeT2_i8s4:
+    // FIXME: Values are already scaled in this addressing mode.
+    assert((Fixup & 3) == 0 && "Can't encode this offset!");
+    NumBits = 10;
+    break;
   case ARMII::AddrModeT2_ldrex:
     NumBits = 8;
     Scale = 4;
@@ -5985,17 +6020,6 @@ bool ARMBaseInstrInfo::checkAndUpdateStackOffset(MachineInstr *MI,
   case ARMII::AddrModeT2_i12:
   case ARMII::AddrMode_i12:
     NumBits = 12;
-    break;
-  case ARMII::AddrModeT2_i7:
-    NumBits = 7;
-    break;
-  case ARMII::AddrModeT2_i7s2:
-    NumBits = 7;
-    Scale = 2;
-    break;
-  case ARMII::AddrModeT2_i7s4:
-    NumBits = 7;
-    Scale = 4;
     break;
   case ARMII::AddrModeT1_s: // SP-relative LD/ST
     NumBits = 8;
@@ -6006,8 +6030,8 @@ bool ARMBaseInstrInfo::checkAndUpdateStackOffset(MachineInstr *MI,
   }
   // Make sure the offset is encodable for instructions that scale the
   // immediate.
-  if (((OffVal * Scale + Fixup) & (Scale - 1)) != 0)
-    return false;
+  assert(((OffVal * Scale + Fixup) & (Scale - 1)) == 0 &&
+         "Can't encode this offset!");
   OffVal += Fixup / Scale;
 
   unsigned Mask = (1 << NumBits) - 1;
@@ -6126,8 +6150,9 @@ ARMBaseInstrInfo::getOutliningType(MachineBasicBlock::iterator &MIT,
   // Be conservative with ARMv8.1 MVE instructions.
   if (Opc == ARM::t2BF_LabelPseudo || Opc == ARM::t2DoLoopStart ||
       Opc == ARM::t2DoLoopStartTP || Opc == ARM::t2WhileLoopStart ||
-      Opc == ARM::t2WhileLoopStartLR || Opc == ARM::t2LoopDec ||
-      Opc == ARM::t2LoopEnd || Opc == ARM::t2LoopEndDec)
+      Opc == ARM::t2WhileLoopStartLR || Opc == ARM::t2WhileLoopStartTP ||
+      Opc == ARM::t2LoopDec || Opc == ARM::t2LoopEnd ||
+      Opc == ARM::t2LoopEndDec)
     return outliner::InstrType::Illegal;
 
   const MCInstrDesc &MCID = MI.getDesc();

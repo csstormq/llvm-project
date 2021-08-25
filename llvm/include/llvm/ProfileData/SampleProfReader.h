@@ -236,6 +236,7 @@
 #include "llvm/ProfileData/GCOV.h"
 #include "llvm/ProfileData/SampleProf.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/Discriminator.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SymbolRemappingReader.h"
@@ -244,6 +245,7 @@
 #include <memory>
 #include <string>
 #include <system_error>
+#include <unordered_set>
 #include <vector>
 
 namespace llvm {
@@ -350,6 +352,22 @@ public:
   /// Read and validate the file header.
   virtual std::error_code readHeader() = 0;
 
+  /// Set the bits for FS discriminators. Parameter Pass specify the sequence
+  /// number, Pass == i is for the i-th round of adding FS discriminators.
+  /// Pass == 0 is for using base discriminators.
+  void setDiscriminatorMaskedBitFrom(FSDiscriminatorPass P) {
+    MaskedBitFrom = getFSPassBitEnd(P);
+  }
+
+  /// Get the bitmask the discriminators: For FS profiles, return the bit
+  /// mask for this pass. For non FS profiles, return (unsigned) -1.
+  uint32_t getDiscriminatorMask() const {
+    if (!ProfileIsFS)
+      return 0xFFFFFFFF;
+    assert((MaskedBitFrom != 0) && "MaskedBitFrom is not set properly");
+    return getN1Bits(MaskedBitFrom);
+  }
+
   /// The interface to read sample profiles from the associated file.
   std::error_code read() {
     if (std::error_code EC = readImpl())
@@ -390,6 +408,13 @@ public:
     std::string FGUID;
     StringRef CanonName = FunctionSamples::getCanonicalFnName(F);
     CanonName = getRepInFormat(CanonName, useMD5(), FGUID);
+    auto It = Profiles.find(CanonName);
+    if (It != Profiles.end())
+      return &It->second;
+    if (!FGUID.empty()) {
+      assert(useMD5() && "New name should only be generated for md5 profile");
+      CanonName = *MD5NameBuffer.insert(FGUID).first;
+    }
     return &Profiles[CanonName];
   }
 
@@ -422,14 +447,18 @@ public:
 
   /// Create a sample profile reader appropriate to the file format.
   /// Create a remapper underlying if RemapFilename is not empty.
+  /// Parameter P specifies the FSDiscriminatorPass.
   static ErrorOr<std::unique_ptr<SampleProfileReader>>
   create(const std::string Filename, LLVMContext &C,
+         FSDiscriminatorPass P = FSDiscriminatorPass::Base,
          const std::string RemapFilename = "");
 
   /// Create a sample profile reader from the supplied memory buffer.
   /// Create a remapper underlying if RemapFilename is not empty.
+  /// Parameter P specifies the FSDiscriminatorPass.
   static ErrorOr<std::unique_ptr<SampleProfileReader>>
   create(std::unique_ptr<MemoryBuffer> &B, LLVMContext &C,
+         FSDiscriminatorPass P = FSDiscriminatorPass::Base,
          const std::string RemapFilename = "");
 
   /// Return the profile summary.
@@ -482,6 +511,10 @@ protected:
   /// Memory buffer holding the profile file.
   std::unique_ptr<MemoryBuffer> Buffer;
 
+  /// Extra name buffer holding names created on demand.
+  /// This should only be needed for md5 profiles.
+  std::unordered_set<std::string> MD5NameBuffer;
+
   /// Profile summary information.
   std::unique_ptr<ProfileSummary> Summary;
 
@@ -505,6 +538,9 @@ protected:
   /// Number of context-sensitive profiles.
   uint32_t CSProfileCount = 0;
 
+  /// Whether the function profiles use FS discriminators.
+  bool ProfileIsFS = false;
+
   /// \brief The format of sample.
   SampleProfileFormat Format = SPF_None;
 
@@ -512,6 +548,10 @@ protected:
   /// is used by compiler. If SampleProfileReader is used by other
   /// tools which are not compiler, M is usually nullptr.
   const Module *M = nullptr;
+
+  /// Zero out the discriminator bits higher than bit MaskedBitFrom (0 based).
+  /// The default is to keep all the bits.
+  uint32_t MaskedBitFrom = 31;
 };
 
 class SampleProfileReaderText : public SampleProfileReader {

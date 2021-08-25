@@ -413,9 +413,8 @@ public:
       PerGraphGOTAndPLTStubsBuilder_MachO_arm64>::PerGraphGOTAndPLTStubsBuilder;
 
   bool isGOTEdgeToFix(Edge &E) const {
-    return (E.getKind() == GOTPage21 || E.getKind() == GOTPageOffset12 ||
-            E.getKind() == PointerToGOT) &&
-           E.getTarget().isExternal();
+    return E.getKind() == GOTPage21 || E.getKind() == GOTPageOffset12 ||
+           E.getKind() == PointerToGOT;
   }
 
   Symbol &createGOTEntry(Symbol &Target) {
@@ -471,14 +470,13 @@ private:
     return *StubsSection;
   }
 
-  StringRef getGOTEntryBlockContent() {
-    return StringRef(reinterpret_cast<const char *>(NullGOTEntryContent),
-                     sizeof(NullGOTEntryContent));
+  ArrayRef<char> getGOTEntryBlockContent() {
+    return {reinterpret_cast<const char *>(NullGOTEntryContent),
+            sizeof(NullGOTEntryContent)};
   }
 
-  StringRef getStubBlockContent() {
-    return StringRef(reinterpret_cast<const char *>(StubContent),
-                     sizeof(StubContent));
+  ArrayRef<char> getStubBlockContent() {
+    return {reinterpret_cast<const char *>(StubContent), sizeof(StubContent)};
   }
 
   static const uint8_t NullGOTEntryContent[8];
@@ -527,10 +525,10 @@ private:
     return 0;
   }
 
-  Error applyFixup(LinkGraph &G, Block &B, const Edge &E,
-                   char *BlockWorkingMem) const {
+  Error applyFixup(LinkGraph &G, Block &B, const Edge &E) const {
     using namespace support;
 
+    char *BlockWorkingMem = B.getAlreadyMutableContent().data();
     char *FixupPtr = BlockWorkingMem + E.getOffset();
     JITTargetAddress FixupAddress = B.getAddress() + E.getOffset();
 

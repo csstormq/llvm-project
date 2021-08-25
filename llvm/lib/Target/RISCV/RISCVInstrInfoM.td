@@ -15,6 +15,7 @@
 // RISC-V specific DAG Nodes.
 //===----------------------------------------------------------------------===//
 
+def riscv_mulhsu : SDNode<"RISCVISD::MULHSU", SDTIntBinOp>;
 def riscv_divw  : SDNode<"RISCVISD::DIVW",  SDT_RISCVIntBinOpW>;
 def riscv_divuw : SDNode<"RISCVISD::DIVUW", SDT_RISCVIntBinOpW>;
 def riscv_remuw : SDNode<"RISCVISD::REMUW", SDT_RISCVIntBinOpW>;
@@ -63,7 +64,7 @@ let Predicates = [HasStdExtM] in {
 def : PatGprGpr<mul, MUL>;
 def : PatGprGpr<mulhs, MULH>;
 def : PatGprGpr<mulhu, MULHU>;
-// No ISDOpcode for mulhsu
+def : PatGprGpr<riscv_mulhsu, MULHSU>;
 def : PatGprGpr<sdiv, DIV>;
 def : PatGprGpr<udiv, DIVU>;
 def : PatGprGpr<srem, REM>;
@@ -71,8 +72,9 @@ def : PatGprGpr<urem, REMU>;
 } // Predicates = [HasStdExtM]
 
 let Predicates = [HasStdExtM, IsRV64] in {
-def : Pat<(sext_inreg (mul GPR:$rs1, GPR:$rs2), i32),
-          (MULW GPR:$rs1, GPR:$rs2)>;
+// Select W instructions without sext_inreg if only the lower 32-bits of the
+// result are used.
+def : PatGprGpr<overflowingbinopw<mul>, MULW>;
 
 def : PatGprGpr<riscv_divw, DIVW>;
 def : PatGprGpr<riscv_divuw, DIVUW>;

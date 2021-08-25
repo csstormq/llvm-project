@@ -116,6 +116,9 @@ private:
     // Context instruction to use when querying information about this index.
     const Instruction *CxtI;
 
+    /// True if all operations in this expression are NSW.
+    bool IsNSW;
+
     void dump() const {
       print(dbgs());
       dbgs() << "\n";
@@ -180,19 +183,9 @@ private:
   /// Tracks instructions visited by pointsToConstantMemory.
   SmallPtrSet<const Value *, 16> Visited;
 
-  static const Value *
-  GetLinearExpression(const Value *V, APInt &Scale, APInt &Offset,
-                      unsigned &ZExtBits, unsigned &SExtBits,
-                      const DataLayout &DL, unsigned Depth, AssumptionCache *AC,
-                      DominatorTree *DT, bool &NSW, bool &NUW);
-
   static DecomposedGEP
   DecomposeGEPExpression(const Value *V, const DataLayout &DL,
                          AssumptionCache *AC, DominatorTree *DT);
-
-  static bool isGEPBaseAtNegativeOffset(const GEPOperator *GEPOp,
-      const DecomposedGEP &DecompGEP, const DecomposedGEP &DecompObject,
-      LocationSize ObjectAccessSize);
 
   /// A Heuristic for aliasGEP that searches for a constant offset
   /// between the variables.
@@ -214,29 +207,23 @@ private:
                           const SmallVectorImpl<VariableGEPIndex> &Src);
 
   AliasResult aliasGEP(const GEPOperator *V1, LocationSize V1Size,
-                       const AAMDNodes &V1AAInfo, const Value *V2,
-                       LocationSize V2Size, const AAMDNodes &V2AAInfo,
+                       const Value *V2, LocationSize V2Size,
                        const Value *UnderlyingV1, const Value *UnderlyingV2,
                        AAQueryInfo &AAQI);
 
   AliasResult aliasPHI(const PHINode *PN, LocationSize PNSize,
-                       const AAMDNodes &PNAAInfo, const Value *V2,
-                       LocationSize V2Size, const AAMDNodes &V2AAInfo,
-                       AAQueryInfo &AAQI);
+                       const Value *V2, LocationSize V2Size, AAQueryInfo &AAQI);
 
   AliasResult aliasSelect(const SelectInst *SI, LocationSize SISize,
-                          const AAMDNodes &SIAAInfo, const Value *V2,
-                          LocationSize V2Size, const AAMDNodes &V2AAInfo,
+                          const Value *V2, LocationSize V2Size,
                           AAQueryInfo &AAQI);
 
   AliasResult aliasCheck(const Value *V1, LocationSize V1Size,
-                         const AAMDNodes &V1AATag, const Value *V2,
-                         LocationSize V2Size, const AAMDNodes &V2AATag,
+                         const Value *V2, LocationSize V2Size,
                          AAQueryInfo &AAQI);
 
   AliasResult aliasCheckRecursive(const Value *V1, LocationSize V1Size,
-                                  const AAMDNodes &V1AATag, const Value *V2,
-                                  LocationSize V2Size, const AAMDNodes &V2AATag,
+                                  const Value *V2, LocationSize V2Size,
                                   AAQueryInfo &AAQI, const Value *O1,
                                   const Value *O2);
 };

@@ -160,7 +160,7 @@ namespace clang {
                     const PreprocessorOptions &PPOpts,
                     const CodeGenOptions &CodeGenOpts,
                     const TargetOptions &TargetOpts,
-                    const LangOptions &LangOpts,
+                    const LangOptions &LangOpts, llvm::Module *Module,
                     SmallVector<LinkModule, 4> LinkModules, LLVMContext &C,
                     CoverageSourceInfo *CoverageInfo = nullptr)
         : Diags(Diags), Action(Action), HeaderSearchOpts(HeaderSearchOpts),
@@ -170,7 +170,7 @@ namespace clang {
           LLVMIRGenerationRefCount(0),
           Gen(CreateLLVMCodeGen(Diags, "", HeaderSearchOpts, PPOpts,
                                 CodeGenOpts, C, CoverageInfo)),
-          LinkModules(std::move(LinkModules)) {
+          LinkModules(std::move(LinkModules)), CurLinkModule(Module) {
       TimerIsEnabled = CodeGenOpts.TimePasses;
       llvm::TimePassesIsEnabled = CodeGenOpts.TimePasses;
       llvm::TimePassesPerRun = CodeGenOpts.TimePassesPerRun;
@@ -332,7 +332,7 @@ namespace clang {
       EmbedBitcode(getModule(), CodeGenOpts, llvm::MemoryBufferRef());
 
       EmitBackendOutput(Diags, HeaderSearchOpts, CodeGenOpts, TargetOpts,
-                        LangOpts, C.getTargetInfo().getDataLayout(),
+                        LangOpts, C.getTargetInfo().getDataLayoutString(),
                         getModule(), Action, std::move(AsmOutStream));
 
       Ctx.setDiagnosticHandler(std::move(OldDiagnosticHandler));
@@ -571,7 +571,9 @@ BackendConsumer::StackSizeDiagHandler(const llvm::DiagnosticInfoStackSize &D) {
     // FIXME: Shouldn't need to truncate to uint32_t
     Diags.Report(ND->getASTContext().getFullLoc(ND->getLocation()),
                  diag::warn_fe_frame_larger_than)
-      << static_cast<uint32_t>(D.getStackSize()) << Decl::castToDeclContext(ND);
+        << static_cast<uint32_t>(D.getStackSize())
+        << static_cast<uint32_t>(D.getStackLimit())
+        << Decl::castToDeclContext(ND);
     return true;
   }
 
@@ -777,11 +779,7 @@ void BackendConsumer::DiagnosticHandlerImpl(const DiagnosticInfo &DI) {
     ComputeDiagID(Severity, backend_frame_larger_than, DiagID);
     break;
   case DK_Linker:
-    assert(CurLinkModule);
-    // FIXME: stop eating the warnings and notes.
-    if (Severity != DS_Error)
-      return;
-    DiagID = diag::err_fe_cannot_link_module;
+    ComputeDiagID(Severity, linking_module, DiagID);
     break;
   case llvm::DK_OptimizationRemark:
     // Optimization remarks are always handled completely by this
@@ -843,9 +841,9 @@ void BackendConsumer::DiagnosticHandlerImpl(const DiagnosticInfo &DI) {
     DI.print(DP);
   }
 
-  if (DiagID == diag::err_fe_cannot_link_module) {
-    Diags.Report(diag::err_fe_cannot_link_module)
-        << CurLinkModule->getModuleIdentifier() << MsgStorage;
+  if (DI.getKind() == DK_Linker) {
+    assert(CurLinkModule && "CurLinkModule must be set for linker diagnostics");
+    Diags.Report(DiagID) << CurLinkModule->getModuleIdentifier() << MsgStorage;
     return;
   }
 
@@ -883,6 +881,10 @@ std::unique_ptr<llvm::Module> CodeGenAction::takeModule() {
 llvm::LLVMContext *CodeGenAction::takeLLVMContext() {
   OwnsVMContext = false;
   return VMContext;
+}
+
+CodeGenerator *CodeGenAction::getCodeGenerator() const {
+  return BEConsumer->getCodeGenerator();
 }
 
 static std::unique_ptr<raw_pwrite_stream>
@@ -1082,7 +1084,7 @@ void CodeGenAction::ExecuteAction() {
   // BackendConsumer.
   BackendConsumer Result(BA, CI.getDiagnostics(), CI.getHeaderSearchOpts(),
                          CI.getPreprocessorOpts(), CI.getCodeGenOpts(),
-                         CI.getTargetOpts(), CI.getLangOpts(),
+                         CI.getTargetOpts(), CI.getLangOpts(), TheModule.get(),
                          std::move(LinkModules), *VMContext, nullptr);
   // PR44896: Force DiscardValueNames as false. DiscardValueNames cannot be
   // true here because the valued names are needed for reading textual IR.
@@ -1105,7 +1107,7 @@ void CodeGenAction::ExecuteAction() {
 
   EmitBackendOutput(Diagnostics, CI.getHeaderSearchOpts(), CodeGenOpts,
                     TargetOpts, CI.getLangOpts(),
-                    CI.getTarget().getDataLayout(), TheModule.get(), BA,
+                    CI.getTarget().getDataLayoutString(), TheModule.get(), BA,
                     std::move(OS));
   if (OptRecordFile)
     OptRecordFile->keep();

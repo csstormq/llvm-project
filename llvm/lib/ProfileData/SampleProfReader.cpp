@@ -26,6 +26,7 @@
 #include "llvm/IR/ProfileSummary.h"
 #include "llvm/ProfileData/ProfileCommon.h"
 #include "llvm/ProfileData/SampleProf.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compression.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/LEB128.h"
@@ -45,6 +46,15 @@
 using namespace llvm;
 using namespace sampleprof;
 
+#define DEBUG_TYPE "samplepgo-reader"
+
+// This internal option specifies if the profile uses FS discriminators.
+// It only applies to text, binary and compact binary format profiles.
+// For ext-binary format profiles, the flag is set in the summary.
+static cl::opt<bool> ProfileIsFSDisciminator(
+    "profile-isfs", cl::Hidden, cl::init(false),
+    cl::desc("Profile uses flow sensitive discriminators"));
+
 /// Dump the function profile for \p FName.
 ///
 /// \param FName Name of the function to print.
@@ -56,8 +66,10 @@ void SampleProfileReader::dumpFunctionProfile(StringRef FName,
 
 /// Dump all the function profiles found on stream \p OS.
 void SampleProfileReader::dump(raw_ostream &OS) {
-  for (const auto &I : Profiles)
-    dumpFunctionProfile(I.getKey(), OS);
+  std::vector<NameFunctionSamples> V;
+  sortFuncProfiles(Profiles, V);
+  for (const auto &I : V)
+    dumpFunctionProfile(I.first, OS);
 }
 
 /// Parse \p Input as function head.
@@ -238,6 +250,7 @@ std::error_code SampleProfileReaderText::readImpl() {
   // top-level function profile.
   bool SeenMetadata = false;
 
+  ProfileIsFS = ProfileIsFSDisciminator;
   for (; !LineIt.is_at_eof(); ++LineIt) {
     if ((*LineIt)[(*LineIt).find_first_not_of(' ')] == '#')
       continue;
@@ -295,6 +308,10 @@ std::error_code SampleProfileReaderText::readImpl() {
                     "Found non-metadata after metadata: " + *LineIt);
         return sampleprof_error::malformed;
       }
+
+      // Here we handle FS discriminators.
+      Discriminator &= getDiscriminatorMask();
+
       while (InlineStack.size() > Depth) {
         InlineStack.pop_back();
       }
@@ -504,6 +521,9 @@ SampleProfileReaderBinary::readProfile(FunctionSamples &FProfile) {
     if (std::error_code EC = NumCalls.getError())
       return EC;
 
+    // Here we handle FS discriminators:
+    uint32_t DiscriminatorVal = (*Discriminator) & getDiscriminatorMask();
+
     for (uint32_t J = 0; J < *NumCalls; ++J) {
       auto CalledFunction(readStringFromTable());
       if (std::error_code EC = CalledFunction.getError())
@@ -513,11 +533,11 @@ SampleProfileReaderBinary::readProfile(FunctionSamples &FProfile) {
       if (std::error_code EC = CalledFunctionSamples.getError())
         return EC;
 
-      FProfile.addCalledTargetSamples(*LineOffset, *Discriminator,
+      FProfile.addCalledTargetSamples(*LineOffset, DiscriminatorVal,
                                       *CalledFunction, *CalledFunctionSamples);
     }
 
-    FProfile.addBodySamples(*LineOffset, *Discriminator, *NumSamples);
+    FProfile.addBodySamples(*LineOffset, DiscriminatorVal, *NumSamples);
   }
 
   // Read all the samples for inlined function calls.
@@ -538,8 +558,11 @@ SampleProfileReaderBinary::readProfile(FunctionSamples &FProfile) {
     if (std::error_code EC = FName.getError())
       return EC;
 
+    // Here we handle FS discriminators:
+    uint32_t DiscriminatorVal = (*Discriminator) & getDiscriminatorMask();
+
     FunctionSamples &CalleeProfile = FProfile.functionSamplesAt(
-        LineLocation(*LineOffset, *Discriminator))[std::string(*FName)];
+        LineLocation(*LineOffset, DiscriminatorVal))[std::string(*FName)];
     CalleeProfile.setName(*FName);
     if (std::error_code EC = readProfile(CalleeProfile))
       return EC;
@@ -575,6 +598,7 @@ SampleProfileReaderBinary::readFuncProfile(const uint8_t *Start) {
 }
 
 std::error_code SampleProfileReaderBinary::readImpl() {
+  ProfileIsFS = ProfileIsFSDisciminator;
   while (!at_eof()) {
     if (std::error_code EC = readFuncProfile(Data))
       return EC;
@@ -595,6 +619,8 @@ std::error_code SampleProfileReaderExtBinaryBase::readOneSection(
       Summary->setPartialProfile(true);
     if (hasSecFlag(Entry, SecProfSummaryFlags::SecFlagFullContext))
       FunctionSamples::ProfileIsCS = ProfileIsCS = true;
+    if (hasSecFlag(Entry, SecProfSummaryFlags::SecFlagFSDiscriminator))
+      FunctionSamples::ProfileIsFS = ProfileIsFS = true;
     break;
   case SecNameTable: {
     FixedLengthMD5 =
@@ -860,7 +886,7 @@ std::error_code SampleProfileReaderCompactBinary::readImpl() {
   // Collect functions used by current module if the Reader has been
   // given a module.
   bool LoadFuncsToBeUsed = collectFuncsFromModule();
-
+  ProfileIsFS = ProfileIsFSDisciminator;
   std::vector<uint64_t> OffsetsToUse;
   if (!LoadFuncsToBeUsed) {
     // load all the function profiles.
@@ -1105,6 +1131,8 @@ static std::string getSecFlagsStr(const SecHdrTableEntry &Entry) {
       Flags.append("partial,");
     if (hasSecFlag(Entry, SecProfSummaryFlags::SecFlagFullContext))
       Flags.append("context,");
+    if (hasSecFlag(Entry, SecProfSummaryFlags::SecFlagFSDiscriminator))
+      Flags.append("fs-discriminator,");
     break;
   default:
     break;
@@ -1521,6 +1549,7 @@ std::error_code SampleProfileReaderGCC::readOneFunctionProfile(
 /// This format is generated by the Linux Perf conversion tool at
 /// https://github.com/google/autofdo.
 std::error_code SampleProfileReaderGCC::readImpl() {
+  assert(!ProfileIsFSDisciminator && "Gcc profiles not support FSDisciminator");
   // Read the string table.
   if (std::error_code EC = readNameTable())
     return EC;
@@ -1575,7 +1604,7 @@ SampleProfileReaderItaniumRemapper::lookUpNameInProfile(StringRef Fname) {
 /// \returns an error code indicating the status of the buffer.
 static ErrorOr<std::unique_ptr<MemoryBuffer>>
 setupMemoryBuffer(const Twine &Filename) {
-  auto BufferOrErr = MemoryBuffer::getFileOrSTDIN(Filename);
+  auto BufferOrErr = MemoryBuffer::getFileOrSTDIN(Filename, /*IsText=*/true);
   if (std::error_code EC = BufferOrErr.getError())
     return EC;
   auto Buffer = std::move(BufferOrErr.get());
@@ -1593,16 +1622,19 @@ setupMemoryBuffer(const Twine &Filename) {
 ///
 /// \param C The LLVM context to use to emit diagnostics.
 ///
+/// \param P The FSDiscriminatorPass.
+///
 /// \param RemapFilename The file used for profile remapping.
 ///
 /// \returns an error code indicating the status of the created reader.
 ErrorOr<std::unique_ptr<SampleProfileReader>>
 SampleProfileReader::create(const std::string Filename, LLVMContext &C,
+                            FSDiscriminatorPass P,
                             const std::string RemapFilename) {
   auto BufferOrError = setupMemoryBuffer(Filename);
   if (std::error_code EC = BufferOrError.getError())
     return EC;
-  return create(BufferOrError.get(), C, RemapFilename);
+  return create(BufferOrError.get(), C, P, RemapFilename);
 }
 
 /// Create a sample profile remapper from the given input, to remap the
@@ -1660,11 +1692,14 @@ SampleProfileReaderItaniumRemapper::create(std::unique_ptr<MemoryBuffer> &B,
 ///
 /// \param C The LLVM context to use to emit diagnostics.
 ///
+/// \param P The FSDiscriminatorPass.
+///
 /// \param RemapFilename The file used for profile remapping.
 ///
 /// \returns an error code indicating the status of the created reader.
 ErrorOr<std::unique_ptr<SampleProfileReader>>
 SampleProfileReader::create(std::unique_ptr<MemoryBuffer> &B, LLVMContext &C,
+                            FSDiscriminatorPass P,
                             const std::string RemapFilename) {
   std::unique_ptr<SampleProfileReader> Reader;
   if (SampleProfileReaderRawBinary::hasFormat(*B))
@@ -1695,6 +1730,8 @@ SampleProfileReader::create(std::unique_ptr<MemoryBuffer> &B, LLVMContext &C,
   if (std::error_code EC = Reader->readHeader()) {
     return EC;
   }
+
+  Reader->setDiscriminatorMaskedBitFrom(P);
 
   return std::move(Reader);
 }

@@ -1,4 +1,4 @@
-; RUN: opt < %s -wasm-lower-em-ehsjlj -S | FileCheck %s
+; RUN: opt < %s -wasm-lower-em-ehsjlj -enable-emscripten-sjlj -S | FileCheck %s
 
 target datalayout = "e-m:e-p:32:32-i64:64-n32:64-S128"
 target triple = "wasm32-unknown-emscripten"
@@ -23,11 +23,10 @@ entry:
   store i32 0, i32* %retval, align 4
   %arraydecay = getelementptr inbounds [1 x %struct.__jmp_buf_tag], [1 x %struct.__jmp_buf_tag]* %jmp, i32 0, i32 0
   %call = call i32 @setjmp(%struct.__jmp_buf_tag* %arraydecay) #0
+  call void @foo()
   ret void
 
 ; CHECK-LABEL: entry.split
-  ; CHECK: call void @free
-  ; CHECK: ret void
 }
 
 ; This is a dummy dlmalloc implemenation only to make compiler pass, because an
@@ -37,6 +36,7 @@ define i8* @dlmalloc(i32) {
   ret i8* %p
 }
 
+declare void @foo()
 ; Function Attrs: returns_twice
 declare i32 @setjmp(%struct.__jmp_buf_tag*) #0
 

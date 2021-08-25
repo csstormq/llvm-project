@@ -36,12 +36,14 @@ namespace mlir {
 class Dialect;
 class DictionaryAttr;
 class ElementsAttr;
+class MutableOperandRangeRange;
 class Operation;
 struct OperationState;
 class OpAsmParser;
 class OpAsmParserResult;
 class OpAsmPrinter;
 class OperandRange;
+class OperandRangeRange;
 class OpFoldResult;
 class ParseResult;
 class Pattern;
@@ -67,14 +69,17 @@ using OwningRewritePatternList = RewritePatternSet;
 /// the concrete operation types.
 class AbstractOperation {
 public:
-  using GetCanonicalizationPatternsFn = void (*)(RewritePatternSet &,
-                                                 MLIRContext *);
-  using FoldHookFn = LogicalResult (*)(Operation *, ArrayRef<Attribute>,
-                                       SmallVectorImpl<OpFoldResult> &);
-  using HasTraitFn = bool (*)(TypeID);
-  using ParseAssemblyFn = ParseResult (*)(OpAsmParser &, OperationState &);
-  using PrintAssemblyFn = void (*)(Operation *, OpAsmPrinter &);
-  using VerifyInvariantsFn = LogicalResult (*)(Operation *);
+  using GetCanonicalizationPatternsFn =
+      llvm::unique_function<void(RewritePatternSet &, MLIRContext *) const>;
+  using FoldHookFn = llvm::unique_function<LogicalResult(
+      Operation *, ArrayRef<Attribute>, SmallVectorImpl<OpFoldResult> &) const>;
+  using HasTraitFn = llvm::unique_function<bool(TypeID) const>;
+  using ParseAssemblyFn =
+      llvm::unique_function<ParseResult(OpAsmParser &, OperationState &) const>;
+  using PrintAssemblyFn =
+      llvm::unique_function<void(Operation *, OpAsmPrinter &) const>;
+  using VerifyInvariantsFn =
+      llvm::unique_function<LogicalResult(Operation *) const>;
 
   /// This is the name of the operation.
   const Identifier name;
@@ -89,7 +94,7 @@ public:
   ParseResult parseAssembly(OpAsmParser &parser, OperationState &result) const;
 
   /// Return the static hook for parsing this operation assembly.
-  ParseAssemblyFn getParseAssemblyFn() const { return parseAssemblyFn; }
+  const ParseAssemblyFn &getParseAssemblyFn() const { return parseAssemblyFn; }
 
   /// This hook implements the AsmPrinter for this operation.
   void printAssembly(Operation *op, OpAsmPrinter &p) const {
@@ -159,7 +164,9 @@ public:
   /// Look up the specified operation in the specified MLIRContext and return a
   /// pointer to it if present.  Otherwise, return a null pointer.
   static const AbstractOperation *lookup(StringRef opName,
-                                         MLIRContext *context);
+                                         MLIRContext *context) {
+    return lookupMutable(opName, context);
+  }
 
   /// This constructor is used by Dialect objects when they register the list of
   /// operations they contain.
@@ -169,23 +176,56 @@ public:
            T::getParseAssemblyFn(), T::getPrintAssemblyFn(),
            T::getVerifyInvariantsFn(), T::getFoldHookFn(),
            T::getGetCanonicalizationPatternsFn(), T::getInterfaceMap(),
-           T::getHasTraitFn());
+           T::getHasTraitFn(), T::getAttributeNames());
   }
 
-private:
-  static void insert(StringRef name, Dialect &dialect, TypeID typeID,
-                     ParseAssemblyFn parseAssembly,
-                     PrintAssemblyFn printAssembly,
-                     VerifyInvariantsFn verifyInvariants, FoldHookFn foldHook,
-                     GetCanonicalizationPatternsFn getCanonicalizationPatterns,
-                     detail::InterfaceMap &&interfaceMap, HasTraitFn hasTrait);
+  /// Register a new operation in a Dialect object.
+  /// The use of this method is in general discouraged in favor of
+  /// 'insert<CustomOp>(dialect)'.
+  static void
+  insert(StringRef name, Dialect &dialect, TypeID typeID,
+         ParseAssemblyFn &&parseAssembly, PrintAssemblyFn &&printAssembly,
+         VerifyInvariantsFn &&verifyInvariants, FoldHookFn &&foldHook,
+         GetCanonicalizationPatternsFn &&getCanonicalizationPatterns,
+         detail::InterfaceMap &&interfaceMap, HasTraitFn &&hasTrait,
+         ArrayRef<StringRef> attrNames);
 
+  /// Return the list of cached attribute names registered to this operation.
+  /// The order of attributes cached here is unique to each type of operation,
+  /// and the interpretation of this attribute list should generally be driven
+  /// by the respective operation. In many cases, this caching removes the need
+  /// to use the raw string name of a known attribute.
+  ///
+  /// For example the ODS generator, with an op defining the following
+  /// attributes:
+  ///
+  ///   let arguments = (ins I32Attr:$attr1, I32Attr:$attr2);
+  ///
+  /// ... may produce an order here of ["attr1", "attr2"]. This allows for the
+  /// ODS generator to directly access the cached name for a known attribute,
+  /// greatly simplifying the cost and complexity of attribute usage produced by
+  /// the generator.
+  ///
+  ArrayRef<Identifier> getAttributeNames() const { return attributeNames; }
+
+private:
   AbstractOperation(StringRef name, Dialect &dialect, TypeID typeID,
-                    ParseAssemblyFn parseAssembly,
-                    PrintAssemblyFn printAssembly,
-                    VerifyInvariantsFn verifyInvariants, FoldHookFn foldHook,
-                    GetCanonicalizationPatternsFn getCanonicalizationPatterns,
-                    detail::InterfaceMap &&interfaceMap, HasTraitFn hasTrait);
+                    ParseAssemblyFn &&parseAssembly,
+                    PrintAssemblyFn &&printAssembly,
+                    VerifyInvariantsFn &&verifyInvariants,
+                    FoldHookFn &&foldHook,
+                    GetCanonicalizationPatternsFn &&getCanonicalizationPatterns,
+                    detail::InterfaceMap &&interfaceMap, HasTraitFn &&hasTrait,
+                    ArrayRef<Identifier> attrNames);
+
+  /// Give Op access to lookupMutable.
+  template <typename ConcreteType, template <typename T> class... Traits>
+  friend class Op;
+
+  /// Look up the specified operation in the specified MLIRContext and return a
+  /// pointer to it if present.  Otherwise, return a null pointer.
+  static AbstractOperation *lookupMutable(StringRef opName,
+                                          MLIRContext *context);
 
   /// A map of interfaces that were registered to this operation.
   detail::InterfaceMap interfaceMap;
@@ -197,6 +237,11 @@ private:
   ParseAssemblyFn parseAssemblyFn;
   PrintAssemblyFn printAssemblyFn;
   VerifyInvariantsFn verifyInvariantsFn;
+
+  /// A list of attribute names registered to this operation in identifier form.
+  /// This allows for operation classes to use identifiers for attribute
+  /// lookup/creation/etc., as opposed to strings.
+  ArrayRef<Identifier> attributeNames;
 };
 
 //===----------------------------------------------------------------------===//
@@ -477,6 +522,11 @@ namespace detail {
 /// This class contains the information for a trailing operand storage.
 struct TrailingOperandStorage final
     : public llvm::TrailingObjects<TrailingOperandStorage, OpOperand> {
+#if defined(BYTE_ORDER) && defined(BIG_ENDIAN) && (BYTE_ORDER == BIG_ENDIAN)
+  TrailingOperandStorage() : numOperands(0), capacity(0), reserved(0) {}
+#else
+  TrailingOperandStorage() : reserved(0), capacity(0), numOperands(0) {}
+#endif
   ~TrailingOperandStorage() {
     for (auto &operand : getOperands())
       operand.~OpOperand();
@@ -487,12 +537,21 @@ struct TrailingOperandStorage final
     return {getTrailingObjects<OpOperand>(), numOperands};
   }
 
+#if defined(BYTE_ORDER) && defined(BIG_ENDIAN) && (BYTE_ORDER == BIG_ENDIAN)
   /// The number of operands within the storage.
   unsigned numOperands;
   /// The total capacity number of operands that the storage can hold.
   unsigned capacity : 31;
   /// We reserve a range of bits for use by the operand storage.
   unsigned reserved : 1;
+#else
+  /// We reserve a range of bits for use by the operand storage.
+  unsigned reserved : 1;
+  /// The total capacity number of operands that the storage can hold.
+  unsigned capacity : 31;
+  /// The number of operands within the storage.
+  unsigned numOperands;
+#endif
 };
 
 /// This class handles the management of operation operands. Operands are
@@ -534,9 +593,11 @@ public:
   }
 
 private:
-  enum : uint64_t {
-    /// The bit used to mark the storage as dynamic.
-    DynamicStorageBit = 1ull << 63ull
+  /// Pointer type traits for the storage pointer that ensures that we use the
+  /// lowest bit for the storage pointer.
+  struct StoragePointerLikeTypeTraits
+      : llvm::PointerLikeTypeTraits<TrailingOperandStorage *> {
+    static constexpr int NumLowBitsAvailable = 1;
   };
 
   /// Resize the storage to the given size. Returns the array containing the new
@@ -552,27 +613,25 @@ private:
   /// Returns the storage container if the storage is inline.
   TrailingOperandStorage &getInlineStorage() {
     assert(!isDynamicStorage() && "expected storage to be inline");
-    static_assert(sizeof(TrailingOperandStorage) == sizeof(uint64_t),
-                  "inline storage representation must match the opaque "
-                  "representation");
     return inlineStorage;
   }
 
   /// Returns the storage container if this storage is dynamic.
   TrailingOperandStorage &getDynamicStorage() {
     assert(isDynamicStorage() && "expected dynamic storage");
-    uint64_t maskedRepresentation = representation & ~DynamicStorageBit;
-    return *reinterpret_cast<TrailingOperandStorage *>(maskedRepresentation);
+    return *dynamicStorage.getPointer();
   }
 
   /// Returns true if the storage is currently dynamic.
-  bool isDynamicStorage() const { return representation & DynamicStorageBit; }
+  bool isDynamicStorage() const { return dynamicStorage.getInt(); }
 
   /// The current representation of the storage. This is either a
   /// InlineOperandStorage, or a pointer to a InlineOperandStorage.
   union {
     TrailingOperandStorage inlineStorage;
-    uint64_t representation;
+    llvm::PointerIntPair<TrailingOperandStorage *, 1, bool,
+                         StoragePointerLikeTypeTraits>
+        dynamicStorage;
   };
 
   /// This stuff is used by the TrailingObjects template.
@@ -670,6 +729,10 @@ public:
   /// must not be empty.
   unsigned getBeginOperandIndex() const;
 
+  /// Split this range into a set of contiguous subranges using the given
+  /// elements attribute, which contains the sizes of the sub ranges.
+  OperandRangeRange split(ElementsAttr segmentSizes) const;
+
 private:
   /// See `llvm::detail::indexed_accessor_range_base` for details.
   static OpOperand *offset_base(OpOperand *object, ptrdiff_t index) {
@@ -681,6 +744,42 @@ private:
   }
 
   /// Allow access to `offset_base` and `dereference_iterator`.
+  friend RangeBaseT;
+};
+
+//===----------------------------------------------------------------------===//
+// OperandRangeRange
+
+/// This class represents a contiguous range of operand ranges, e.g. from a
+/// VariadicOfVariadic operand group.
+class OperandRangeRange final
+    : public llvm::indexed_accessor_range<
+          OperandRangeRange, std::pair<OpOperand *, Attribute>, OperandRange,
+          OperandRange, OperandRange> {
+  using OwnerT = std::pair<OpOperand *, Attribute>;
+  using RangeBaseT =
+      llvm::indexed_accessor_range<OperandRangeRange, OwnerT, OperandRange,
+                                   OperandRange, OperandRange>;
+
+public:
+  using RangeBaseT::RangeBaseT;
+
+  /// Returns the range of types of the values within this range.
+  TypeRangeRange getTypes() const { return TypeRangeRange(*this); }
+  auto getType() const { return getTypes(); }
+
+  /// Construct a range given a parent set of operands, and an I32 elements
+  /// attribute containing the sizes of the sub ranges.
+  OperandRangeRange(OperandRange operands, Attribute operandSegments);
+
+  /// Flatten all of the sub ranges into a single contiguous operand range.
+  OperandRange join() const;
+
+private:
+  /// See `llvm::indexed_accessor_range` for details.
+  static OperandRange dereference(const OwnerT &object, ptrdiff_t index);
+
+  /// Allow access to `dereference_iterator`.
   friend RangeBaseT;
 };
 
@@ -704,8 +803,9 @@ public:
   MutableOperandRange(Operation *owner);
 
   /// Slice this range into a sub range, with the additional operand segment.
-  MutableOperandRange slice(unsigned subStart, unsigned subLen,
-                            Optional<OperandSegment> segment = llvm::None);
+  MutableOperandRange
+  slice(unsigned subStart, unsigned subLen,
+        Optional<OperandSegment> segment = llvm::None) const;
 
   /// Append the given values to the range.
   void append(ValueRange values);
@@ -725,11 +825,18 @@ public:
   /// Returns the current size of the range.
   unsigned size() const { return length; }
 
+  /// Returns if the current range is empty.
+  bool empty() const { return size() == 0; }
+
   /// Allow implicit conversion to an OperandRange.
   operator OperandRange() const;
 
   /// Returns the owning operation.
   Operation *getOwner() const { return owner; }
+
+  /// Split this range into a set of contiguous subranges using the given
+  /// elements attribute, which contains the sizes of the sub ranges.
+  MutableOperandRangeRange split(NamedAttribute segmentSizes) const;
 
 private:
   /// Update the length of this range to the one provided.
@@ -744,7 +851,46 @@ private:
 
   /// Optional set of operand segments that should be updated when mutating the
   /// length of this range.
-  SmallVector<std::pair<unsigned, NamedAttribute>, 1> operandSegments;
+  SmallVector<OperandSegment, 1> operandSegments;
+};
+
+//===----------------------------------------------------------------------===//
+// MutableOperandRangeRange
+
+/// This class represents a contiguous range of mutable operand ranges, e.g.
+/// from a VariadicOfVariadic operand group.
+class MutableOperandRangeRange final
+    : public llvm::indexed_accessor_range<
+          MutableOperandRangeRange,
+          std::pair<MutableOperandRange, NamedAttribute>, MutableOperandRange,
+          MutableOperandRange, MutableOperandRange> {
+  using OwnerT = std::pair<MutableOperandRange, NamedAttribute>;
+  using RangeBaseT =
+      llvm::indexed_accessor_range<MutableOperandRangeRange, OwnerT,
+                                   MutableOperandRange, MutableOperandRange,
+                                   MutableOperandRange>;
+
+public:
+  using RangeBaseT::RangeBaseT;
+
+  /// Construct a range given a parent set of operands, and an I32 tensor
+  /// elements attribute containing the sizes of the sub ranges.
+  MutableOperandRangeRange(const MutableOperandRange &operands,
+                           NamedAttribute operandSegmentAttr);
+
+  /// Flatten all of the sub ranges into a single contiguous mutable operand
+  /// range.
+  MutableOperandRange join() const;
+
+  /// Allow implicit conversion to an OperandRangeRange.
+  operator OperandRangeRange() const;
+
+private:
+  /// See `llvm::indexed_accessor_range` for details.
+  static MutableOperandRange dereference(const OwnerT &object, ptrdiff_t index);
+
+  /// Allow access to `dereference_iterator`.
+  friend RangeBaseT;
 };
 
 //===----------------------------------------------------------------------===//
@@ -844,21 +990,51 @@ struct OperationEquivalence {
   enum Flags {
     None = 0,
 
-    /// This flag signals that operands should not be considered when checking
-    /// for equivalence. This allows for users to implement there own
-    /// equivalence schemes for operand values. The number of operands are still
-    /// checked, just not the operands themselves.
-    IgnoreOperands = 1,
+    // When provided, the location attached to the operation are ignored.
+    IgnoreLocations = 1,
 
-    LLVM_MARK_AS_BITMASK_ENUM(/* LargestValue = */ IgnoreOperands)
+    LLVM_MARK_AS_BITMASK_ENUM(/* LargestValue = */ IgnoreLocations)
   };
 
   /// Compute a hash for the given operation.
-  static llvm::hash_code computeHash(Operation *op, Flags flags = Flags::None);
+  /// The `hashOperands` and `hashResults` callbacks are expected to return a
+  /// unique hash_code for a given Value.
+  static llvm::hash_code computeHash(
+      Operation *op,
+      function_ref<llvm::hash_code(Value)> hashOperands =
+          [](Value v) { return hash_value(v); },
+      function_ref<llvm::hash_code(Value)> hashResults =
+          [](Value v) { return hash_value(v); },
+      Flags flags = Flags::None);
+
+  /// Helper that can be used with `computeHash` above to ignore operation
+  /// operands/result mapping.
+  static llvm::hash_code ignoreHashValue(Value) { return llvm::hash_code{}; }
+  /// Helper that can be used with `computeHash` above to ignore operation
+  /// operands/result mapping.
+  static llvm::hash_code directHashValue(Value v) { return hash_value(v); }
 
   /// Compare two operations and return if they are equivalent.
-  static bool isEquivalentTo(Operation *lhs, Operation *rhs,
-                             Flags flags = Flags::None);
+  /// `mapOperands` and `mapResults` are optional callbacks that allows the
+  /// caller to check the mapping of SSA value between the lhs and rhs
+  /// operations. It is expected to return success if the mapping is valid and
+  /// failure if it conflicts with a previous mapping.
+  static bool
+  isEquivalentTo(Operation *lhs, Operation *rhs,
+                 function_ref<LogicalResult(Value, Value)> mapOperands,
+                 function_ref<LogicalResult(Value, Value)> mapResults,
+                 Flags flags = Flags::None);
+
+  /// Helper that can be used with `isEquivalentTo` above to ignore operation
+  /// operands/result mapping.
+  static LogicalResult ignoreValueEquivalence(Value lhs, Value rhs) {
+    return success();
+  }
+  /// Helper that can be used with `isEquivalentTo` above to ignore operation
+  /// operands/result mapping.
+  static LogicalResult exactValueMatch(Value lhs, Value rhs) {
+    return success(lhs == rhs);
+  }
 };
 
 /// Enable Bitmask enums for OperationEquivalence::Flags.

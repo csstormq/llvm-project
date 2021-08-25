@@ -205,14 +205,6 @@ private:
   SrcType Ty;
 };
 
-class FlagsOp {
-  Optional<unsigned> Flags;
-
-public:
-  explicit FlagsOp(unsigned F) : Flags(F) {}
-  FlagsOp() : Flags(None) {}
-  Optional<unsigned> getFlags() const { return Flags; }
-};
 /// Helper class to build MachineInstr.
 /// It keeps internally the insertion point and debug location for all
 /// the new instructions we want to create.
@@ -363,7 +355,7 @@ public:
   void setDebugLoc(const DebugLoc &DL) { this->State.DL = DL; }
 
   /// Get the current instruction's debug location.
-  DebugLoc getDebugLoc() { return State.DL; }
+  const DebugLoc &getDebugLoc() { return State.DL; }
 
   /// Build and insert <empty> = \p Opcode <empty>.
   /// The insertion point is the one set by the last call of either
@@ -1854,6 +1846,29 @@ public:
   MachineInstrBuilder buildUbfx(const DstOp &Dst, const SrcOp &Src,
                                 const SrcOp &LSB, const SrcOp &Width) {
     return buildInstr(TargetOpcode::G_UBFX, {Dst}, {Src, LSB, Width});
+  }
+
+  /// Build and insert \p Dst = G_ROTR \p Src, \p Amt
+  MachineInstrBuilder buildRotateRight(const DstOp &Dst, const SrcOp &Src,
+                                       const SrcOp &Amt) {
+    return buildInstr(TargetOpcode::G_ROTR, {Dst}, {Src, Amt});
+  }
+
+  /// Build and insert \p Dst = G_ROTL \p Src, \p Amt
+  MachineInstrBuilder buildRotateLeft(const DstOp &Dst, const SrcOp &Src,
+                                      const SrcOp &Amt) {
+    return buildInstr(TargetOpcode::G_ROTL, {Dst}, {Src, Amt});
+  }
+
+  /// Build and insert \p Dst = G_BITREVERSE \p Src
+  MachineInstrBuilder buildBitReverse(const DstOp &Dst, const SrcOp &Src) {
+    return buildInstr(TargetOpcode::G_BITREVERSE, {Dst}, {Src});
+  }
+
+  /// Build and insert \p Dst = G_ISNAN \p Src
+  MachineInstrBuilder buildIsNaN(const DstOp &Dst, const SrcOp &Src,
+                                 Optional<unsigned> Flags = None) {
+    return buildInstr(TargetOpcode::G_ISNAN, {Dst}, {Src}, Flags);
   }
 
   virtual MachineInstrBuilder buildInstr(unsigned Opc, ArrayRef<DstOp> DstOps,

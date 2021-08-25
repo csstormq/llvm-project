@@ -60,6 +60,7 @@ public:
     WIntType = UnsignedInt;
     HasRISCVVTypes = true;
     MCountName = "_mcount";
+    HasFloat16 = true;
   }
 
   bool setCPU(const std::string &Name) override {
@@ -96,6 +97,13 @@ public:
 
   bool validateAsmConstraint(const char *&Name,
                              TargetInfo::ConstraintInfo &Info) const override;
+
+  std::string convertConstraint(const char *&Constraint) const override;
+
+  bool
+  initFeatureMap(llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags,
+                 StringRef CPU,
+                 const std::vector<std::string> &FeaturesVec) const override;
 
   bool hasFeature(StringRef Feature) const override;
 

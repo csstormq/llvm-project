@@ -218,6 +218,7 @@ public:
     Musl,
     MuslEABI,
     MuslEABIHF,
+    MuslX32,
 
     MSVC,
     Itanium,
@@ -688,7 +689,8 @@ public:
   bool isMusl() const {
     return getEnvironment() == Triple::Musl ||
            getEnvironment() == Triple::MuslEABI ||
-           getEnvironment() == Triple::MuslEABIHF;
+           getEnvironment() == Triple::MuslEABIHF ||
+           getEnvironment() == Triple::MuslX32;
   }
 
   /// Tests whether the target is SPIR (32- or 64-bit).
@@ -801,6 +803,12 @@ public:
   bool isArm64e() const {
     return getArch() == Triple::aarch64 &&
            getSubArch() == Triple::AArch64SubArch_arm64e;
+  }
+
+  /// Tests whether the target is X32.
+  bool isX32() const {
+    EnvironmentType Env = getEnvironment();
+    return Env == Triple::GNUX32 || Env == Triple::MuslX32;
   }
 
   /// Tests whether the target supports comdat

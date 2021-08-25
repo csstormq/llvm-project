@@ -166,8 +166,7 @@ static StringRef getOSLibDir(const llvm::Triple &Triple, const ArgList &Args) {
       Triple.getArch() == llvm::Triple::sparc)
     return "lib32";
 
-  if (Triple.getArch() == llvm::Triple::x86_64 &&
-      Triple.getEnvironment() == llvm::Triple::GNUX32)
+  if (Triple.getArch() == llvm::Triple::x86_64 && Triple.isX32())
     return "libx32";
 
   if (Triple.getArch() == llvm::Triple::riscv32)
@@ -401,6 +400,9 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
     case llvm::Triple::x86:
       ArchName = "i386";
       break;
+    case llvm::Triple::x86_64:
+      ArchName = Triple.isX32() ? "x32" : Triple.getArchName().str();
+      break;
     default:
       ArchName = Triple.getArchName().str();
     }
@@ -510,7 +512,7 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
     Loader = "ld-linux.so.2";
     break;
   case llvm::Triple::x86_64: {
-    bool X32 = Triple.getEnvironment() == llvm::Triple::GNUX32;
+    bool X32 = Triple.isX32();
 
     LibDir = X32 ? "libx32" : "lib64";
     Loader = X32 ? "ld-linux-x32.so.2" : "ld-linux-x86-64.so.2";
@@ -535,14 +537,10 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   if (DriverArgs.hasArg(clang::driver::options::OPT_nostdinc))
     return;
 
-  if (!DriverArgs.hasArg(options::OPT_nostdlibinc)) {
-    // LOCAL_INCLUDE_DIR
-    addSystemInclude(DriverArgs, CC1Args, SysRoot + "/usr/local/include");
-    // TOOL_INCLUDE_DIR
-    AddMultilibIncludeArgs(DriverArgs, CC1Args);
-  }
-
-  // Note: in gcc, GCC_INCLUDE_DIR (private headers) precedes LOCAL_INCLUDE_DIR.
+  // Add 'include' in the resource directory, which is similar to
+  // GCC_INCLUDE_DIR (private headers) in GCC. Note: the include directory
+  // contains some files conflicting with system /usr/include. musl systems
+  // prefer the /usr/include copies which are more relevant.
   SmallString<128> ResourceDirInclude(D.ResourceDir);
   llvm::sys::path::append(ResourceDirInclude, "include");
   if (!DriverArgs.hasArg(options::OPT_nobuiltininc) &&
@@ -551,6 +549,11 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
 
   if (DriverArgs.hasArg(options::OPT_nostdlibinc))
     return;
+
+  // LOCAL_INCLUDE_DIR
+  addSystemInclude(DriverArgs, CC1Args, SysRoot + "/usr/local/include");
+  // TOOL_INCLUDE_DIR
+  AddMultilibIncludeArgs(DriverArgs, CC1Args);
 
   // Check for configure-time C include directories.
   StringRef CIncludeDirs(C_INCLUDE_DIRS);
@@ -565,8 +568,8 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     return;
   }
 
-  // On Debian (and its derivatives which ship g++-multiarch-incdir.diff) and
-  // Android, add /usr/include/$triple if exists.
+  // On systems using multiarch and Android, add /usr/include/$triple before
+  // /usr/include.
   std::string MultiarchIncludeDir = getMultiarchTriple(D, getTriple(), SysRoot);
   if (!MultiarchIncludeDir.empty() &&
       D.getVFS().exists(SysRoot + "/usr/include/" + MultiarchIncludeDir))
@@ -589,17 +592,24 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
 
 void Linux::addLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
                                      llvm::opt::ArgStringList &CC1Args) const {
-  // Try generic GCC detection first.
-  if (Generic_GCC::addGCCLibStdCxxIncludePaths(DriverArgs, CC1Args))
-    return;
-
   // We need a detected GCC installation on Linux to provide libstdc++'s
   // headers in odd Linuxish places.
   if (!GCCInstallation.isValid())
     return;
 
-  StringRef LibDir = GCCInstallation.getParentLibPath();
+  // Detect Debian g++-multiarch-incdir.diff.
   StringRef TripleStr = GCCInstallation.getTriple().str();
+  StringRef DebianMultiarch =
+      GCCInstallation.getTriple().getArch() == llvm::Triple::x86
+          ? "i386-linux-gnu"
+          : TripleStr;
+
+  // Try generic GCC detection first.
+  if (Generic_GCC::addGCCLibStdCxxIncludePaths(DriverArgs, CC1Args,
+                                               DebianMultiarch))
+    return;
+
+  StringRef LibDir = GCCInstallation.getParentLibPath();
   const Multilib &Multilib = GCCInstallation.getMultilib();
   const GCCVersion &Version = GCCInstallation.getVersion();
 
@@ -684,6 +694,7 @@ SanitizerMask Linux::getSupportedSanitizers() const {
                          getTriple().getArch() == llvm::Triple::thumbeb;
   const bool IsRISCV64 = getTriple().getArch() == llvm::Triple::riscv64;
   const bool IsSystemZ = getTriple().getArch() == llvm::Triple::systemz;
+  const bool IsHexagon = getTriple().getArch() == llvm::Triple::hexagon;
   SanitizerMask Res = ToolChain::getSupportedSanitizers();
   Res |= SanitizerKind::Address;
   Res |= SanitizerKind::PointerCompare;
@@ -697,16 +708,16 @@ SanitizerMask Linux::getSupportedSanitizers() const {
   if (IsX86_64 || IsMIPS64 || IsAArch64)
     Res |= SanitizerKind::DataFlow;
   if (IsX86_64 || IsMIPS64 || IsAArch64 || IsX86 || IsArmArch || IsPowerPC64 ||
-      IsRISCV64 || IsSystemZ)
+      IsRISCV64 || IsSystemZ || IsHexagon)
     Res |= SanitizerKind::Leak;
-  if (IsX86_64 || IsMIPS64 || IsAArch64 || IsPowerPC64)
+  if (IsX86_64 || IsMIPS64 || IsAArch64 || IsPowerPC64 || IsSystemZ)
     Res |= SanitizerKind::Thread;
   if (IsX86_64)
     Res |= SanitizerKind::KernelMemory;
   if (IsX86 || IsX86_64)
     Res |= SanitizerKind::Function;
   if (IsX86_64 || IsMIPS64 || IsAArch64 || IsX86 || IsMIPS || IsArmArch ||
-      IsPowerPC64)
+      IsPowerPC64 || IsHexagon)
     Res |= SanitizerKind::Scudo;
   if (IsX86_64 || IsAArch64) {
     Res |= SanitizerKind::HWAddress;

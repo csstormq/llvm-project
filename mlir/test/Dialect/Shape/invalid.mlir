@@ -97,6 +97,14 @@ func @shape_of(%value_arg : !shape.value_shape,
 
 // -----
 
+func @shape_of_incompatible_return_types(%value_arg : tensor<1x2xindex>) {
+  // expected-error@+1 {{'shape.shape_of' op inferred type(s) 'tensor<2xindex>' are incompatible with return type(s) of operation 'tensor<3xf32>'}}
+  %0 = shape.shape_of %value_arg : tensor<1x2xindex> -> tensor<3xf32>
+  return
+}
+
+// -----
+
 func @rank(%arg : !shape.shape) {
   // expected-error@+1 {{if at least one of the operands can hold error values then the result must be of type `size` to propagate them}}
   %0 = shape.rank %arg : !shape.shape -> index
@@ -253,4 +261,14 @@ func @fn(%arg: !shape.shape) -> !shape.witness {
   // expected-error@+1 {{required at least 2 input shapes}}
   %0 = shape.cstr_broadcastable %arg : !shape.shape
   return %0 : !shape.witness
+}
+
+// -----
+
+// Test that type inference flags the wrong return type.
+
+func @const_shape() {
+  // expected-error@+1 {{'tensor<3xindex>' are incompatible with return type(s) of operation 'tensor<2xindex>'}}
+  %0 = shape.const_shape [4, 5, 6] : tensor<2xindex>
+  return
 }

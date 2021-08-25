@@ -9,7 +9,6 @@
 // This file implements the Expression parsing implementation for C++.
 //
 //===----------------------------------------------------------------------===//
-#include "clang/Parse/Parser.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclTemplate.h"
@@ -17,6 +16,7 @@
 #include "clang/Basic/PrettyStackTrace.h"
 #include "clang/Lex/LiteralSupport.h"
 #include "clang/Parse/ParseDiagnostic.h"
+#include "clang/Parse/Parser.h"
 #include "clang/Parse/RAIIObjectsForParser.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ParsedTemplate.h"
@@ -690,7 +690,7 @@ ExprResult Parser::ParseCXXIdExpression(bool isAddressOfOperand) {
 ///       lambda-expression:
 ///         lambda-introducer lambda-declarator compound-statement
 ///         lambda-introducer '<' template-parameter-list '>'
-///             lambda-declarator compound-statement
+///             requires-clause[opt] lambda-declarator compound-statement
 ///
 ///       lambda-introducer:
 ///         '[' lambda-capture[opt] ']'
@@ -1392,12 +1392,6 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                 /*DeclsInPrototype=*/None, LParenLoc, FunLocalRangeEnd, D,
                 TrailingReturnType, TrailingReturnTypeLoc, &DS),
             std::move(Attr), DeclEndLoc);
-
-        // Parse requires-clause[opt].
-        if (Tok.is(tok::kw_requires))
-          ParseTrailingRequiresClause(D);
-
-        WarnIfHasCUDATargetAttr();
       };
 
   if (Tok.is(tok::l_paren)) {
@@ -1433,6 +1427,10 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     // Parse lambda-specifiers.
     ParseLambdaSpecifiers(LParenLoc, /*DeclEndLoc=*/T.getCloseLocation(),
                           ParamInfo, EllipsisLoc);
+
+    // Parse requires-clause[opt].
+    if (Tok.is(tok::kw_requires))
+      ParseTrailingRequiresClause(D);
   } else if (Tok.isOneOf(tok::kw_mutable, tok::arrow, tok::kw___attribute,
                          tok::kw_constexpr, tok::kw_consteval,
                          tok::kw___private, tok::kw___global, tok::kw___local,
@@ -1452,6 +1450,8 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     ParseLambdaSpecifiers(/*LParenLoc=*/NoLoc, /*RParenLoc=*/NoLoc,
                           EmptyParamInfo, /*EllipsisLoc=*/NoLoc);
   }
+
+  WarnIfHasCUDATargetAttr();
 
   // FIXME: Rename BlockScope -> ClosureScope if we decide to continue using
   // it.
@@ -2033,6 +2033,8 @@ Sema::ConditionResult Parser::ParseCXXCondition(StmtResult *InitStmt,
     DeclGroupPtrTy DG = ParseSimpleDeclaration(DeclaratorContext::ForInit,
                                                DeclEnd, attrs, false, FRI);
     FRI->LoopVar = Actions.ActOnDeclStmt(DG, DeclStart, Tok.getLocation());
+    assert((FRI->ColonLoc.isValid() || !DG) &&
+           "cannot find for range declaration");
     return Sema::ConditionResult();
   }
 
@@ -2634,9 +2636,10 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
 
     // Grab the literal operator's suffix, which will be either the next token
     // or a ud-suffix from the string literal.
+    bool IsUDSuffix = !Literal.getUDSuffix().empty();
     IdentifierInfo *II = nullptr;
     SourceLocation SuffixLoc;
-    if (!Literal.getUDSuffix().empty()) {
+    if (IsUDSuffix) {
       II = &PP.getIdentifierTable().get(Literal.getUDSuffix());
       SuffixLoc =
         Lexer::AdvanceToTokenCharacter(TokLocs[Literal.getUDSuffixToken()],
@@ -2673,7 +2676,7 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
 
     Result.setLiteralOperatorId(II, KeywordLoc, SuffixLoc);
 
-    return Actions.checkLiteralOperatorId(SS, Result);
+    return Actions.checkLiteralOperatorId(SS, Result, IsUDSuffix);
   }
 
   // Parse a conversion-function-id.
@@ -3599,7 +3602,7 @@ ExprResult Parser::ParseRequiresExpression() {
           break;
         }
         if (!Expression.isInvalid() && PossibleRequiresExprInSimpleRequirement)
-          Diag(StartLoc, diag::warn_requires_expr_in_simple_requirement)
+          Diag(StartLoc, diag::err_requires_expr_in_simple_requirement)
               << FixItHint::CreateInsertion(StartLoc, "requires");
         if (auto *Req = Actions.ActOnSimpleRequirement(Expression.get()))
           Requirements.push_back(Req);

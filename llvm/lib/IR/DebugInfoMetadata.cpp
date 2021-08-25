@@ -23,6 +23,13 @@
 
 using namespace llvm;
 
+namespace llvm {
+// Use FS-AFDO discriminator.
+cl::opt<bool> EnableFSDiscriminator(
+    "enable-fs-discriminator", cl::Hidden, cl::init(false),
+    cl::desc("Enable adding flow sensitive discriminators"));
+} // namespace llvm
+
 const DIExpression::FragmentInfo DebugVariable::DefaultFragment = {
     std::numeric_limits<uint64_t>::max(), std::numeric_limits<uint64_t>::min()};
 
@@ -359,17 +366,25 @@ DISubrange *DISubrange::getImpl(LLVMContext &Context, Metadata *CountNode,
   DEFINE_GETIMPL_STORE_NO_CONSTRUCTOR_ARGS(DISubrange, Ops);
 }
 
-DISubrange::CountType DISubrange::getCount() const {
-  if (!getRawCountNode())
-    return CountType();
+DISubrange::BoundType DISubrange::getCount() const {
+  Metadata *CB = getRawCountNode();
+  if (!CB)
+    return BoundType();
 
-  if (auto *MD = dyn_cast<ConstantAsMetadata>(getRawCountNode()))
-    return CountType(cast<ConstantInt>(MD->getValue()));
+  assert((isa<ConstantAsMetadata>(CB) || isa<DIVariable>(CB) ||
+          isa<DIExpression>(CB)) &&
+         "Count must be signed constant or DIVariable or DIExpression");
 
-  if (auto *DV = dyn_cast<DIVariable>(getRawCountNode()))
-    return CountType(DV);
+  if (auto *MD = dyn_cast<ConstantAsMetadata>(CB))
+    return BoundType(cast<ConstantInt>(MD->getValue()));
 
-  return CountType();
+  if (auto *MD = dyn_cast<DIVariable>(CB))
+    return BoundType(MD);
+
+  if (auto *MD = dyn_cast<DIExpression>(CB))
+    return BoundType(MD);
+
+  return BoundType();
 }
 
 DISubrange::BoundType DISubrange::getLowerBound() const {
@@ -567,13 +582,13 @@ DIDerivedType *DIDerivedType::getImpl(
     unsigned Line, Metadata *Scope, Metadata *BaseType, uint64_t SizeInBits,
     uint32_t AlignInBits, uint64_t OffsetInBits,
     Optional<unsigned> DWARFAddressSpace, DIFlags Flags, Metadata *ExtraData,
-    StorageType Storage, bool ShouldCreate) {
+    Metadata *Annotations, StorageType Storage, bool ShouldCreate) {
   assert(isCanonical(Name) && "Expected canonical MDString");
   DEFINE_GETIMPL_LOOKUP(DIDerivedType,
                         (Tag, Name, File, Line, Scope, BaseType, SizeInBits,
                          AlignInBits, OffsetInBits, DWARFAddressSpace, Flags,
-                         ExtraData));
-  Metadata *Ops[] = {File, Scope, Name, BaseType, ExtraData};
+                         ExtraData, Annotations));
+  Metadata *Ops[] = {File, Scope, Name, BaseType, ExtraData, Annotations};
   DEFINE_GETIMPL_STORE(
       DIDerivedType, (Tag, Line, SizeInBits, AlignInBits, OffsetInBits,
                       DWARFAddressSpace, Flags), Ops);
@@ -586,19 +601,21 @@ DICompositeType *DICompositeType::getImpl(
     Metadata *Elements, unsigned RuntimeLang, Metadata *VTableHolder,
     Metadata *TemplateParams, MDString *Identifier, Metadata *Discriminator,
     Metadata *DataLocation, Metadata *Associated, Metadata *Allocated,
-    Metadata *Rank, StorageType Storage, bool ShouldCreate) {
+    Metadata *Rank, Metadata *Annotations, StorageType Storage,
+    bool ShouldCreate) {
   assert(isCanonical(Name) && "Expected canonical MDString");
 
   // Keep this in sync with buildODRType.
-  DEFINE_GETIMPL_LOOKUP(
-      DICompositeType,
-      (Tag, Name, File, Line, Scope, BaseType, SizeInBits, AlignInBits,
-       OffsetInBits, Flags, Elements, RuntimeLang, VTableHolder, TemplateParams,
-       Identifier, Discriminator, DataLocation, Associated, Allocated, Rank));
+  DEFINE_GETIMPL_LOOKUP(DICompositeType,
+                        (Tag, Name, File, Line, Scope, BaseType, SizeInBits,
+                         AlignInBits, OffsetInBits, Flags, Elements,
+                         RuntimeLang, VTableHolder, TemplateParams, Identifier,
+                         Discriminator, DataLocation, Associated, Allocated,
+                         Rank, Annotations));
   Metadata *Ops[] = {File,          Scope,        Name,           BaseType,
                      Elements,      VTableHolder, TemplateParams, Identifier,
                      Discriminator, DataLocation, Associated,     Allocated,
-                     Rank};
+                     Rank,          Annotations};
   DEFINE_GETIMPL_STORE(DICompositeType, (Tag, Line, RuntimeLang, SizeInBits,
                                          AlignInBits, OffsetInBits, Flags),
                        Ops);
@@ -611,7 +628,7 @@ DICompositeType *DICompositeType::buildODRType(
     DIFlags Flags, Metadata *Elements, unsigned RuntimeLang,
     Metadata *VTableHolder, Metadata *TemplateParams, Metadata *Discriminator,
     Metadata *DataLocation, Metadata *Associated, Metadata *Allocated,
-    Metadata *Rank) {
+    Metadata *Rank, Metadata *Annotations) {
   assert(!Identifier.getString().empty() && "Expected valid identifier");
   if (!Context.isODRUniquingDebugTypes())
     return nullptr;
@@ -621,7 +638,7 @@ DICompositeType *DICompositeType::buildODRType(
                Context, Tag, Name, File, Line, Scope, BaseType, SizeInBits,
                AlignInBits, OffsetInBits, Flags, Elements, RuntimeLang,
                VTableHolder, TemplateParams, &Identifier, Discriminator,
-               DataLocation, Associated, Allocated, Rank);
+               DataLocation, Associated, Allocated, Rank, Annotations);
 
   // Only mutate CT if it's a forward declaration and the new operands aren't.
   assert(CT->getRawIdentifier() == &Identifier && "Wrong ODR identifier?");
@@ -634,7 +651,7 @@ DICompositeType *DICompositeType::buildODRType(
   Metadata *Ops[] = {File,          Scope,        Name,           BaseType,
                      Elements,      VTableHolder, TemplateParams, &Identifier,
                      Discriminator, DataLocation, Associated,     Allocated,
-                     Rank};
+                     Rank,          Annotations};
   assert((std::end(Ops) - std::begin(Ops)) == (int)CT->getNumOperands() &&
          "Mismatched number of operands");
   for (unsigned I = 0, E = CT->getNumOperands(); I != E; ++I)
@@ -650,7 +667,7 @@ DICompositeType *DICompositeType::getODRType(
     DIFlags Flags, Metadata *Elements, unsigned RuntimeLang,
     Metadata *VTableHolder, Metadata *TemplateParams, Metadata *Discriminator,
     Metadata *DataLocation, Metadata *Associated, Metadata *Allocated,
-    Metadata *Rank) {
+    Metadata *Rank, Metadata *Annotations) {
   assert(!Identifier.getString().empty() && "Expected valid identifier");
   if (!Context.isODRUniquingDebugTypes())
     return nullptr;
@@ -660,7 +677,7 @@ DICompositeType *DICompositeType::getODRType(
         Context, Tag, Name, File, Line, Scope, BaseType, SizeInBits,
         AlignInBits, OffsetInBits, Flags, Elements, RuntimeLang, VTableHolder,
         TemplateParams, &Identifier, Discriminator, DataLocation, Associated,
-        Allocated, Rank);
+        Allocated, Rank, Annotations);
   return CT;
 }
 
@@ -1236,6 +1253,17 @@ bool DIExpression::extractIfOffset(int64_t &Offset) const {
   return false;
 }
 
+bool DIExpression::hasAllLocationOps(unsigned N) const {
+  SmallDenseSet<uint64_t, 4> SeenOps;
+  for (auto ExprOp : expr_ops())
+    if (ExprOp.getOp() == dwarf::DW_OP_LLVM_arg)
+      SeenOps.insert(ExprOp.getArg(0));
+  for (uint64_t Idx = 0; Idx < N; ++Idx)
+    if (!is_contained(SeenOps, Idx))
+      return false;
+  return true;
+}
+
 const DIExpression *DIExpression::extractAddressClass(const DIExpression *Expr,
                                                       unsigned &AddrClass) {
   // FIXME: This seems fragile. Nothing that verifies that these elements
@@ -1450,25 +1478,80 @@ Optional<DIExpression *> DIExpression::createFragmentExpression(
   return DIExpression::get(Expr->getContext(), Ops);
 }
 
-bool DIExpression::isConstant() const {
-  // Recognize DW_OP_constu C DW_OP_stack_value (DW_OP_LLVM_fragment Len Ofs)?.
-  if (getNumElements() != 3 && getNumElements() != 6)
-    return false;
-  if (getElement(0) != dwarf::DW_OP_constu ||
-      getElement(2) != dwarf::DW_OP_stack_value)
-    return false;
-  if (getNumElements() == 6 && getElement(3) != dwarf::DW_OP_LLVM_fragment)
-    return false;
-  return true;
+std::pair<DIExpression *, const ConstantInt *>
+DIExpression::constantFold(const ConstantInt *CI) {
+  // Copy the APInt so we can modify it.
+  APInt NewInt = CI->getValue();
+  SmallVector<uint64_t, 8> Ops;
+
+  // Fold operators only at the beginning of the expression.
+  bool First = true;
+  bool Changed = false;
+  for (auto Op : expr_ops()) {
+    switch (Op.getOp()) {
+    default:
+      // We fold only the leading part of the expression; if we get to a part
+      // that we're going to copy unchanged, and haven't done any folding,
+      // then the entire expression is unchanged and we can return early.
+      if (!Changed)
+        return {this, CI};
+      First = false;
+      break;
+    case dwarf::DW_OP_LLVM_convert:
+      if (!First)
+        break;
+      Changed = true;
+      if (Op.getArg(1) == dwarf::DW_ATE_signed)
+        NewInt = NewInt.sextOrTrunc(Op.getArg(0));
+      else {
+        assert(Op.getArg(1) == dwarf::DW_ATE_unsigned && "Unexpected operand");
+        NewInt = NewInt.zextOrTrunc(Op.getArg(0));
+      }
+      continue;
+    }
+    Op.appendToVector(Ops);
+  }
+  if (!Changed)
+    return {this, CI};
+  return {DIExpression::get(getContext(), Ops),
+          ConstantInt::get(getContext(), NewInt)};
 }
 
-bool DIExpression::isSignedConstant() const {
-  // Recognize DW_OP_consts C
-  if (getNumElements() != 2)
-    return false;
-  if (getElement(0) != dwarf::DW_OP_consts)
-    return false;
-  return true;
+uint64_t DIExpression::getNumLocationOperands() const {
+  uint64_t Result = 0;
+  for (auto ExprOp : expr_ops())
+    if (ExprOp.getOp() == dwarf::DW_OP_LLVM_arg)
+      Result = std::max(Result, ExprOp.getArg(0) + 1);
+  assert(hasAllLocationOps(Result) &&
+         "Expression is missing one or more location operands.");
+  return Result;
+}
+
+llvm::Optional<DIExpression::SignedOrUnsignedConstant>
+DIExpression::isConstant() const {
+
+  // Recognize signed and unsigned constants.
+  // An signed constants can be represented as DW_OP_consts C DW_OP_stack_value
+  // (DW_OP_LLVM_fragment of Len).
+  // An unsigned constant can be represented as
+  // DW_OP_constu C DW_OP_stack_value (DW_OP_LLVM_fragment of Len).
+
+  if ((getNumElements() != 2 && getNumElements() != 3 &&
+       getNumElements() != 6) ||
+      (getElement(0) != dwarf::DW_OP_consts &&
+       getElement(0) != dwarf::DW_OP_constu))
+    return None;
+
+  if (getNumElements() == 2 && getElement(0) == dwarf::DW_OP_consts)
+    return SignedOrUnsignedConstant::SignedConstant;
+
+  if ((getNumElements() == 3 && getElement(2) != dwarf::DW_OP_stack_value) ||
+      (getNumElements() == 6 && (getElement(2) != dwarf::DW_OP_stack_value ||
+                                 getElement(3) != dwarf::DW_OP_LLVM_fragment)))
+    return None;
+  return getElement(0) == dwarf::DW_OP_constu
+             ? SignedOrUnsignedConstant::UnsignedConstant
+             : SignedOrUnsignedConstant::SignedConstant;
 }
 
 DIExpression::ExtOps DIExpression::getExtOps(unsigned FromSize, unsigned ToSize,

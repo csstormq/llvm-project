@@ -1019,35 +1019,39 @@ static ParseResult parseAccessChainOp(OpAsmParser &parser,
   return success();
 }
 
-static void print(spirv::AccessChainOp op, OpAsmPrinter &printer) {
-  printer << spirv::AccessChainOp::getOperationName() << ' ' << op.base_ptr()
-          << '[' << op.indices() << "] : " << op.base_ptr().getType() << ", "
-          << op.indices().getTypes();
+template <typename Op>
+static void printAccessChain(Op op, ValueRange indices, OpAsmPrinter &printer) {
+  printer << Op::getOperationName() << ' ' << op.base_ptr() << '[' << indices
+          << "] : " << op.base_ptr().getType() << ", " << indices.getTypes();
 }
 
-static LogicalResult verify(spirv::AccessChainOp accessChainOp) {
-  SmallVector<Value, 4> indices(accessChainOp.indices().begin(),
-                                accessChainOp.indices().end());
+static void print(spirv::AccessChainOp op, OpAsmPrinter &printer) {
+  printAccessChain(op, op.indices(), printer);
+}
+
+template <typename Op>
+static LogicalResult verifyAccessChain(Op accessChainOp, ValueRange indices) {
   auto resultType = getElementPtrType(accessChainOp.base_ptr().getType(),
                                       indices, accessChainOp.getLoc());
-  if (!resultType) {
+  if (!resultType)
     return failure();
-  }
 
   auto providedResultType =
-      accessChainOp.getType().dyn_cast<spirv::PointerType>();
-  if (!providedResultType) {
+      accessChainOp.getType().template dyn_cast<spirv::PointerType>();
+  if (!providedResultType)
     return accessChainOp.emitOpError(
                "result type must be a pointer, but provided")
            << providedResultType;
-  }
 
-  if (resultType != providedResultType) {
+  if (resultType != providedResultType)
     return accessChainOp.emitOpError("invalid result type: expected ")
            << resultType << ", but provided " << providedResultType;
-  }
 
   return success();
+}
+
+static LogicalResult verify(spirv::AccessChainOp accessChainOp) {
+  return verifyAccessChain(accessChainOp, accessChainOp.indices());
 }
 
 //===----------------------------------------------------------------------===//
@@ -1650,6 +1654,54 @@ spirv::ConstantOp spirv::ConstantOp::getOne(Type type, Location loc,
   llvm_unreachable("unimplemented types for ConstantOp::getOne()");
 }
 
+void mlir::spirv::ConstantOp::getAsmResultNames(
+    llvm::function_ref<void(mlir::Value, llvm::StringRef)> setNameFn) {
+  Type type = getType();
+
+  SmallString<32> specialNameBuffer;
+  llvm::raw_svector_ostream specialName(specialNameBuffer);
+  specialName << "cst";
+
+  IntegerType intTy = type.dyn_cast<IntegerType>();
+
+  if (IntegerAttr intCst = value().dyn_cast<IntegerAttr>()) {
+    if (intTy && intTy.getWidth() == 1) {
+      return setNameFn(getResult(), (intCst.getInt() ? "true" : "false"));
+    }
+
+    if (intTy.isSignless()) {
+      specialName << intCst.getInt();
+    } else {
+      specialName << intCst.getSInt();
+    }
+  }
+
+  if (intTy || type.isa<FloatType>()) {
+    specialName << '_' << type;
+  }
+
+  if (auto vecType = type.dyn_cast<VectorType>()) {
+    specialName << "_vec_";
+    specialName << vecType.getDimSize(0);
+
+    Type elementType = vecType.getElementType();
+
+    if (elementType.isa<IntegerType>() || elementType.isa<FloatType>()) {
+      specialName << "x" << elementType;
+    }
+  }
+
+  setNameFn(getResult(), specialName.str());
+}
+
+void mlir::spirv::AddressOfOp::getAsmResultNames(
+    llvm::function_ref<void(mlir::Value, llvm::StringRef)> setNameFn) {
+  SmallString<32> specialNameBuffer;
+  llvm::raw_svector_ostream specialName(specialNameBuffer);
+  specialName << variable() << "_addr";
+  setNameFn(getResult(), specialName.str());
+}
+
 //===----------------------------------------------------------------------===//
 // spv.EntryPoint
 //===----------------------------------------------------------------------===//
@@ -1783,13 +1835,14 @@ static ParseResult parseFuncOp(OpAsmParser &parser, OperationState &state) {
 
   // Parse the function signature.
   bool isVariadic = false;
-  if (impl::parseFunctionSignature(parser, /*allowVariadic=*/false, entryArgs,
-                                   argTypes, argAttrs, isVariadic, resultTypes,
-                                   resultAttrs))
+  if (function_like_impl::parseFunctionSignature(
+          parser, /*allowVariadic=*/false, entryArgs, argTypes, argAttrs,
+          isVariadic, resultTypes, resultAttrs))
     return failure();
 
   auto fnType = builder.getFunctionType(argTypes, resultTypes);
-  state.addAttribute(impl::getTypeAttrName(), TypeAttr::get(fnType));
+  state.addAttribute(function_like_impl::getTypeAttrName(),
+                     TypeAttr::get(fnType));
 
   // Parse the optional function control keyword.
   spirv::FunctionControl fnControl;
@@ -1803,7 +1856,8 @@ static ParseResult parseFuncOp(OpAsmParser &parser, OperationState &state) {
   // Add the attributes to the function arguments.
   assert(argAttrs.size() == argTypes.size());
   assert(resultAttrs.size() == resultTypes.size());
-  impl::addArgAndResultAttrs(builder, state, argAttrs, resultAttrs);
+  function_like_impl::addArgAndResultAttrs(builder, state, argAttrs,
+                                           resultAttrs);
 
   // Parse the optional function body.
   auto *body = state.addRegion();
@@ -1817,11 +1871,12 @@ static void print(spirv::FuncOp fnOp, OpAsmPrinter &printer) {
   printer << spirv::FuncOp::getOperationName() << " ";
   printer.printSymbolName(fnOp.sym_name());
   auto fnType = fnOp.getType();
-  impl::printFunctionSignature(printer, fnOp, fnType.getInputs(),
-                               /*isVariadic=*/false, fnType.getResults());
+  function_like_impl::printFunctionSignature(printer, fnOp, fnType.getInputs(),
+                                             /*isVariadic=*/false,
+                                             fnType.getResults());
   printer << " \"" << spirv::stringifyFunctionControl(fnOp.function_control())
           << "\"";
-  impl::printFunctionAttributes(
+  function_like_impl::printFunctionAttributes(
       printer, fnOp, fnType.getNumInputs(), fnType.getNumResults(),
       {spirv::attributeName<spirv::FunctionControl>()});
 
@@ -2478,7 +2533,8 @@ static LogicalResult verify(spirv::MergeOp mergeOp) {
 
 void spirv::ModuleOp::build(OpBuilder &builder, OperationState &state,
                             Optional<StringRef> name) {
-  ensureTerminator(*state.addRegion(), builder, state.location);
+  OpBuilder::InsertionGuard guard(builder);
+  builder.createBlock(state.addRegion());
   if (name) {
     state.attributes.append(mlir::SymbolTable::getSymbolAttrName(),
                             builder.getStringAttr(*name));
@@ -2488,17 +2544,20 @@ void spirv::ModuleOp::build(OpBuilder &builder, OperationState &state,
 void spirv::ModuleOp::build(OpBuilder &builder, OperationState &state,
                             spirv::AddressingModel addressingModel,
                             spirv::MemoryModel memoryModel,
+                            Optional<VerCapExtAttr> vceTriple,
                             Optional<StringRef> name) {
   state.addAttribute(
       "addressing_model",
       builder.getI32IntegerAttr(static_cast<int32_t>(addressingModel)));
   state.addAttribute("memory_model", builder.getI32IntegerAttr(
                                          static_cast<int32_t>(memoryModel)));
-  ensureTerminator(*state.addRegion(), builder, state.location);
-  if (name) {
-    state.attributes.append(mlir::SymbolTable::getSymbolAttrName(),
-                            builder.getStringAttr(*name));
-  }
+  OpBuilder::InsertionGuard guard(builder);
+  builder.createBlock(state.addRegion());
+  if (vceTriple)
+    state.addAttribute(getVCETripleAttrName(), *vceTriple);
+  if (name)
+    state.addAttribute(mlir::SymbolTable::getSymbolAttrName(),
+                       builder.getStringAttr(*name));
 }
 
 static ParseResult parseModuleOp(OpAsmParser &parser, OperationState &state) {
@@ -2530,7 +2589,10 @@ static ParseResult parseModuleOp(OpAsmParser &parser, OperationState &state) {
   if (parser.parseRegion(*body, /*arguments=*/{}, /*argTypes=*/{}))
     return failure();
 
-  spirv::ModuleOp::ensureTerminator(*body, parser.getBuilder(), state.location);
+  // Make sure we have at least one block.
+  if (body->empty())
+    body->push_back(new Block());
+
   return success();
 }
 
@@ -2557,8 +2619,7 @@ static void print(spirv::ModuleOp moduleOp, OpAsmPrinter &printer) {
   }
 
   printer.printOptionalAttrDictWithKeyword(moduleOp->getAttrs(), elidedAttrs);
-  printer.printRegion(moduleOp.body(), /*printEntryBlockArgs=*/false,
-                      /*printBlockTerminators=*/false);
+  printer.printRegion(moduleOp.getRegion());
 }
 
 static LogicalResult verify(spirv::ModuleOp moduleOp) {
@@ -2568,7 +2629,7 @@ static LogicalResult verify(spirv::ModuleOp moduleOp) {
       entryPoints;
   SymbolTable table(moduleOp);
 
-  for (auto &op : moduleOp.getBlock()) {
+  for (auto &op : *moduleOp.getBody()) {
     if (op.getDialect() != dialect)
       return op.emitError("'spv.module' can only contain spv.* ops");
 
@@ -3606,6 +3667,214 @@ static LogicalResult verify(spirv::GLSLLdexpOp ldexpOp) {
         "operands must have the same number of elements");
 
   return success();
+}
+
+//===----------------------------------------------------------------------===//
+// spv.ImageDrefGather
+//===----------------------------------------------------------------------===//
+
+static LogicalResult verify(spirv::ImageDrefGatherOp imageDrefGatherOp) {
+  // TODO: Support optional operands.
+  VectorType resultType =
+      imageDrefGatherOp.result().getType().cast<VectorType>();
+  auto sampledImageType = imageDrefGatherOp.sampledimage()
+                              .getType()
+                              .cast<spirv::SampledImageType>();
+  auto imageType = sampledImageType.getImageType().cast<spirv::ImageType>();
+
+  if (resultType.getNumElements() != 4)
+    return imageDrefGatherOp.emitOpError(
+        "result type must be a vector of four components");
+
+  Type elementType = resultType.getElementType();
+  Type sampledElementType = imageType.getElementType();
+  if (!sampledElementType.isa<NoneType>() && elementType != sampledElementType)
+    return imageDrefGatherOp.emitOpError(
+        "the component type of result must be the same as sampled type of the "
+        "underlying image type");
+
+  spirv::Dim imageDim = imageType.getDim();
+  spirv::ImageSamplingInfo imageMS = imageType.getSamplingInfo();
+
+  if (imageDim != spirv::Dim::Dim2D && imageDim != spirv::Dim::Cube &&
+      imageDim != spirv::Dim::Rect)
+    return imageDrefGatherOp.emitOpError(
+        "the Dim operand of the underlying image type must be 2D, Cube, or "
+        "Rect");
+
+  if (imageMS != spirv::ImageSamplingInfo::SingleSampled)
+    return imageDrefGatherOp.emitOpError(
+        "the MS operand of the underlying image type must be 0");
+
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
+// spv.ImageQuerySize
+//===----------------------------------------------------------------------===//
+
+static LogicalResult verify(spirv::ImageQuerySizeOp imageQuerySizeOp) {
+  spirv::ImageType imageType =
+      imageQuerySizeOp.image().getType().cast<spirv::ImageType>();
+  Type resultType = imageQuerySizeOp.result().getType();
+
+  spirv::Dim dim = imageType.getDim();
+  spirv::ImageSamplingInfo samplingInfo = imageType.getSamplingInfo();
+  spirv::ImageSamplerUseInfo samplerInfo = imageType.getSamplerUseInfo();
+  switch (dim) {
+  case spirv::Dim::Dim1D:
+  case spirv::Dim::Dim2D:
+  case spirv::Dim::Dim3D:
+  case spirv::Dim::Cube:
+    if (!(samplingInfo == spirv::ImageSamplingInfo::MultiSampled ||
+          samplerInfo == spirv::ImageSamplerUseInfo::SamplerUnknown ||
+          samplerInfo == spirv::ImageSamplerUseInfo::NoSampler))
+      return imageQuerySizeOp.emitError(
+          "if Dim is 1D, 2D, 3D, or Cube, "
+          "it must also have either an MS of 1 or a Sampled of 0 or 2");
+    break;
+  case spirv::Dim::Buffer:
+  case spirv::Dim::Rect:
+    break;
+  default:
+    return imageQuerySizeOp.emitError("the Dim operand of the image type must "
+                                      "be 1D, 2D, 3D, Buffer, Cube, or Rect");
+  }
+
+  unsigned componentNumber = 0;
+  switch (dim) {
+  case spirv::Dim::Dim1D:
+  case spirv::Dim::Buffer:
+    componentNumber = 1;
+    break;
+  case spirv::Dim::Dim2D:
+  case spirv::Dim::Cube:
+  case spirv::Dim::Rect:
+    componentNumber = 2;
+    break;
+  case spirv::Dim::Dim3D:
+    componentNumber = 3;
+    break;
+  default:
+    break;
+  }
+
+  if (imageType.getArrayedInfo() == spirv::ImageArrayedInfo::Arrayed)
+    componentNumber += 1;
+
+  unsigned resultComponentNumber = 1;
+  if (auto resultVectorType = resultType.dyn_cast<VectorType>())
+    resultComponentNumber = resultVectorType.getNumElements();
+
+  if (componentNumber != resultComponentNumber)
+    return imageQuerySizeOp.emitError("expected the result to have ")
+           << componentNumber << " component(s), but found "
+           << resultComponentNumber << " component(s)";
+
+  return success();
+}
+
+static ParseResult parsePtrAccessChainOpImpl(StringRef opName,
+                                             OpAsmParser &parser,
+                                             OperationState &state) {
+  OpAsmParser::OperandType ptrInfo;
+  SmallVector<OpAsmParser::OperandType, 4> indicesInfo;
+  Type type;
+  auto loc = parser.getCurrentLocation();
+  SmallVector<Type, 4> indicesTypes;
+
+  if (parser.parseOperand(ptrInfo) ||
+      parser.parseOperandList(indicesInfo, OpAsmParser::Delimiter::Square) ||
+      parser.parseColonType(type) ||
+      parser.resolveOperand(ptrInfo, type, state.operands))
+    return failure();
+
+  // Check that the provided indices list is not empty before parsing their
+  // type list.
+  if (indicesInfo.empty())
+    return emitError(state.location) << opName << " expected element";
+
+  if (parser.parseComma() || parser.parseTypeList(indicesTypes))
+    return failure();
+
+  // Check that the indices types list is not empty and that it has a one-to-one
+  // mapping to the provided indices.
+  if (indicesTypes.size() != indicesInfo.size())
+    return emitError(state.location)
+           << opName
+           << " indices types' count must be equal to indices info count";
+
+  if (parser.resolveOperands(indicesInfo, indicesTypes, loc, state.operands))
+    return failure();
+
+  auto resultType = getElementPtrType(
+      type, llvm::makeArrayRef(state.operands).drop_front(2), state.location);
+  if (!resultType)
+    return failure();
+
+  state.addTypes(resultType);
+  return success();
+}
+
+template <typename Op>
+static auto concatElemAndIndices(Op op) {
+  SmallVector<Value> ret(op.indices().size() + 1);
+  ret[0] = op.element();
+  llvm::copy(op.indices(), ret.begin() + 1);
+  return ret;
+}
+
+//===----------------------------------------------------------------------===//
+// spv.InBoundsPtrAccessChainOp
+//===----------------------------------------------------------------------===//
+
+void spirv::InBoundsPtrAccessChainOp::build(OpBuilder &builder,
+                                            OperationState &state,
+                                            Value basePtr, Value element,
+                                            ValueRange indices) {
+  auto type = getElementPtrType(basePtr.getType(), indices, state.location);
+  assert(type && "Unable to deduce return type based on basePtr and indices");
+  build(builder, state, type, basePtr, element, indices);
+}
+
+static ParseResult parseInBoundsPtrAccessChainOp(OpAsmParser &parser,
+                                                 OperationState &state) {
+  return parsePtrAccessChainOpImpl(
+      spirv::InBoundsPtrAccessChainOp::getOperationName(), parser, state);
+}
+
+static void print(spirv::InBoundsPtrAccessChainOp op, OpAsmPrinter &printer) {
+  printAccessChain(op, concatElemAndIndices(op), printer);
+}
+
+static LogicalResult verify(spirv::InBoundsPtrAccessChainOp accessChainOp) {
+  return verifyAccessChain(accessChainOp, accessChainOp.indices());
+}
+
+//===----------------------------------------------------------------------===//
+// spv.PtrAccessChainOp
+//===----------------------------------------------------------------------===//
+
+void spirv::PtrAccessChainOp::build(OpBuilder &builder, OperationState &state,
+                                    Value basePtr, Value element,
+                                    ValueRange indices) {
+  auto type = getElementPtrType(basePtr.getType(), indices, state.location);
+  assert(type && "Unable to deduce return type based on basePtr and indices");
+  build(builder, state, type, basePtr, element, indices);
+}
+
+static ParseResult parsePtrAccessChainOp(OpAsmParser &parser,
+                                         OperationState &state) {
+  return parsePtrAccessChainOpImpl(spirv::PtrAccessChainOp::getOperationName(),
+                                   parser, state);
+}
+
+static void print(spirv::PtrAccessChainOp op, OpAsmPrinter &printer) {
+  printAccessChain(op, concatElemAndIndices(op), printer);
+}
+
+static LogicalResult verify(spirv::PtrAccessChainOp accessChainOp) {
+  return verifyAccessChain(accessChainOp, accessChainOp.indices());
 }
 
 namespace mlir {

@@ -7,7 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "ProfileGenerator.h"
+#include "ProfiledBinary.h"
 #include "llvm/ProfileData/ProfileCommon.h"
+#include <unordered_set>
 
 static cl::opt<std::string> OutputFilename("output", cl::value_desc("output"),
                                            cl::Required,
@@ -16,7 +18,7 @@ static cl::alias OutputA("o", cl::desc("Alias for --output"),
                          cl::aliasopt(OutputFilename));
 
 static cl::opt<SampleProfileFormat> OutputFormat(
-    "format", cl::desc("Format of output profile"), cl::init(SPF_Text),
+    "format", cl::desc("Format of output profile"), cl::init(SPF_Ext_Binary),
     cl::values(
         clEnumValN(SPF_Binary, "binary", "Binary encoding (default)"),
         clEnumValN(SPF_Compact_Binary, "compbinary", "Compact binary encoding"),
@@ -32,23 +34,29 @@ static cl::opt<int32_t, true> RecursionCompression(
     cl::Hidden,
     cl::location(llvm::sampleprof::CSProfileGenerator::MaxCompressionSize));
 
-static cl::opt<uint64_t> CSProfColdThreshold(
-    "csprof-cold-thres", cl::init(100), cl::ZeroOrMore,
-    cl::desc("Specify the total samples threshold for a context profile to "
-             "be considered cold, any cold profiles will be merged into "
-             "context-less base profiles"));
-
 static cl::opt<bool> CSProfMergeColdContext(
     "csprof-merge-cold-context", cl::init(true), cl::ZeroOrMore,
-    cl::desc("This works together with --csprof-cold-thres. If the total count "
-             "of context profile is smaller than the threshold, it will be "
-             "merged into context-less base profile."));
+    cl::desc("If the total count of context profile is smaller than "
+             "the threshold, it will be merged into context-less base "
+             "profile."));
 
 static cl::opt<bool> CSProfTrimColdContext(
     "csprof-trim-cold-context", cl::init(true), cl::ZeroOrMore,
-    cl::desc("This works together with --csprof-cold-thres. If the total count "
-             "of the profile after all merge is done is still smaller than "
-             "threshold, it will be trimmed."));
+    cl::desc("If the total count of the profile after all merge is done "
+             "is still smaller than threshold, it will be trimmed."));
+
+static cl::opt<uint32_t> CSProfMaxColdContextDepth(
+    "csprof-max-cold-context-depth", cl::init(1), cl::ZeroOrMore,
+    cl::desc("Keep the last K contexts while merging cold profile. 1 means the "
+             "context-less base profile"));
+
+static cl::opt<int, true> CSProfMaxContextDepth(
+    "csprof-max-context-depth", cl::ZeroOrMore,
+    cl::desc("Keep the last K contexts while merging profile. -1 means no "
+             "depth limit."),
+    cl::location(llvm::sampleprof::CSProfileGenerator::MaxContextDepth));
+
+extern cl::opt<int> ProfileSummaryCutoffCold;
 
 using namespace llvm;
 using namespace sampleprof;
@@ -59,22 +67,19 @@ namespace sampleprof {
 // Initialize the MaxCompressionSize to -1 which means no size limit
 int32_t CSProfileGenerator::MaxCompressionSize = -1;
 
-static bool
-usePseudoProbes(const BinarySampleCounterMap &BinarySampleCounters) {
-  return BinarySampleCounters.size() &&
-         BinarySampleCounters.begin()->first->usePseudoProbes();
-}
+int CSProfileGenerator::MaxContextDepth = -1;
 
 std::unique_ptr<ProfileGenerator>
-ProfileGenerator::create(const BinarySampleCounterMap &BinarySampleCounters,
+ProfileGenerator::create(ProfiledBinary *Binary,
+                         const ContextSampleCounterMap &SampleCounters,
                          enum PerfScriptType SampleType) {
   std::unique_ptr<ProfileGenerator> ProfileGenerator;
   if (SampleType == PERF_LBR_STACK) {
-    if (usePseudoProbes(BinarySampleCounters)) {
+    if (Binary->usePseudoProbes()) {
       ProfileGenerator.reset(
-          new PseudoProbeCSProfileGenerator(BinarySampleCounters));
+          new PseudoProbeCSProfileGenerator(Binary, SampleCounters));
     } else {
-      ProfileGenerator.reset(new CSProfileGenerator(BinarySampleCounters));
+      ProfileGenerator.reset(new CSProfileGenerator(Binary, SampleCounters));
     }
   } else {
     // TODO:
@@ -86,7 +91,8 @@ ProfileGenerator::create(const BinarySampleCounterMap &BinarySampleCounters,
 
 void ProfileGenerator::write(std::unique_ptr<SampleProfileWriter> Writer,
                              StringMap<FunctionSamples> &ProfileMap) {
-  Writer->write(ProfileMap);
+  if (std::error_code EC = Writer->write(ProfileMap))
+    exitWithError(std::move(EC));
 }
 
 void ProfileGenerator::write() {
@@ -173,19 +179,20 @@ void ProfileGenerator::findDisjointRanges(RangeSample &DisjointRanges,
     Boundaries[End].addEndCount(Count);
   }
 
-  uint64_t BeginAddress = 0;
+  uint64_t BeginAddress = UINT64_MAX;
   int Count = 0;
   for (auto Item : Boundaries) {
     uint64_t Address = Item.first;
     BoundaryPoint &Point = Item.second;
     if (Point.BeginCount) {
-      if (BeginAddress)
+      if (BeginAddress != UINT64_MAX)
         DisjointRanges[{BeginAddress, Address - 1}] = Count;
       Count += Point.BeginCount;
       BeginAddress = Address;
     }
     if (Point.EndCount) {
-      assert(BeginAddress && "First boundary point cannot be 'end' point");
+      assert((BeginAddress != UINT64_MAX) &&
+             "First boundary point cannot be 'end' point");
       DisjointRanges[{BeginAddress, Address}] = Count;
       Count -= Point.EndCount;
       BeginAddress = Address + 1;
@@ -198,7 +205,10 @@ CSProfileGenerator::getFunctionProfileForContext(StringRef ContextStr,
                                                  bool WasLeafInlined) {
   auto Ret = ProfileMap.try_emplace(ContextStr, FunctionSamples());
   if (Ret.second) {
-    SampleContext FContext(Ret.first->first(), RawContext);
+    // Make a copy of the underlying context string in string table
+    // before StringRef wrapper is used for context.
+    auto It = ContextStrings.insert(ContextStr.str());
+    SampleContext FContext(*It.first, RawContext);
     if (WasLeafInlined)
       FContext.setAttribute(ContextWasInlined);
     FunctionSamples &FProfile = Ret.first->second;
@@ -210,23 +220,19 @@ CSProfileGenerator::getFunctionProfileForContext(StringRef ContextStr,
 
 void CSProfileGenerator::generateProfile() {
   FunctionSamples::ProfileIsCS = true;
-  for (const auto &BI : BinarySampleCounters) {
-    ProfiledBinary *Binary = BI.first;
-    for (const auto &CI : BI.second) {
-      const StringBasedCtxKey *CtxKey =
-          dyn_cast<StringBasedCtxKey>(CI.first.getPtr());
-      StringRef ContextId(CtxKey->Context);
-      // Get or create function profile for the range
-      FunctionSamples &FunctionProfile =
-          getFunctionProfileForContext(ContextId, CtxKey->WasLeafInlined);
+  for (const auto &CI : SampleCounters) {
+    const StringBasedCtxKey *CtxKey =
+        dyn_cast<StringBasedCtxKey>(CI.first.getPtr());
+    StringRef ContextId(CtxKey->Context);
+    // Get or create function profile for the range
+    FunctionSamples &FunctionProfile =
+        getFunctionProfileForContext(ContextId, CtxKey->WasLeafInlined);
 
-      // Fill in function body samples
-      populateFunctionBodySamples(FunctionProfile, CI.second.RangeCounter,
-                                  Binary);
-      // Fill in boundary sample counts as well as call site samples for calls
-      populateFunctionBoundarySamples(ContextId, FunctionProfile,
-                                      CI.second.BranchCounter, Binary);
-    }
+    // Fill in function body samples
+    populateFunctionBodySamples(FunctionProfile, CI.second.RangeCounter);
+    // Fill in boundary sample counts as well as call site samples for calls
+    populateFunctionBoundarySamples(ContextId, FunctionProfile,
+                                    CI.second.BranchCounter);
   }
   // Fill in call site value sample for inlined calls and also use context to
   // infer missing samples. Since we don't have call count for inlined
@@ -234,9 +240,7 @@ void CSProfileGenerator::generateProfile() {
   // body sample.
   populateInferredFunctionSamples();
 
-  // Compute hot/cold threshold based on profile. This will be used for cold
-  // context profile merging/trimming.
-  computeSummaryAndThreshold();
+  postProcessProfiles();
 }
 
 void CSProfileGenerator::updateBodySamplesforFunctionProfile(
@@ -257,8 +261,7 @@ void CSProfileGenerator::updateBodySamplesforFunctionProfile(
 }
 
 void CSProfileGenerator::populateFunctionBodySamples(
-    FunctionSamples &FunctionProfile, const RangeSample &RangeCounter,
-    ProfiledBinary *Binary) {
+    FunctionSamples &FunctionProfile, const RangeSample &RangeCounter) {
   // Compute disjoint ranges first, so we can use MAX
   // for calculating count for each location.
   RangeSample Ranges;
@@ -297,7 +300,7 @@ void CSProfileGenerator::populateFunctionBodySamples(
 
 void CSProfileGenerator::populateFunctionBoundarySamples(
     StringRef ContextId, FunctionSamples &FunctionProfile,
-    const BranchSample &BranchCounters, ProfiledBinary *Binary) {
+    const BranchSample &BranchCounters) {
 
   for (auto Entry : BranchCounters) {
     uint64_t SourceOffset = Entry.first.first;
@@ -392,88 +395,53 @@ void CSProfileGenerator::populateInferredFunctionSamples() {
   }
 }
 
-void CSProfileGenerator::computeSummaryAndThreshold() {
-  SampleProfileSummaryBuilder Builder(ProfileSummaryBuilder::DefaultCutoffs);
-  auto Summary = Builder.computeSummaryForProfiles(ProfileMap);
-  PSI.reset(new ProfileSummaryInfo(std::move(Summary)));
+void CSProfileGenerator::postProcessProfiles() {
+  // Compute hot/cold threshold based on profile. This will be used for cold
+  // context profile merging/trimming.
+  computeSummaryAndThreshold();
+
+  // Run global pre-inliner to adjust/merge context profile based on estimated
+  // inline decisions.
+  if (EnableCSPreInliner) {
+    CSPreInliner(ProfileMap, *Binary, HotCountThreshold, ColdCountThreshold)
+        .run();
+  }
+
+  // Trim and merge cold context profile using cold threshold above;
+  SampleContextTrimmer(ProfileMap)
+      .trimAndMergeColdContextProfiles(
+          ColdCountThreshold, CSProfTrimColdContext, CSProfMergeColdContext,
+          CSProfMaxColdContextDepth);
 }
 
-void CSProfileGenerator::mergeAndTrimColdProfile(
-    StringMap<FunctionSamples> &ProfileMap) {
-  if (!CSProfMergeColdContext && !CSProfTrimColdContext)
-    return;
+void CSProfileGenerator::computeSummaryAndThreshold() {
+  // Update the default value of cold cutoff for llvm-profgen.
+  // Do it here because we don't want to change the global default,
+  // which would lead CS profile size too large.
+  if (!ProfileSummaryCutoffCold.getNumOccurrences())
+    ProfileSummaryCutoffCold = 999000;
 
-  // Use threshold calculated from profile summary unless specified
-  uint64_t ColdThreshold = PSI->getColdCountThreshold();
-  if (CSProfColdThreshold.getNumOccurrences()) {
-    ColdThreshold = CSProfColdThreshold;
-  }
-
-  // Nothing to merge if sample threshold is zero
-  if (ColdThreshold == 0)
-    return;
-
-  // Filter the cold profiles from ProfileMap and move them into a tmp
-  // container
-  std::vector<std::pair<StringRef, const FunctionSamples *>> ColdProfiles;
-  for (const auto &I : ProfileMap) {
-    const FunctionSamples &FunctionProfile = I.second;
-    if (FunctionProfile.getTotalSamples() >= ColdThreshold)
-      continue;
-    ColdProfiles.emplace_back(I.getKey(), &I.second);
-  }
-
-  // Remove the code profile from ProfileMap and merge them into BaseProileMap
-  StringMap<FunctionSamples> BaseProfileMap;
-  for (const auto &I : ColdProfiles) {
-    if (CSProfMergeColdContext) {
-      auto Ret = BaseProfileMap.try_emplace(
-          I.second->getContext().getNameWithoutContext(), FunctionSamples());
-      FunctionSamples &BaseProfile = Ret.first->second;
-      BaseProfile.merge(*I.second);
-    }
-    ProfileMap.erase(I.first);
-  }
-
-  // Merge the base profiles into ProfileMap;
-  for (const auto &I : BaseProfileMap) {
-    // Filter the cold base profile
-    if (CSProfTrimColdContext &&
-        I.second.getTotalSamples() < CSProfColdThreshold &&
-        ProfileMap.find(I.getKey()) == ProfileMap.end())
-      continue;
-    // Merge the profile if the original profile exists, otherwise just insert
-    // as a new profile
-    FunctionSamples &OrigProfile = getFunctionProfileForContext(I.getKey());
-    OrigProfile.merge(I.second);
-  }
+  SampleProfileSummaryBuilder Builder(ProfileSummaryBuilder::DefaultCutoffs);
+  auto Summary = Builder.computeSummaryForProfiles(ProfileMap);
+  HotCountThreshold = ProfileSummaryBuilder::getHotCountThreshold(
+      (Summary->getDetailedSummary()));
+  ColdCountThreshold = ProfileSummaryBuilder::getColdCountThreshold(
+      (Summary->getDetailedSummary()));
 }
 
 void CSProfileGenerator::write(std::unique_ptr<SampleProfileWriter> Writer,
                                StringMap<FunctionSamples> &ProfileMap) {
-  mergeAndTrimColdProfile(ProfileMap);
-  // Add bracket for context key to support different profile binary format
-  StringMap<FunctionSamples> CxtWithBracketPMap;
-  for (const auto &Item : ProfileMap) {
-    std::string ContextWithBracket = "[" + Item.first().str() + "]";
-    auto Ret = CxtWithBracketPMap.try_emplace(ContextWithBracket, Item.second);
-    assert(Ret.second && "Must be a unique context");
-    SampleContext FContext(Ret.first->first(), RawContext);
-    FunctionSamples &FProfile = Ret.first->second;
-    FContext.setAllAttributes(FProfile.getContext().getAllAttributes());
-    FProfile.setName(FContext.getNameWithContext(true));
-    FProfile.setContext(FContext);
-  }
-  Writer->write(CxtWithBracketPMap);
+  if (std::error_code EC = Writer->write(ProfileMap))
+    exitWithError(std::move(EC));
 }
 
 // Helper function to extract context prefix string stack
 // Extract context stack for reusing, leaf context stack will
 // be added compressed while looking up function profile
-static void
-extractPrefixContextStack(SmallVectorImpl<std::string> &ContextStrStack,
-                          const SmallVectorImpl<const PseudoProbe *> &Probes,
-                          ProfiledBinary *Binary) {
+static void extractPrefixContextStack(
+    SmallVectorImpl<std::string> &ContextStrStack,
+    const SmallVectorImpl<const MCDecodedPseudoProbe *> &Probes,
+    ProfiledBinary *Binary) {
   for (const auto *P : Probes) {
     Binary->getInlineContextForProbe(P, ContextStrStack, true);
   }
@@ -483,31 +451,23 @@ void PseudoProbeCSProfileGenerator::generateProfile() {
   // Enable pseudo probe functionalities in SampleProf
   FunctionSamples::ProfileIsProbeBased = true;
   FunctionSamples::ProfileIsCS = true;
-  for (const auto &BI : BinarySampleCounters) {
-    ProfiledBinary *Binary = BI.first;
-    for (const auto &CI : BI.second) {
-      const ProbeBasedCtxKey *CtxKey =
-          dyn_cast<ProbeBasedCtxKey>(CI.first.getPtr());
-      SmallVector<std::string, 16> ContextStrStack;
-      extractPrefixContextStack(ContextStrStack, CtxKey->Probes, Binary);
-      // Fill in function body samples from probes, also infer caller's samples
-      // from callee's probe
-      populateBodySamplesWithProbes(CI.second.RangeCounter, ContextStrStack,
-                                    Binary);
-      // Fill in boundary samples for a call probe
-      populateBoundarySamplesWithProbes(CI.second.BranchCounter,
-                                        ContextStrStack, Binary);
-    }
+  for (const auto &CI : SampleCounters) {
+    const ProbeBasedCtxKey *CtxKey =
+        dyn_cast<ProbeBasedCtxKey>(CI.first.getPtr());
+    SmallVector<std::string, 16> ContextStrStack;
+    extractPrefixContextStack(ContextStrStack, CtxKey->Probes, Binary);
+    // Fill in function body samples from probes, also infer caller's samples
+    // from callee's probe
+    populateBodySamplesWithProbes(CI.second.RangeCounter, ContextStrStack);
+    // Fill in boundary samples for a call probe
+    populateBoundarySamplesWithProbes(CI.second.BranchCounter, ContextStrStack);
   }
 
-  // Compute hot/cold threshold based on profile. This will be used for cold
-  // context profile merging/trimming.
-  computeSummaryAndThreshold();
+  postProcessProfiles();
 }
 
 void PseudoProbeCSProfileGenerator::extractProbesFromRange(
-    const RangeSample &RangeCounter, ProbeCounterMap &ProbeCounter,
-    ProfiledBinary *Binary) {
+    const RangeSample &RangeCounter, ProbeCounterMap &ProbeCounter) {
   RangeSample Ranges;
   findDisjointRanges(Ranges, RangeCounter);
   for (const auto &Range : Ranges) {
@@ -546,28 +506,24 @@ void PseudoProbeCSProfileGenerator::extractProbesFromRange(
 
 void PseudoProbeCSProfileGenerator::populateBodySamplesWithProbes(
     const RangeSample &RangeCounter,
-    SmallVectorImpl<std::string> &ContextStrStack, ProfiledBinary *Binary) {
+    SmallVectorImpl<std::string> &ContextStrStack) {
   ProbeCounterMap ProbeCounter;
   // Extract the top frame probes by looking up each address among the range in
   // the Address2ProbeMap
-  extractProbesFromRange(RangeCounter, ProbeCounter, Binary);
+  extractProbesFromRange(RangeCounter, ProbeCounter);
+  std::unordered_map<MCDecodedPseudoProbeInlineTree *,
+                     std::unordered_set<FunctionSamples *>>
+      FrameSamples;
   for (auto PI : ProbeCounter) {
-    const PseudoProbe *Probe = PI.first;
+    const MCDecodedPseudoProbe *Probe = PI.first;
     uint64_t Count = PI.second;
     FunctionSamples &FunctionProfile =
-        getFunctionProfileForLeafProbe(ContextStrStack, Probe, Binary);
-
-    // Use InvalidProbeCount(UINT64_MAX) to mark sample count for a dangling
-    // probe. Dangling probes are the probes associated to an empty block. With
-    // this place holder, sample count on dangling probe will not be trusted by
-    // the compiler and it will rely on the counts inference algorithm to get
-    // the probe a reasonable count.
-    if (Probe->isDangling()) {
-      FunctionProfile.addBodySamplesForProbe(
-          Probe->Index, FunctionSamples::InvalidProbeCount);
-      continue;
-    }
-    FunctionProfile.addBodySamplesForProbe(Probe->Index, Count);
+        getFunctionProfileForLeafProbe(ContextStrStack, Probe);
+    // Record the current frame and FunctionProfile whenever samples are
+    // collected for non-danglie probes. This is for reporting all of the
+    // zero count probes of the frame later.
+    FrameSamples[Probe->getInlineTreeNode()].insert(&FunctionProfile);
+    FunctionProfile.addBodySamplesForProbe(Probe->getIndex(), Count);
     FunctionProfile.addTotalSamples(Count);
     if (Probe->isEntry()) {
       FunctionProfile.addHeadSamples(Count);
@@ -578,7 +534,7 @@ void PseudoProbeCSProfileGenerator::populateBodySamplesWithProbes(
         // context id to infer caller's context id to ensure they share the
         // same context prefix.
         StringRef CalleeContextId =
-            FunctionProfile.getContext().getNameWithContext(true);
+            FunctionProfile.getContext().getNameWithContext();
         StringRef CallerContextId;
         FrameLocation &&CallerLeafFrameLoc =
             getCallerContext(CalleeContextId, CallerContextId);
@@ -596,40 +552,53 @@ void PseudoProbeCSProfileGenerator::populateBodySamplesWithProbes(
       }
     }
   }
+
+  // Assign zero count for remaining probes without sample hits to
+  // differentiate from probes optimized away, of which the counts are unknown
+  // and will be inferred by the compiler.
+  for (auto &I : FrameSamples) {
+    for (auto *FunctionProfile : I.second) {
+      for (auto *Probe : I.first->getProbes()) {
+        FunctionProfile->addBodySamplesForProbe(Probe->getIndex(), 0);
+      }
+    }
+  }
 }
 
 void PseudoProbeCSProfileGenerator::populateBoundarySamplesWithProbes(
     const BranchSample &BranchCounter,
-    SmallVectorImpl<std::string> &ContextStrStack, ProfiledBinary *Binary) {
+    SmallVectorImpl<std::string> &ContextStrStack) {
   for (auto BI : BranchCounter) {
     uint64_t SourceOffset = BI.first.first;
     uint64_t TargetOffset = BI.first.second;
     uint64_t Count = BI.second;
     uint64_t SourceAddress = Binary->offsetToVirtualAddr(SourceOffset);
-    const PseudoProbe *CallProbe = Binary->getCallProbeForAddr(SourceAddress);
+    const MCDecodedPseudoProbe *CallProbe =
+        Binary->getCallProbeForAddr(SourceAddress);
     if (CallProbe == nullptr)
       continue;
     FunctionSamples &FunctionProfile =
-        getFunctionProfileForLeafProbe(ContextStrStack, CallProbe, Binary);
-    FunctionProfile.addBodySamples(CallProbe->Index, 0, Count);
+        getFunctionProfileForLeafProbe(ContextStrStack, CallProbe);
+    FunctionProfile.addBodySamples(CallProbe->getIndex(), 0, Count);
     FunctionProfile.addTotalSamples(Count);
     StringRef CalleeName = FunctionSamples::getCanonicalFnName(
         Binary->getFuncFromStartOffset(TargetOffset));
     if (CalleeName.size() == 0)
       continue;
-    FunctionProfile.addCalledTargetSamples(CallProbe->Index, 0, CalleeName,
+    FunctionProfile.addCalledTargetSamples(CallProbe->getIndex(), 0, CalleeName,
                                            Count);
   }
 }
 
 FunctionSamples &PseudoProbeCSProfileGenerator::getFunctionProfileForLeafProbe(
     SmallVectorImpl<std::string> &ContextStrStack,
-    const PseudoProbeFuncDesc *LeafFuncDesc, bool WasLeafInlined) {
+    const MCPseudoProbeFuncDesc *LeafFuncDesc, bool WasLeafInlined) {
   assert(ContextStrStack.size() && "Profile context must have the leaf frame");
   // Compress the context string except for the leaf frame
   std::string LeafFrame = ContextStrStack.back();
   ContextStrStack.pop_back();
   CSProfileGenerator::compressRecursionContext(ContextStrStack);
+  CSProfileGenerator::trimContext(ContextStrStack);
 
   std::ostringstream OContextStr;
   for (uint32_t I = 0; I < ContextStrStack.size(); I++) {
@@ -651,14 +620,15 @@ FunctionSamples &PseudoProbeCSProfileGenerator::getFunctionProfileForLeafProbe(
 }
 
 FunctionSamples &PseudoProbeCSProfileGenerator::getFunctionProfileForLeafProbe(
-    SmallVectorImpl<std::string> &ContextStrStack, const PseudoProbe *LeafProbe,
-    ProfiledBinary *Binary) {
+    SmallVectorImpl<std::string> &ContextStrStack,
+    const MCDecodedPseudoProbe *LeafProbe) {
+
   // Explicitly copy the context for appending the leaf context
   SmallVector<std::string, 16> ContextStrStackCopy(ContextStrStack.begin(),
                                                    ContextStrStack.end());
   Binary->getInlineContextForProbe(LeafProbe, ContextStrStackCopy, true);
-  const auto *FuncDesc = Binary->getFuncDescForGUID(LeafProbe->GUID);
-  bool WasLeafInlined = LeafProbe->InlineTree->hasInlineSite();
+  const auto *FuncDesc = Binary->getFuncDescForGUID(LeafProbe->getGuid());
+  bool WasLeafInlined = LeafProbe->getInlineTreeNode()->hasInlineSite();
   return getFunctionProfileForLeafProbe(ContextStrStackCopy, FuncDesc,
                                         WasLeafInlined);
 }

@@ -16,11 +16,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "MCTargetDesc/WebAssemblyMCTargetDesc.h"
+#include "Utils/WebAssemblyUtilities.h"
 #include "WebAssembly.h"
 #include "WebAssemblyMachineFunctionInfo.h"
 #include "WebAssemblySubtarget.h"
 #include "WebAssemblyTargetMachine.h"
-#include "WebAssemblyUtilities.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/CodeGen/FastISel.h"
 #include "llvm/CodeGen/FunctionLoweringInfo.h"
@@ -130,9 +130,12 @@ private:
     case MVT::i64:
     case MVT::f32:
     case MVT::f64:
+      return VT;
     case MVT::funcref:
     case MVT::externref:
-      return VT;
+      if (Subtarget->hasReferenceTypes())
+        return VT;
+      break;
     case MVT::f16:
       return MVT::f32;
     case MVT::v16i8:
@@ -645,11 +648,11 @@ bool WebAssemblyFastISel::fastLowerArguments() {
   unsigned I = 0;
   for (auto const &Arg : F->args()) {
     const AttributeList &Attrs = F->getAttributes();
-    if (Attrs.hasParamAttribute(I, Attribute::ByVal) ||
-        Attrs.hasParamAttribute(I, Attribute::SwiftSelf) ||
-        Attrs.hasParamAttribute(I, Attribute::SwiftError) ||
-        Attrs.hasParamAttribute(I, Attribute::InAlloca) ||
-        Attrs.hasParamAttribute(I, Attribute::Nest))
+    if (Attrs.hasParamAttr(I, Attribute::ByVal) ||
+        Attrs.hasParamAttr(I, Attribute::SwiftSelf) ||
+        Attrs.hasParamAttr(I, Attribute::SwiftError) ||
+        Attrs.hasParamAttr(I, Attribute::InAlloca) ||
+        Attrs.hasParamAttr(I, Attribute::Nest))
       return false;
 
     Type *ArgTy = Arg.getType();
@@ -829,18 +832,18 @@ bool WebAssemblyFastISel::selectCall(const Instruction *I) {
       return false;
 
     const AttributeList &Attrs = Call->getAttributes();
-    if (Attrs.hasParamAttribute(I, Attribute::ByVal) ||
-        Attrs.hasParamAttribute(I, Attribute::SwiftSelf) ||
-        Attrs.hasParamAttribute(I, Attribute::SwiftError) ||
-        Attrs.hasParamAttribute(I, Attribute::InAlloca) ||
-        Attrs.hasParamAttribute(I, Attribute::Nest))
+    if (Attrs.hasParamAttr(I, Attribute::ByVal) ||
+        Attrs.hasParamAttr(I, Attribute::SwiftSelf) ||
+        Attrs.hasParamAttr(I, Attribute::SwiftError) ||
+        Attrs.hasParamAttr(I, Attribute::InAlloca) ||
+        Attrs.hasParamAttr(I, Attribute::Nest))
       return false;
 
     unsigned Reg;
 
-    if (Attrs.hasParamAttribute(I, Attribute::SExt))
+    if (Attrs.hasParamAttr(I, Attribute::SExt))
       Reg = getRegForSignedValue(V);
-    else if (Attrs.hasParamAttribute(I, Attribute::ZExt))
+    else if (Attrs.hasParamAttr(I, Attribute::ZExt))
       Reg = getRegForUnsignedValue(V);
     else
       Reg = getRegForValue(V);
@@ -1167,7 +1170,7 @@ bool WebAssemblyFastISel::selectBitCast(const Instruction *I) {
   }
 
   Register Reg = fastEmit_ISD_BITCAST_r(VT.getSimpleVT(), RetVT.getSimpleVT(),
-                                        In, I->getOperand(0)->hasOneUse());
+                                        In);
   if (!Reg)
     return false;
   MachineBasicBlock::iterator Iter = FuncInfo.InsertPt;
@@ -1181,6 +1184,8 @@ bool WebAssemblyFastISel::selectBitCast(const Instruction *I) {
 bool WebAssemblyFastISel::selectLoad(const Instruction *I) {
   const auto *Load = cast<LoadInst>(I);
   if (Load->isAtomic())
+    return false;
+  if (!WebAssembly::isDefaultAddressSpace(Load->getPointerAddressSpace()))
     return false;
   if (!Subtarget->hasSIMD128() && Load->getType()->isVectorTy())
     return false;
@@ -1239,6 +1244,8 @@ bool WebAssemblyFastISel::selectLoad(const Instruction *I) {
 bool WebAssemblyFastISel::selectStore(const Instruction *I) {
   const auto *Store = cast<StoreInst>(I);
   if (Store->isAtomic())
+    return false;
+  if (!WebAssembly::isDefaultAddressSpace(Store->getPointerAddressSpace()))
     return false;
   if (!Subtarget->hasSIMD128() &&
       Store->getValueOperand()->getType()->isVectorTy())
@@ -1363,9 +1370,9 @@ bool WebAssemblyFastISel::selectRet(const Instruction *I) {
   }
 
   unsigned Reg;
-  if (FuncInfo.Fn->getAttributes().hasAttribute(0, Attribute::SExt))
+  if (FuncInfo.Fn->getAttributes().hasRetAttr(Attribute::SExt))
     Reg = getRegForSignedValue(RV);
-  else if (FuncInfo.Fn->getAttributes().hasAttribute(0, Attribute::ZExt))
+  else if (FuncInfo.Fn->getAttributes().hasRetAttr(Attribute::ZExt))
     Reg = getRegForUnsignedValue(RV);
   else
     Reg = getRegForValue(RV);

@@ -68,9 +68,6 @@ public:
   bool isSupportedStackID(TargetStackID::Value ID) const override;
   TargetStackID::Value getStackIDForScalableVectors() const override;
 
-  void processFunctionBeforeFrameIndicesReplaced(
-      MachineFunction &MF, RegScavenger *RS = nullptr) const override;
-
 protected:
   const RISCVSubtarget &STI;
 
@@ -81,7 +78,7 @@ private:
                  int64_t Val, MachineInstr::MIFlag Flag) const;
   void adjustStackForRVV(MachineFunction &MF, MachineBasicBlock &MBB,
                          MachineBasicBlock::iterator MBBI, const DebugLoc &DL,
-                         int64_t Amount) const;
+                         int64_t Amount, MachineInstr::MIFlag Flag) const;
   int64_t assignRVVStackObjectOffsets(MachineFrameInfo &MFI) const;
 };
 }
