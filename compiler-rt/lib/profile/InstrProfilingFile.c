@@ -556,8 +556,98 @@ static void initializeProfileForContinuousMode(void) {
       }
       (void)munmap(ProfileBuffer, ProfileFileSize);
     }
-  } else {
-    File = fopen(Filename, FileOpenMode);
+  }
+
+  if (ProfileRequiresUnlock)
+    unlockProfile(&ProfileRequiresUnlock, File);
+}
+#elif defined(__ELF__) || defined(_WIN32)
+
+#define INSTR_PROF_PROFILE_COUNTER_BIAS_DEFAULT_VAR                            \
+  INSTR_PROF_CONCAT(INSTR_PROF_PROFILE_COUNTER_BIAS_VAR, _default)
+intptr_t INSTR_PROF_PROFILE_COUNTER_BIAS_DEFAULT_VAR = 0;
+
+/* This variable is a weak external reference which could be used to detect
+ * whether or not the compiler defined this symbol. */
+#if defined(_MSC_VER)
+COMPILER_RT_VISIBILITY extern intptr_t INSTR_PROF_PROFILE_COUNTER_BIAS_VAR;
+#if defined(_M_IX86) || defined(__i386__)
+#define WIN_SYM_PREFIX "_"
+#else
+#define WIN_SYM_PREFIX
+#endif
+#pragma comment(                                                               \
+    linker, "/alternatename:" WIN_SYM_PREFIX INSTR_PROF_QUOTE(                 \
+                INSTR_PROF_PROFILE_COUNTER_BIAS_VAR) "=" WIN_SYM_PREFIX        \
+                INSTR_PROF_QUOTE(INSTR_PROF_PROFILE_COUNTER_BIAS_DEFAULT_VAR))
+#else
+COMPILER_RT_VISIBILITY extern intptr_t INSTR_PROF_PROFILE_COUNTER_BIAS_VAR
+    __attribute__((weak, alias(INSTR_PROF_QUOTE(
+                             INSTR_PROF_PROFILE_COUNTER_BIAS_DEFAULT_VAR))));
+#endif
+
+static int writeMMappedFile(FILE *OutputFile, char **Profile) {
+  if (!OutputFile)
+    return -1;
+
+  /* Write the data into a file. */
+  setupIOBuffer();
+  ProfDataWriter fileWriter;
+  initFileWriter(&fileWriter, OutputFile);
+  if (lprofWriteData(&fileWriter, NULL, 0)) {
+    PROF_ERR("Failed to write profile: %s\n", strerror(errno));
+    return -1;
+  }
+  fflush(OutputFile);
+
+  /* Get the file size. */
+  uint64_t FileSize = ftell(OutputFile);
+
+  /* Map the profile. */
+  *Profile = (char *)mmap(
+      NULL, FileSize, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(OutputFile), 0);
+  if (*Profile == MAP_FAILED) {
+    PROF_ERR("Unable to mmap profile: %s\n", strerror(errno));
+    return -1;
+  }
+
+  return 0;
+}
+
+static void initializeProfileForContinuousMode(void) {
+  if (!__llvm_profile_is_continuous_mode_enabled())
+    return;
+
+  /* This symbol is defined by the compiler when runtime counter relocation is
+   * used and runtime provides a weak alias so we can check if it's defined. */
+  void *BiasAddr = &INSTR_PROF_PROFILE_COUNTER_BIAS_VAR;
+  void *BiasDefaultAddr = &INSTR_PROF_PROFILE_COUNTER_BIAS_DEFAULT_VAR;
+  if (BiasAddr == BiasDefaultAddr) {
+    PROF_ERR("%s\n", "__llvm_profile_counter_bias is undefined");
+    return;
+  }
+
+  /* Get the sizes of various profile data sections. Taken from
+   * __llvm_profile_get_size_for_buffer(). */
+  const __llvm_profile_data *DataBegin = __llvm_profile_begin_data();
+  const __llvm_profile_data *DataEnd = __llvm_profile_end_data();
+  const uint64_t *CountersBegin = __llvm_profile_begin_counters();
+  const uint64_t *CountersEnd = __llvm_profile_end_counters();
+  uint64_t DataSize = __llvm_profile_get_data_size(DataBegin, DataEnd);
+  const uint64_t CountersOffset =
+      sizeof(__llvm_profile_header) + (DataSize * sizeof(__llvm_profile_data));
+
+  int Length = getCurFilenameLength();
+  char *FilenameBuf = (char *)COMPILER_RT_ALLOCA(Length + 1);
+  const char *Filename = getCurFilename(FilenameBuf, 0);
+  if (!Filename)
+    return;
+
+  FILE *File = NULL;
+  char *Profile = NULL;
+
+  if (!doMerging()) {
+    File = fopen(Filename, "w+b");
     if (!File)
       return;
     /* Check that the offset within the file is page-aligned. */

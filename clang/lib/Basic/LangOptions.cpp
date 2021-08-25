@@ -58,16 +58,6 @@ void LangOptions::remapPathPrefix(SmallString<256> &Path) const {
       break;
 }
 
-std::string LangOptions::getOpenCLVersionString() const {
-  std::string Result;
-  {
-    llvm::raw_string_ostream Out(Result);
-    Out << (OpenCLCPlusPlus ? "C++ for OpenCL" : "OpenCL C") << " version "
-        << getOpenCLVersionTuple().getAsString();
-  }
-  return Result;
-}
-
 FPOptions FPOptions::defaultWithoutTrailingStorage(const LangOptions &LO) {
   FPOptions result(LO);
   return result;

@@ -55,9 +55,9 @@ namespace std {
 
 */
 
-// Make sure all feature-test macros are available.
+// Make sure all feature tests macros are always available.
 #include <version>
-// Enable the contents of the header only when libc++ was built with LIBCXX_ENABLE_INCOMPLETE_FEATURES.
+// Only enable the contents of the header when libc++ was build with LIBCXX_ENABLE_INCOMPLETE_FEATURES enabled
 #if !defined(_LIBCPP_HAS_NO_INCOMPLETE_FORMAT)
 
 #include <__config>

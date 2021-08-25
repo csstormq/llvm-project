@@ -1438,6 +1438,8 @@ kmp_task_t *__kmpc_omp_target_task_alloc(ident_t *loc_ref, kmp_int32 gtid,
 
   if (__kmp_enable_hidden_helper)
     input_flags.hidden_helper = TRUE;
+    input_flags.tiedness = TASK_UNTIED;
+  }
 
   return __kmpc_omp_task_alloc(loc_ref, gtid, flags, sizeof_kmp_task_t,
                                sizeof_shareds, task_entry);

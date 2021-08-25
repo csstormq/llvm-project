@@ -4,20 +4,10 @@
 // PR5238
 
 // diff3 style  expected-error@+1 {{version control conflict marker in file}}
-<<<<<<< .mine
-int x = 4;
-|||||||
-int x = 123;
-=======
 float x = 17;
->>>>>>> .r91107
 
 // normal style  expected-error@+1 {{version control conflict marker in file}}
-<<<<<<< .mine
-typedef int y;
-=======
 typedef struct foo *y;
->>>>>>> .r91107
 
 // Perforce style  expected-error@+1 {{version control conflict marker in file}}
 >>>> ORIGINAL conflict-marker.c#6
