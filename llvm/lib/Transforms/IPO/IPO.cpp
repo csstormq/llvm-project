@@ -47,6 +47,7 @@ void llvm::initializeIPO(PassRegistry &Registry) {
   initializeSingleLoopExtractorPass(Registry);
   initializeLowerTypeTestsPass(Registry);
   initializeMergeFunctionsLegacyPassPass(Registry);
+  initializeMyInlinerLegacyPassPass(Registry);
   initializePartialInlinerLegacyPassPass(Registry);
   initializeAttributorLegacyPassPass(Registry);
   initializeAttributorCGSCCLegacyPassPass(Registry);
@@ -116,6 +117,10 @@ void LLVMAddIPSCCPPass(LLVMPassManagerRef PM) {
 
 void LLVMAddMergeFunctionsPass(LLVMPassManagerRef PM) {
   unwrap(PM)->add(createMergeFunctionsPass());
+}
+
+void LLVMMyInlinerLegacyPass(LLVMPassManagerRef PM) {
+  unwrap(PM)->add(createMyInlinerLegacyPass());
 }
 
 void LLVMAddInternalizePass(LLVMPassManagerRef PM, unsigned AllButMain) {

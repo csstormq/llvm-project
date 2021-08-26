@@ -36,6 +36,9 @@ void LLVMAddConstantMergePass(LLVMPassManagerRef PM);
 /** See llvm::createMergeFunctionsPass function. */
 void LLVMAddMergeFunctionsPass(LLVMPassManagerRef PM);
 
+/** See llvm::createMyInlinerLegacyPass function. */
+void LLVMMyInlinerLegacyPass(LLVMPassManagerRef PM);
+
 /** See llvm::createCalledValuePropagationPass function. */
 void LLVMAddCalledValuePropagationPass(LLVMPassManagerRef PM);
 

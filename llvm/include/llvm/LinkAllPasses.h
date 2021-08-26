@@ -235,6 +235,7 @@ namespace {
       (void)llvm::createFunctionSpecializationPass();
       (void) llvm::createFnArgCntLegacyPass();
       (void) llvm::createMyADCELegacyPass();
+      (void) llvm::createMyInlinerLegacyPass();
 
       (void)new llvm::IntervalPartition();
       (void)new llvm::ScalarEvolutionWrapperPass();

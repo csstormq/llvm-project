@@ -293,6 +293,8 @@ ModulePass *createSampleProfileLoaderPass(StringRef Name);
 ModulePass *createWriteThinLTOBitcodePass(raw_ostream &Str,
                                           raw_ostream *ThinLinkOS = nullptr);
 
+Pass *createMyInlinerLegacyPass();
+
 } // End llvm namespace
 
 #endif
