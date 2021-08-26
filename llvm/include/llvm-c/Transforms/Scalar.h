@@ -49,6 +49,9 @@ void LLVMAddCFGSimplificationPass(LLVMPassManagerRef PM);
 /** See llvm::createDeadStoreEliminationPass function. */
 void LLVMAddDeadStoreEliminationPass(LLVMPassManagerRef PM);
 
+/** See llvm::createFnArgCntLegacyPass function. */
+void LLVMAddFnArgCntLegacyPass(LLVMPassManagerRef PM);
+
 /** See llvm::createScalarizerPass function. */
 void LLVMAddScalarizerPass(LLVMPassManagerRef PM);
 
@@ -102,6 +105,9 @@ void LLVMAddLowerAtomicPass(LLVMPassManagerRef PM);
 
 /** See llvm::createMemCpyOptPass function. */
 void LLVMAddMemCpyOptPass(LLVMPassManagerRef PM);
+
+/** See llvm::createMyADCELegacyPass function. */
+void LLVMAddMYAggressiveDCELegacyPass(LLVMPassManagerRef PM);
 
 /** See llvm::createPartiallyInlineLibCallsPass function. */
 void LLVMAddPartiallyInlineLibCallsPass(LLVMPassManagerRef PM);

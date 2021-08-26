@@ -1,0 +1,1 @@
+add_llvm_library(LLVMFnArgCntPlugin MODULE FnArgCntPlugin.cpp PLUGIN_TOOL opt)
