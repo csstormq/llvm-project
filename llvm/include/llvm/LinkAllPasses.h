@@ -15,6 +15,7 @@
 #define LLVM_LINKALLPASSES_H
 
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Analysis/Analysis.h"
 #include "llvm/Analysis/AliasAnalysisEvaluator.h"
 #include "llvm/Analysis/AliasSetTracker.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
@@ -236,6 +237,7 @@ namespace {
       (void) llvm::createFnArgCntLegacyPass();
       (void) llvm::createMyADCELegacyPass();
       (void) llvm::createMyInlinerLegacyPass();
+      (void) llvm::createEverythingMustAliasLegacyPass();
 
       (void)new llvm::IntervalPartition();
       (void)new llvm::ScalarEvolutionWrapperPass();

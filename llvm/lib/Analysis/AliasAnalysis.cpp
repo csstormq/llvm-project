@@ -37,6 +37,7 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/Analysis/EverythingMustAlias.h"
 #include "llvm/IR/Argument.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
@@ -873,6 +874,9 @@ bool AAResultsWrapperPass::runOnFunction(Function &F) {
   // registering new results.
   AAR.reset(
       new AAResults(getAnalysis<TargetLibraryInfoWrapperPass>().getTLI(F)));
+
+  if (auto *WrapperPass = getAnalysisIfAvailable<EverythingMustAliasLegacyPass>())
+    AAR->addAAResult(WrapperPass->getResult());
 
   // BasicAA is always available for function analyses. Also, we add it first
   // so that it can trump TBAA results when it proves MustAlias.
