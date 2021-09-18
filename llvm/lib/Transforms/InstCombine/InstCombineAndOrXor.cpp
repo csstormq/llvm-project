@@ -3684,5 +3684,13 @@ Instruction *InstCombinerImpl::visitXor(BinaryOperator &I) {
                         m_Value(Y))))
     return BinaryOperator::CreateXor(Builder.CreateXor(X, Y), C1);
 
+  // (A | (B ^ C)) ^ ((A ^ C) ^ B) --> A & (B ^ C)
+  if (Op0 && Op1) {
+    if (match(Op0, m_Or(m_Xor(m_Value(B), m_Value(C)), m_Value(A))) &&
+        match(Op1, m_Xor(m_Xor(m_Specific(A), m_Specific(C)), m_Specific(B)))) {
+      return BinaryOperator::CreateAnd(A, Builder.CreateXor(B, C));
+    }
+  }
+
   return nullptr;
 }
