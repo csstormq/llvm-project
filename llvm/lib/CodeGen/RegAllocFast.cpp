@@ -15,6 +15,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IndexedMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/SparseSet.h"
@@ -34,14 +35,9 @@
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
-#include "llvm/IR/DebugLoc.h"
-#include "llvm/IR/Metadata.h"
 #include "llvm/InitializePasses.h"
-#include "llvm/MC/MCInstrDesc.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Pass.h"
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -432,7 +428,7 @@ void RegAllocFast::spill(MachineBasicBlock::iterator Before, Register VirtReg,
   // every definition of it, meaning we can switch all the DBG_VALUEs over
   // to just reference the stack slot.
   SmallVectorImpl<MachineOperand *> &LRIDbgOperands = LiveDbgValueMap[VirtReg];
-  SmallDenseMap<MachineInstr *, SmallVector<const MachineOperand *>>
+  SmallMapVector<MachineInstr *, SmallVector<const MachineOperand *>, 2>
       SpilledOperandsMap;
   for (MachineOperand *MO : LRIDbgOperands)
     SpilledOperandsMap[MO->getParent()].push_back(MO);
@@ -1257,8 +1253,7 @@ void RegAllocFast::allocateInstruction(MachineInstr &MI) {
     // Free registers occupied by defs.
     // Iterate operands in reverse order, so we see the implicit super register
     // defs first (we added them earlier in case of <def,read-undef>).
-    for (unsigned I = MI.getNumOperands(); I-- > 0;) {
-      MachineOperand &MO = MI.getOperand(I);
+    for (MachineOperand &MO : llvm::reverse(MI.operands())) {
       if (!MO.isReg() || !MO.isDef())
         continue;
 
@@ -1361,8 +1356,7 @@ void RegAllocFast::allocateInstruction(MachineInstr &MI) {
 
   // Free early clobbers.
   if (HasEarlyClobber) {
-    for (unsigned I = MI.getNumOperands(); I-- > 0; ) {
-      MachineOperand &MO = MI.getOperand(I);
+    for (MachineOperand &MO : llvm::reverse(MI.operands())) {
       if (!MO.isReg() || !MO.isDef() || !MO.isEarlyClobber())
         continue;
       // subreg defs don't free the full register. We left the subreg number
@@ -1439,8 +1433,7 @@ void RegAllocFast::handleBundle(MachineInstr &MI) {
   MachineBasicBlock::instr_iterator BundledMI = MI.getIterator();
   ++BundledMI;
   while (BundledMI->isBundledWithPred()) {
-    for (unsigned I = 0; I < BundledMI->getNumOperands(); ++I) {
-      MachineOperand &MO = BundledMI->getOperand(I);
+    for (MachineOperand &MO : BundledMI->operands()) {
       if (!MO.isReg())
         continue;
 

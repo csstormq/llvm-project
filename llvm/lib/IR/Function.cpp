@@ -30,7 +30,6 @@
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instruction.h"
-#include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsAArch64.h"
@@ -63,7 +62,6 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
-#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -158,7 +156,7 @@ bool Argument::hasPointeeInMemoryValueAttr() const {
 
 /// For a byval, sret, inalloca, or preallocated parameter, get the in-memory
 /// parameter type.
-static Type *getMemoryParamAllocType(AttributeSet ParamAttrs, Type *ArgTy) {
+static Type *getMemoryParamAllocType(AttributeSet ParamAttrs) {
   // FIXME: All the type carrying attributes are mutually exclusive, so there
   // should be a single query to get the stored type that handles any of them.
   if (Type *ByValTy = ParamAttrs.getByValType())
@@ -178,7 +176,7 @@ static Type *getMemoryParamAllocType(AttributeSet ParamAttrs, Type *ArgTy) {
 uint64_t Argument::getPassPointeeByValueCopySize(const DataLayout &DL) const {
   AttributeSet ParamAttrs =
       getParent()->getAttributes().getParamAttrs(getArgNo());
-  if (Type *MemTy = getMemoryParamAllocType(ParamAttrs, getType()))
+  if (Type *MemTy = getMemoryParamAllocType(ParamAttrs))
     return DL.getTypeAllocSize(MemTy);
   return 0;
 }
@@ -186,10 +184,10 @@ uint64_t Argument::getPassPointeeByValueCopySize(const DataLayout &DL) const {
 Type *Argument::getPointeeInMemoryValueType() const {
   AttributeSet ParamAttrs =
       getParent()->getAttributes().getParamAttrs(getArgNo());
-  return getMemoryParamAllocType(ParamAttrs, getType());
+  return getMemoryParamAllocType(ParamAttrs);
 }
 
-unsigned Argument::getParamAlignment() const {
+uint64_t Argument::getParamAlignment() const {
   assert(getType()->isPointerTy() && "Only pointers have alignments");
   return getParent()->getParamAlignment(getArgNo());
 }
@@ -300,9 +298,9 @@ void Argument::removeAttr(Attribute::AttrKind Kind) {
   getParent()->removeParamAttr(getArgNo(), Kind);
 }
 
-void Argument::removeAttrs(const AttrBuilder &B) {
+void Argument::removeAttrs(const AttributeMask &AM) {
   AttributeList AL = getParent()->getAttributes();
-  AL = AL.removeParamAttributes(Parent->getContext(), getArgNo(), B);
+  AL = AL.removeParamAttributes(Parent->getContext(), getArgNo(), AM);
   getParent()->setAttributes(AL);
 }
 
@@ -340,9 +338,10 @@ Function *Function::createWithDefaultAttr(FunctionType *Ty,
                                           unsigned AddrSpace, const Twine &N,
                                           Module *M) {
   auto *F = new Function(Ty, Linkage, AddrSpace, N, M);
-  AttrBuilder B;
-  if (M->getUwtable())
-    B.addAttribute(Attribute::UWTable);
+  AttrBuilder B(F->getContext());
+  UWTableKind UWTable = M->getUwtable();
+  if (UWTable != UWTableKind::None)
+    B.addUWTableAttr(UWTable);
   switch (M->getFramePointer()) {
   case FramePointerKind::None:
     // 0 ("none") is the default.
@@ -529,8 +528,8 @@ void Function::dropAllReferences() {
   clearMetadata();
 }
 
-void Function::addAttribute(unsigned i, Attribute Attr) {
-  AttributeSets = AttributeSets.addAttribute(getContext(), i, Attr);
+void Function::addAttributeAtIndex(unsigned i, Attribute Attr) {
+  AttributeSets = AttributeSets.addAttributeAtIndex(getContext(), i, Attr);
 }
 
 void Function::addFnAttr(Attribute::AttrKind Kind) {
@@ -553,6 +552,14 @@ void Function::addRetAttr(Attribute::AttrKind Kind) {
   AttributeSets = AttributeSets.addRetAttribute(getContext(), Kind);
 }
 
+void Function::addRetAttr(Attribute Attr) {
+  AttributeSets = AttributeSets.addRetAttribute(getContext(), Attr);
+}
+
+void Function::addRetAttrs(const AttrBuilder &Attrs) {
+  AttributeSets = AttributeSets.addRetAttributes(getContext(), Attrs);
+}
+
 void Function::addParamAttr(unsigned ArgNo, Attribute::AttrKind Kind) {
   AttributeSets = AttributeSets.addParamAttribute(getContext(), ArgNo, Kind);
 }
@@ -565,12 +572,12 @@ void Function::addParamAttrs(unsigned ArgNo, const AttrBuilder &Attrs) {
   AttributeSets = AttributeSets.addParamAttributes(getContext(), ArgNo, Attrs);
 }
 
-void Function::removeAttribute(unsigned i, Attribute::AttrKind Kind) {
-  AttributeSets = AttributeSets.removeAttribute(getContext(), i, Kind);
+void Function::removeAttributeAtIndex(unsigned i, Attribute::AttrKind Kind) {
+  AttributeSets = AttributeSets.removeAttributeAtIndex(getContext(), i, Kind);
 }
 
-void Function::removeAttribute(unsigned i, StringRef Kind) {
-  AttributeSets = AttributeSets.removeAttribute(getContext(), i, Kind);
+void Function::removeAttributeAtIndex(unsigned i, StringRef Kind) {
+  AttributeSets = AttributeSets.removeAttributeAtIndex(getContext(), i, Kind);
 }
 
 void Function::removeFnAttr(Attribute::AttrKind Kind) {
@@ -581,8 +588,8 @@ void Function::removeFnAttr(StringRef Kind) {
   AttributeSets = AttributeSets.removeFnAttribute(getContext(), Kind);
 }
 
-void Function::removeFnAttrs(const AttrBuilder &Attrs) {
-  AttributeSets = AttributeSets.removeFnAttributes(getContext(), Attrs);
+void Function::removeFnAttrs(const AttributeMask &AM) {
+  AttributeSets = AttributeSets.removeFnAttributes(getContext(), AM);
 }
 
 void Function::removeRetAttr(Attribute::AttrKind Kind) {
@@ -593,7 +600,7 @@ void Function::removeRetAttr(StringRef Kind) {
   AttributeSets = AttributeSets.removeRetAttribute(getContext(), Kind);
 }
 
-void Function::removeRetAttrs(const AttrBuilder &Attrs) {
+void Function::removeRetAttrs(const AttributeMask &Attrs) {
   AttributeSets = AttributeSets.removeRetAttributes(getContext(), Attrs);
 }
 
@@ -605,7 +612,7 @@ void Function::removeParamAttr(unsigned ArgNo, StringRef Kind) {
   AttributeSets = AttributeSets.removeParamAttribute(getContext(), ArgNo, Kind);
 }
 
-void Function::removeParamAttrs(unsigned ArgNo, const AttrBuilder &Attrs) {
+void Function::removeParamAttrs(unsigned ArgNo, const AttributeMask &Attrs) {
   AttributeSets =
       AttributeSets.removeParamAttributes(getContext(), ArgNo, Attrs);
 }
@@ -632,12 +639,13 @@ bool Function::hasParamAttribute(unsigned ArgNo,
   return AttributeSets.hasParamAttr(ArgNo, Kind);
 }
 
-Attribute Function::getAttribute(unsigned i, Attribute::AttrKind Kind) const {
-  return AttributeSets.getAttribute(i, Kind);
+Attribute Function::getAttributeAtIndex(unsigned i,
+                                        Attribute::AttrKind Kind) const {
+  return AttributeSets.getAttributeAtIndex(i, Kind);
 }
 
-Attribute Function::getAttribute(unsigned i, StringRef Kind) const {
-  return AttributeSets.getAttribute(i, Kind);
+Attribute Function::getAttributeAtIndex(unsigned i, StringRef Kind) const {
+  return AttributeSets.getAttributeAtIndex(i, Kind);
 }
 
 Attribute Function::getFnAttribute(Attribute::AttrKind Kind) const {
@@ -808,7 +816,8 @@ static std::string getMangledTypeStr(Type *Ty, bool &HasUnnamedType) {
     // Opaque pointer doesn't have pointee type information, so we just mangle
     // address space for opaque pointer.
     if (!PTyp->isOpaque())
-      Result += getMangledTypeStr(PTyp->getElementType(), HasUnnamedType);
+      Result += getMangledTypeStr(PTyp->getNonOpaquePointerElementType(),
+                                  HasUnnamedType);
   } else if (ArrayType *ATyp = dyn_cast<ArrayType>(Ty)) {
     Result += "a" + utostr(ATyp->getNumElements()) +
               getMangledTypeStr(ATyp->getElementType(), HasUnnamedType);
@@ -970,7 +979,12 @@ enum IIT_Info {
   IIT_BF16 = 48,
   IIT_STRUCT9 = 49,
   IIT_V256 = 50,
-  IIT_AMX  = 51
+  IIT_AMX  = 51,
+  IIT_PPCF128 = 52,
+  IIT_V3 = 53,
+  IIT_EXTERNREF = 54,
+  IIT_FUNCREF = 55,
+  IIT_ANYPTR_TO_ELT = 56,
 };
 
 static void DecodeIITType(unsigned &NextElt, ArrayRef<unsigned char> Infos,
@@ -1017,6 +1031,9 @@ static void DecodeIITType(unsigned &NextElt, ArrayRef<unsigned char> Infos,
   case IIT_F128:
     OutputTable.push_back(IITDescriptor::get(IITDescriptor::Quad, 0));
     return;
+  case IIT_PPCF128:
+    OutputTable.push_back(IITDescriptor::get(IITDescriptor::PPCQuad, 0));
+    return;
   case IIT_I1:
     OutputTable.push_back(IITDescriptor::get(IITDescriptor::Integer, 1));
     return;
@@ -1041,6 +1058,10 @@ static void DecodeIITType(unsigned &NextElt, ArrayRef<unsigned char> Infos,
     return;
   case IIT_V2:
     OutputTable.push_back(IITDescriptor::getVector(2, IsScalableVector));
+    DecodeIITType(NextElt, Infos, Info, OutputTable);
+    return;
+  case IIT_V3:
+    OutputTable.push_back(IITDescriptor::getVector(3, IsScalableVector));
     DecodeIITType(NextElt, Infos, Info, OutputTable);
     return;
   case IIT_V4:
@@ -1078,6 +1099,14 @@ static void DecodeIITType(unsigned &NextElt, ArrayRef<unsigned char> Infos,
   case IIT_V1024:
     OutputTable.push_back(IITDescriptor::getVector(1024, IsScalableVector));
     DecodeIITType(NextElt, Infos, Info, OutputTable);
+    return;
+  case IIT_EXTERNREF:
+    OutputTable.push_back(IITDescriptor::get(IITDescriptor::Pointer, 10));
+    OutputTable.push_back(IITDescriptor::get(IITDescriptor::Struct, 0));
+    return;
+  case IIT_FUNCREF:
+    OutputTable.push_back(IITDescriptor::get(IITDescriptor::Pointer, 20));
+    OutputTable.push_back(IITDescriptor::get(IITDescriptor::Integer, 8));
     return;
   case IIT_PTR:
     OutputTable.push_back(IITDescriptor::get(IITDescriptor::Pointer, 0));
@@ -1127,6 +1156,13 @@ static void DecodeIITType(unsigned &NextElt, ArrayRef<unsigned char> Infos,
   case IIT_PTR_TO_ELT: {
     unsigned ArgInfo = (NextElt == Infos.size() ? 0 : Infos[NextElt++]);
     OutputTable.push_back(IITDescriptor::get(IITDescriptor::PtrToElt, ArgInfo));
+    return;
+  }
+  case IIT_ANYPTR_TO_ELT: {
+    unsigned short ArgNo = (NextElt == Infos.size() ? 0 : Infos[NextElt++]);
+    unsigned short RefNo = (NextElt == Infos.size() ? 0 : Infos[NextElt++]);
+    OutputTable.push_back(
+        IITDescriptor::get(IITDescriptor::AnyPtrToElt, ArgNo, RefNo));
     return;
   }
   case IIT_VEC_OF_ANYPTRS_TO_ELT: {
@@ -1241,6 +1277,7 @@ static Type *DecodeFixedType(ArrayRef<Intrinsic::IITDescriptor> &Infos,
   case IITDescriptor::Float: return Type::getFloatTy(Context);
   case IITDescriptor::Double: return Type::getDoubleTy(Context);
   case IITDescriptor::Quad: return Type::getFP128Ty(Context);
+  case IITDescriptor::PPCQuad: return Type::getPPC_FP128Ty(Context);
 
   case IITDescriptor::Integer:
     return IntegerType::get(Context, D.Integer_Width);
@@ -1317,6 +1354,9 @@ static Type *DecodeFixedType(ArrayRef<Intrinsic::IITDescriptor> &Infos,
     return VectorType::getInteger(VTy);
   }
   case IITDescriptor::VecOfAnyPtrsToElt:
+    // Return the overloaded type (which determines the pointers address space)
+    return Tys[D.getOverloadArgNumber()];
+  case IITDescriptor::AnyPtrToElt:
     // Return the overloaded type (which determines the pointers address space)
     return Tys[D.getOverloadArgNumber()];
   }
@@ -1423,6 +1463,7 @@ static bool matchIntrinsicType(
     case IITDescriptor::Float: return !Ty->isFloatTy();
     case IITDescriptor::Double: return !Ty->isDoubleTy();
     case IITDescriptor::Quad: return !Ty->isFP128Ty();
+    case IITDescriptor::PPCQuad: return !Ty->isPPC_FP128Ty();
     case IITDescriptor::Integer: return !Ty->isIntegerTy(D.Integer_Width);
     case IITDescriptor::Vector: {
       VectorType *VT = dyn_cast<VectorType>(Ty);
@@ -1434,16 +1475,25 @@ static bool matchIntrinsicType(
       PointerType *PT = dyn_cast<PointerType>(Ty);
       if (!PT || PT->getAddressSpace() != D.Pointer_AddressSpace)
         return true;
-      if (!PT->isOpaque())
-        return matchIntrinsicType(PT->getElementType(), Infos, ArgTys,
-                                  DeferredChecks, IsDeferredCheck);
-      // If typed pointers are supported, do not allow using opaque pointer in
-      // place of fixed pointer type. This would make the intrinsic signature
-      // non-unique.
-      if (Ty->getContext().supportsTypedPointers())
-        return true;
+      if (!PT->isOpaque()) {
+        /* Manually consume a pointer to empty struct descriptor, which is
+         * used for externref. We don't want to enforce that the struct is
+         * anonymous in this case. (This renders externref intrinsics
+         * non-unique, but this will go away with opaque pointers anyway.) */
+        if (Infos.front().Kind == IITDescriptor::Struct &&
+            Infos.front().Struct_NumElements == 0) {
+          Infos = Infos.slice(1);
+          return false;
+        }
+        return matchIntrinsicType(PT->getNonOpaquePointerElementType(), Infos,
+                                  ArgTys, DeferredChecks, IsDeferredCheck);
+      }
       // Consume IIT descriptors relating to the pointer element type.
-      while (Infos.front().Kind == IITDescriptor::Pointer)
+      // FIXME: Intrinsic type matching of nested single value types or even
+      // aggregates doesn't work properly with opaque pointers but hopefully
+      // doesn't happen in practice.
+      while (Infos.front().Kind == IITDescriptor::Pointer ||
+             Infos.front().Kind == IITDescriptor::Vector)
         Infos = Infos.slice(1);
       Infos = Infos.slice(1);
       return false;
@@ -1451,7 +1501,8 @@ static bool matchIntrinsicType(
 
     case IITDescriptor::Struct: {
       StructType *ST = dyn_cast<StructType>(Ty);
-      if (!ST || ST->getNumElements() != D.Struct_NumElements)
+      if (!ST || !ST->isLiteral() || ST->isPacked() ||
+          ST->getNumElements() != D.Struct_NumElements)
         return true;
 
       for (unsigned i = 0, e = D.Struct_NumElements; i != e; ++i)
@@ -1548,7 +1599,8 @@ static bool matchIntrinsicType(
         return IsDeferredCheck || DeferCheck(Ty);
       Type * ReferenceType = ArgTys[D.getArgumentNumber()];
       PointerType *ThisArgType = dyn_cast<PointerType>(Ty);
-      return (!ThisArgType || ThisArgType->getElementType() != ReferenceType);
+      return (!ThisArgType ||
+              !ThisArgType->isOpaqueOrPointeeTypeMatches(ReferenceType));
     }
     case IITDescriptor::PtrToElt: {
       if (D.getArgumentNumber() >= ArgTys.size())
@@ -1559,11 +1611,32 @@ static bool matchIntrinsicType(
 
       if (!ThisArgType || !ReferenceType)
         return true;
-      if (!ThisArgType->isOpaque())
-        return ThisArgType->getElementType() != ReferenceType->getElementType();
-      // If typed pointers are supported, do not allow opaque pointer to ensure
-      // uniqueness.
-      return Ty->getContext().supportsTypedPointers();
+      return !ThisArgType->isOpaqueOrPointeeTypeMatches(
+          ReferenceType->getElementType());
+    }
+    case IITDescriptor::AnyPtrToElt: {
+      unsigned RefArgNumber = D.getRefArgNumber();
+      if (RefArgNumber >= ArgTys.size()) {
+        if (IsDeferredCheck)
+          return true;
+        // If forward referencing, already add the pointer type and
+        // defer the checks for later.
+        ArgTys.push_back(Ty);
+        return DeferCheck(Ty);
+      }
+
+      if (!IsDeferredCheck) {
+        assert(D.getOverloadArgNumber() == ArgTys.size() &&
+               "Table consistency error");
+        ArgTys.push_back(Ty);
+      }
+
+      auto *ReferenceType = dyn_cast<VectorType>(ArgTys[RefArgNumber]);
+      auto *ThisArgType = dyn_cast<PointerType>(Ty);
+      if (!ThisArgType || !ReferenceType)
+        return true;
+      return !ThisArgType->isOpaqueOrPointeeTypeMatches(
+          ReferenceType->getElementType());
     }
     case IITDescriptor::VecOfAnyPtrsToElt: {
       unsigned RefArgNumber = D.getRefArgNumber();
@@ -1736,8 +1809,8 @@ Optional<Function *> Intrinsic::remangleIntrinsicFunction(Function *F) {
 /// and llvm.compiler.used variables.
 bool Function::hasAddressTaken(const User **PutOffender,
                                bool IgnoreCallbackUses,
-                               bool IgnoreAssumeLikeCalls,
-                               bool IgnoreLLVMUsed) const {
+                               bool IgnoreAssumeLikeCalls, bool IgnoreLLVMUsed,
+                               bool IgnoreARCAttachedCall) const {
   for (const Use &U : uses()) {
     const User *FU = U.getUser();
     if (isa<BlockAddress>(FU))
@@ -1780,7 +1853,12 @@ bool Function::hasAddressTaken(const User **PutOffender,
         *PutOffender = FU;
       return true;
     }
-    if (!Call->isCallee(&U)) {
+    if (!Call->isCallee(&U) || Call->getFunctionType() != getFunctionType()) {
+      if (IgnoreARCAttachedCall &&
+          Call->isOperandBundleOfType(LLVMContext::OB_clang_arc_attachedcall,
+                                      U.getOperandNo()))
+        continue;
+
       if (PutOffender)
         *PutOffender = FU;
       return true;
@@ -1880,10 +1958,9 @@ void Function::setValueSubclassDataBit(unsigned Bit, bool On) {
 
 void Function::setEntryCount(ProfileCount Count,
                              const DenseSet<GlobalValue::GUID> *S) {
-  assert(Count.hasValue());
 #if !defined(NDEBUG)
   auto PrevCount = getEntryCount();
-  assert(!PrevCount.hasValue() || PrevCount.getType() == Count.getType());
+  assert(!PrevCount.hasValue() || PrevCount->getType() == Count.getType());
 #endif
 
   auto ImportGUIDs = getImportGUIDs();
@@ -1901,7 +1978,7 @@ void Function::setEntryCount(uint64_t Count, Function::ProfileCountType Type,
   setEntryCount(ProfileCount(Count, Type), Imports);
 }
 
-ProfileCount Function::getEntryCount(bool AllowSynthetic) const {
+Optional<ProfileCount> Function::getEntryCount(bool AllowSynthetic) const {
   MDNode *MD = getMetadata(LLVMContext::MD_prof);
   if (MD && MD->getOperand(0))
     if (MDString *MDS = dyn_cast<MDString>(MD->getOperand(0))) {
@@ -1911,7 +1988,7 @@ ProfileCount Function::getEntryCount(bool AllowSynthetic) const {
         // A value of -1 is used for SamplePGO when there were no samples.
         // Treat this the same as unknown.
         if (Count == (uint64_t)-1)
-          return ProfileCount::getInvalid();
+          return None;
         return ProfileCount(Count, PCT_Real);
       } else if (AllowSynthetic &&
                  MDS->getString().equals("synthetic_function_entry_count")) {
@@ -1920,7 +1997,7 @@ ProfileCount Function::getEntryCount(bool AllowSynthetic) const {
         return ProfileCount(Count, PCT_Synthetic);
       }
     }
-  return ProfileCount::getInvalid();
+  return None;
 }
 
 DenseSet<GlobalValue::GUID> Function::getImportGUIDs() const {

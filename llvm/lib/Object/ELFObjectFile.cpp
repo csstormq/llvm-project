@@ -15,23 +15,21 @@
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/MC/MCInstrAnalysis.h"
 #include "llvm/MC/SubtargetFeature.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Object/ELF.h"
 #include "llvm/Object/ELFTypes.h"
 #include "llvm/Object/Error.h"
 #include "llvm/Support/ARMAttributeParser.h"
 #include "llvm/Support/ARMBuildAttributes.h"
-#include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/RISCVAttributeParser.h"
 #include "llvm/Support/RISCVAttributes.h"
-#include "llvm/Support/TargetRegistry.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
-#include <system_error>
 #include <utility>
 
 using namespace llvm;
@@ -461,6 +459,8 @@ StringRef ELFObjectFileBase::getAMDGPUCPUName() const {
     return "gfx90a";
   case ELF::EF_AMDGPU_MACH_AMDGCN_GFX90C:
     return "gfx90c";
+  case ELF::EF_AMDGPU_MACH_AMDGCN_GFX940:
+    return "gfx940";
 
   // AMDGCN GFX10.
   case ELF::EF_AMDGPU_MACH_AMDGCN_GFX1010:
@@ -483,6 +483,8 @@ StringRef ELFObjectFileBase::getAMDGPUCPUName() const {
     return "gfx1034";
   case ELF::EF_AMDGPU_MACH_AMDGCN_GFX1035:
     return "gfx1035";
+  case ELF::EF_AMDGPU_MACH_AMDGCN_GFX1036:
+    return "gfx1036";
   default:
     llvm_unreachable("Unknown EF_AMDGPU_MACH value");
   }
@@ -682,7 +684,7 @@ readDynsymVersionsImpl(const ELFFile<ELFT> &EF,
 
   std::vector<VersionEntry> Ret;
   size_t I = 0;
-  for (auto It = Symbols.begin(), E = Symbols.end(); It != E; ++It) {
+  for (const ELFSymbolRef &Sym : Symbols) {
     ++I;
     Expected<const typename ELFT::Versym *> VerEntryOrErr =
         EF.template getEntry<typename ELFT::Versym>(*VerSec, I);
@@ -691,7 +693,7 @@ readDynsymVersionsImpl(const ELFFile<ELFT> &EF,
                          " from " + describe(EF, *VerSec) + ": " +
                          toString(VerEntryOrErr.takeError()));
 
-    Expected<uint32_t> FlagsOrErr = It->getFlags();
+    Expected<uint32_t> FlagsOrErr = Sym.getFlags();
     if (!FlagsOrErr)
       return createError("unable to read flags for symbol with index " +
                          Twine(I) + ": " + toString(FlagsOrErr.takeError()));

@@ -61,6 +61,8 @@
 #include "llvm/Transforms/Utils/AssumeBundleBuilder.h"
 #include "llvm/Transforms/Utils/Local.h"
 
+#include <map>
+
 using namespace llvm;
 using namespace PatternMatch;
 
@@ -70,6 +72,24 @@ static bool isAMXCast(Instruction *II) {
   return match(II,
                m_Intrinsic<Intrinsic::x86_cast_vector_to_tile>(m_Value())) ||
          match(II, m_Intrinsic<Intrinsic::x86_cast_tile_to_vector>(m_Value()));
+}
+
+static bool isAMXInstrinsic(User *I) {
+  auto *II = dyn_cast<IntrinsicInst>(I);
+  if (!II)
+    return false;
+  if (isAMXCast(II))
+    return false;
+  // Check if return type or parameter is x86_amx. If it is x86_amx
+  // the intrinsic must be x86 amx intrinsics.
+  if (II->getType()->isX86_AMXTy())
+    return true;
+  for (Value *V : II->args()) {
+    if (V->getType()->isX86_AMXTy())
+      return true;
+  }
+
+  return false;
 }
 
 static AllocaInst *createAllocaInstAtEntry(IRBuilder<> &Builder, BasicBlock *BB,
@@ -126,7 +146,7 @@ static std::pair<Value *, Value *> getShape(IntrinsicInst *II, unsigned OpNo) {
     case 5:
       if (isa<ConstantInt>(II->getArgOperand(2)))
         Row = Builder.getInt16(
-            (dyn_cast<ConstantInt>(II->getOperand(2))->getSExtValue()) / 4);
+            (cast<ConstantInt>(II->getOperand(2))->getSExtValue()) / 4);
       else if (isa<Instruction>(II->getArgOperand(2))) {
         // When it is not a const value and it is not a function argument, we
         // create Row after the definition of II->getOperand(2) instead of
@@ -160,6 +180,36 @@ static std::pair<Value *, Value *> getShape(IntrinsicInst *II, unsigned OpNo) {
   return std::make_pair(Row, Col);
 }
 
+static std::pair<Value *, Value *> getShape(PHINode *Phi) {
+  Use &U = *(Phi->use_begin());
+  unsigned OpNo = U.getOperandNo();
+  User *V = U.getUser();
+  // TODO We don't traverse all users. To make the algorithm simple, here we
+  // just traverse the first user. If we can find shape, then return the shape,
+  // otherwise just return nullptr and the optimization for undef/zero will be
+  // abandoned.
+  while (V) {
+    if (isAMXCast(dyn_cast<Instruction>(V))) {
+      if (V->use_empty())
+        break;
+      Use &U = *(V->use_begin());
+      OpNo = U.getOperandNo();
+      V = U.getUser();
+    } else if (isAMXInstrinsic(V)) {
+      return getShape(cast<IntrinsicInst>(V), OpNo);
+    } else if (isa<PHINode>(V)) {
+      if (V->use_empty())
+        break;
+      Use &U = *(V->use_begin());
+      V = U.getUser();
+    } else {
+      break;
+    }
+  }
+
+  return std::make_pair(nullptr, nullptr);
+}
+
 namespace {
 class X86LowerAMXType {
   Function &Func;
@@ -175,24 +225,7 @@ public:
   void combineLoadBitcast(LoadInst *LD, BitCastInst *Bitcast);
   void combineBitcastStore(BitCastInst *Bitcast, StoreInst *ST);
   bool transformBitcast(BitCastInst *Bitcast);
-  Value *getRowFromCol(Instruction *II, Value *V, unsigned Granularity);
 };
-
-Value *X86LowerAMXType::getRowFromCol(Instruction *II, Value *V,
-                                      unsigned Granularity) {
-  if (Col2Row.count(V))
-    return Col2Row[V];
-  IRBuilder<> Builder(&*II->getParent()->getFirstInsertionPt());
-  if (auto *I = dyn_cast<Instruction>(V)) {
-    BasicBlock::iterator Iter = I->getIterator();
-    ++Iter;
-    Builder.SetInsertPoint(&*Iter);
-  }
-  ConstantInt *Gran = Builder.getInt16(Granularity);
-  Value *RealRow = Builder.CreateUDiv(V, Gran);
-  Col2Row[V] = RealRow;
-  return RealRow;
-}
 
 // %src = load <256 x i32>, <256 x i32>* %addr, align 64
 // %2 = bitcast <256 x i32> %src to x86_amx
@@ -319,9 +352,7 @@ bool X86LowerAMXType::visit() {
   Col2Row.clear();
 
   for (BasicBlock *BB : post_order(&Func)) {
-    for (BasicBlock::reverse_iterator II = BB->rbegin(), IE = BB->rend();
-         II != IE;) {
-      Instruction &Inst = *II++;
+    for (Instruction &Inst : llvm::make_early_inc_range(llvm::reverse(*BB))) {
       auto *Bitcast = dyn_cast<BitCastInst>(&Inst);
       if (!Bitcast)
         continue;
@@ -364,10 +395,8 @@ bool X86LowerAMXType::visit() {
           continue;
         }
         StoreInst *ST = nullptr;
-        for (auto UI = Bitcast->use_begin(), UE = Bitcast->use_end();
-             UI != UE;) {
-          Value *I = (UI++)->getUser();
-          ST = dyn_cast<StoreInst>(I);
+        for (Use &U : Bitcast->uses()) {
+          ST = dyn_cast<StoreInst>(U.getUser());
           if (ST)
             break;
         }
@@ -739,11 +768,33 @@ bool X86LowerAMXCast::optimizeAMXCastFromPhi(
   OldPhiNodes.insert(PN);
   while (!PhiWorklist.empty()) {
     auto *OldPN = PhiWorklist.pop_back_val();
-    for (Value *IncValue : OldPN->incoming_values()) {
+    for (unsigned I = 0; I < OldPN->getNumOperands(); ++I) {
+      Value *IncValue = OldPN->getIncomingValue(I);
       // TODO: currently, We ignore cases where it is a const. In the future, we
       // might support const.
-      if (isa<Constant>(IncValue))
-        return false;
+      if (isa<Constant>(IncValue)) {
+        auto *IncConst = dyn_cast<Constant>(IncValue);
+        if (!isa<UndefValue>(IncValue) && !IncConst->isZeroValue())
+          return false;
+        Value *Row = nullptr, *Col = nullptr;
+        std::tie(Row, Col) = getShape(OldPN);
+        // TODO: If it is not constant the Row and Col must domoniate tilezero
+        // that we are going to create.
+        if (!Row || !Col || !isa<Constant>(Row) || !isa<Constant>(Col))
+          return false;
+        // Create tilezero at the end of incoming block.
+        auto *Block = OldPN->getIncomingBlock(I);
+        BasicBlock::iterator Iter = Block->getTerminator()->getIterator();
+        Instruction *NewInst = Builder.CreateIntrinsic(
+            Intrinsic::x86_tilezero_internal, None, {Row, Col});
+        NewInst->moveBefore(&*Iter);
+        NewInst = Builder.CreateIntrinsic(Intrinsic::x86_cast_tile_to_vector,
+                                          {IncValue->getType()}, {NewInst});
+        NewInst->moveBefore(&*Iter);
+        // Replace InValue with new Value.
+        OldPN->setIncomingValue(I, NewInst);
+        IncValue = NewInst;
+      }
 
       if (auto *PNode = dyn_cast<PHINode>(IncValue)) {
         if (OldPhiNodes.insert(PNode))
@@ -966,6 +1017,10 @@ bool X86LowerAMXCast::transformAMXCast(IntrinsicInst *AMXCast) {
     //                                                  i64 60)
     // call void @llvm.x86.tilestored64.internal(i16 15, i16 60,
     //                                           i8* %addr3, i64 60, x86_amx %2)
+    if (AMXCast->use_empty()) {
+      AMXCast->eraseFromParent();
+      return true;
+    }
     Use &U = *(AMXCast->use_begin());
     unsigned OpNo = U.getOperandNo();
     auto *II = dyn_cast<IntrinsicInst>(U.getUser());

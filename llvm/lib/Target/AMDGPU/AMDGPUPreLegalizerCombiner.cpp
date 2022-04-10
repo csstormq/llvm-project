@@ -12,9 +12,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "AMDGPU.h"
+#include "AMDGPUCombinerHelper.h"
 #include "AMDGPULegalizerInfo.h"
 #include "GCNSubtarget.h"
 #include "MCTargetDesc/AMDGPUMCTargetDesc.h"
+#include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/Combiner.h"
 #include "llvm/CodeGen/GlobalISel/CombinerHelper.h"
 #include "llvm/CodeGen/GlobalISel/CombinerInfo.h"
@@ -34,10 +36,11 @@ protected:
   MachineIRBuilder &B;
   MachineFunction &MF;
   MachineRegisterInfo &MRI;
-  CombinerHelper &Helper;
+  AMDGPUCombinerHelper &Helper;
 
 public:
-  AMDGPUPreLegalizerCombinerHelper(MachineIRBuilder &B, CombinerHelper &Helper)
+  AMDGPUPreLegalizerCombinerHelper(MachineIRBuilder &B,
+                                   AMDGPUCombinerHelper &Helper)
       : B(B), MF(B.getMF()), MRI(*B.getMRI()), Helper(Helper){};
 
   struct ClampI64ToI16MatchInfo {
@@ -154,12 +157,12 @@ void AMDGPUPreLegalizerCombinerHelper::applyClampI64ToI16(
 
 class AMDGPUPreLegalizerCombinerHelperState {
 protected:
-  CombinerHelper &Helper;
+  AMDGPUCombinerHelper &Helper;
   AMDGPUPreLegalizerCombinerHelper &PreLegalizerHelper;
 
 public:
   AMDGPUPreLegalizerCombinerHelperState(
-      CombinerHelper &Helper,
+      AMDGPUCombinerHelper &Helper,
       AMDGPUPreLegalizerCombinerHelper &PreLegalizerHelper)
       : Helper(Helper), PreLegalizerHelper(PreLegalizerHelper) {}
 };
@@ -196,17 +199,15 @@ public:
 bool AMDGPUPreLegalizerCombinerInfo::combine(GISelChangeObserver &Observer,
                                               MachineInstr &MI,
                                               MachineIRBuilder &B) const {
-  CombinerHelper Helper(Observer, B, KB, MDT);
+  AMDGPUCombinerHelper Helper(Observer, B, KB, MDT);
   AMDGPUPreLegalizerCombinerHelper PreLegalizerHelper(B, Helper);
   AMDGPUGenPreLegalizerCombinerHelper Generated(GeneratedRuleCfg, Helper,
                                                 PreLegalizerHelper);
 
-  if (Generated.tryCombineAll(Observer, MI, B, Helper))
+  if (Generated.tryCombineAll(Observer, MI, B))
     return true;
 
   switch (MI.getOpcode()) {
-  case TargetOpcode::G_MEMCPY_INLINE:
-    return Helper.tryEmitMemcpyInline(MI);
   case TargetOpcode::G_CONCAT_VECTORS:
     return Helper.tryCombineConcatVectors(MI);
   case TargetOpcode::G_SHUFFLE_VECTOR:

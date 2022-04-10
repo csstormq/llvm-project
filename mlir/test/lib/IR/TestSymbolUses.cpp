@@ -17,6 +17,8 @@ namespace {
 /// provided by the symbol table along with erasing from the symbol table.
 struct SymbolUsesPass
     : public PassWrapper<SymbolUsesPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SymbolUsesPass)
+
   StringRef getArgument() const final { return "test-symbol-uses"; }
   StringRef getDescription() const final {
     return "Test detection of symbol uses";
@@ -84,7 +86,7 @@ struct SymbolUsesPass
       table.erase(op);
       assert(!table.lookup(name) &&
              "expected erased operation to be unknown now");
-      module.emitRemark() << name << " function successfully erased";
+      module.emitRemark() << name.getValue() << " function successfully erased";
     }
   }
 };
@@ -93,6 +95,8 @@ struct SymbolUsesPass
 /// functionality provided by the symbol table.
 struct SymbolReplacementPass
     : public PassWrapper<SymbolReplacementPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(SymbolReplacementPass)
+
   StringRef getArgument() const final { return "test-symbol-rauw"; }
   StringRef getDescription() const final {
     return "Test replacement of symbol uses";
@@ -110,12 +114,12 @@ struct SymbolReplacementPass
       StringAttr newName = nestedOp->getAttrOfType<StringAttr>("sym.new_name");
       if (!newName)
         return;
-      symbolUsers.replaceAllUsesWith(nestedOp, newName.getValue());
-      SymbolTable::setSymbolName(nestedOp, newName.getValue());
+      symbolUsers.replaceAllUsesWith(nestedOp, newName);
+      SymbolTable::setSymbolName(nestedOp, newName);
     });
   }
 };
-} // end anonymous namespace
+} // namespace
 
 namespace mlir {
 void registerSymbolTestPasses() {

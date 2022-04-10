@@ -13,8 +13,8 @@
 
 #include "test_iterators.h"
 
-#ifdef _LIBCPP_HAS_NO_RANGES
-#error "test/suppoort/test_range.h" can only be included in builds supporting ranges
+#if _LIBCPP_STD_VER < 17
+#error "test/support/test_range.h" can only be included in builds supporting ranges
 #endif
 
 struct sentinel {
@@ -62,10 +62,21 @@ struct test_view : std::ranges::view_base {
   sentinel end() const;
 };
 
-template<template<class...> class I, class R>
-constexpr auto make_archetype_range(R&& r) {
-  return std::ranges::subrange(I(std::ranges::begin(r)), sentinel_wrapper(std::ranges::end(r)));
-}
+struct BorrowedRange {
+  int *begin() const;
+  int *end() const;
+  BorrowedRange(BorrowedRange&&) = delete;
+};
+template<> inline constexpr bool std::ranges::enable_borrowed_range<BorrowedRange> = true;
+static_assert(!std::ranges::view<BorrowedRange>);
+static_assert(std::ranges::borrowed_range<BorrowedRange>);
 
+using BorrowedView = std::ranges::empty_view<int>;
+static_assert(std::ranges::view<BorrowedView>);
+static_assert(std::ranges::borrowed_range<BorrowedView>);
+
+using NonBorrowedView = std::ranges::single_view<int>;
+static_assert(std::ranges::view<NonBorrowedView>);
+static_assert(!std::ranges::borrowed_range<NonBorrowedView>);
 
 #endif // LIBCXX_TEST_SUPPORT_TEST_RANGE_H

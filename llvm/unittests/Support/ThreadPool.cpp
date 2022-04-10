@@ -83,7 +83,7 @@ protected:
 #define CHECK_UNSUPPORTED()                                                    \
   do {                                                                         \
     if (isUnsupportedOSOrEnvironment())                                        \
-      return;                                                                  \
+      GTEST_SKIP();                                                            \
   } while (0);
 
 TEST_F(ThreadPoolTest, AsyncBarrier) {
@@ -149,6 +149,31 @@ TEST_F(ThreadPoolTest, GetFuture) {
   setMainThreadReady();
   Pool.wait();
   ASSERT_EQ(2, i.load());
+}
+
+TEST_F(ThreadPoolTest, GetFutureWithResult) {
+  CHECK_UNSUPPORTED();
+  ThreadPool Pool(hardware_concurrency(2));
+  auto F1 = Pool.async([] { return 1; });
+  auto F2 = Pool.async([] { return 2; });
+
+  setMainThreadReady();
+  Pool.wait();
+  ASSERT_EQ(1, F1.get());
+  ASSERT_EQ(2, F2.get());
+}
+
+TEST_F(ThreadPoolTest, GetFutureWithResultAndArgs) {
+  CHECK_UNSUPPORTED();
+  ThreadPool Pool(hardware_concurrency(2));
+  auto Fn = [](int x) { return x; };
+  auto F1 = Pool.async(Fn, 1);
+  auto F2 = Pool.async(Fn, 2);
+
+  setMainThreadReady();
+  Pool.wait();
+  ASSERT_EQ(1, F1.get());
+  ASSERT_EQ(2, F2.get());
 }
 
 TEST_F(ThreadPoolTest, PoolDestruction) {
@@ -238,7 +263,7 @@ TEST_F(ThreadPoolTest, AffinityMask) {
 
   // Skip this test if less than 4 threads are available.
   if (llvm::hardware_concurrency().compute_thread_count() < 4)
-    return;
+    GTEST_SKIP();
 
   using namespace llvm::sys;
   if (getenv("LLVM_THREADPOOL_AFFINITYMASK")) {
@@ -250,7 +275,7 @@ TEST_F(ThreadPoolTest, AffinityMask) {
                         [](auto &T) { return T.getData().front() < 16UL; }) &&
            "Threads ran on more CPUs than expected! The affinity mask does not "
            "seem to work.");
-    return;
+    GTEST_SKIP();
   }
   std::string Executable =
       sys::fs::getMainExecutable(TestMainArgv0, &ThreadPoolTestStringArg1);

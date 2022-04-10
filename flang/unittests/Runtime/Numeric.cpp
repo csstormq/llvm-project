@@ -1,4 +1,4 @@
-//===-- flang/unittests/RuntimeGTest/Numeric.cpp ----------------*- C++ -*-===//
+//===-- flang/unittests/Runtime/Numeric.cpp ---------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "../../runtime/numeric.h"
+#include "flang/Runtime/numeric.h"
 #include "gtest/gtest.h"
 #include <cmath>
 #include <limits>

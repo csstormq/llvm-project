@@ -7,14 +7,17 @@
 //===-----------------------------------------------------------------------===/
 
 #include "llvm/InterfaceStub/IFSHandler.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/InterfaceStub/IFSStub.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/GlobPattern.h"
 #include "llvm/Support/LineIterator.h"
 #include "llvm/Support/YAMLTraits.h"
+#include <functional>
 
 using namespace llvm;
 using namespace llvm::ifs;
@@ -163,7 +166,7 @@ bool usesTriple(StringRef Buf) {
   for (line_iterator I(MemoryBufferRef(Buf, "ELFStub")); !I.is_at_eof(); ++I) {
     StringRef Line = (*I).trim();
     if (Line.startswith("Target:")) {
-      if (Line == "Target:" || (Line.find("{") != Line.npos)) {
+      if (Line == "Target:" || Line.contains("{")) {
         return false;
       }
     }
@@ -195,7 +198,7 @@ Expected<std::unique_ptr<IFSStub>> ifs::readIFSFromBuffer(StringRef Buf) {
 }
 
 Error ifs::writeIFSToOutputStream(raw_ostream &OS, const IFSStub &Stub) {
-  yaml::Output YamlOut(OS, NULL, /*WrapColumn =*/0);
+  yaml::Output YamlOut(OS, nullptr, /*WrapColumn =*/0);
   std::unique_ptr<IFSStubTriple> CopyStub(new IFSStubTriple(Stub));
   if (Stub.Target.Arch) {
     CopyStub->Target.ArchString = std::string(
@@ -326,4 +329,30 @@ void ifs::stripIFSTarget(IFSStub &Stub, bool StripTriple, bool StripArch,
   if (!Stub.Target.Arch && !Stub.Target.BitWidth && !Stub.Target.Endianness) {
     Stub.Target.ObjectFormat.reset();
   }
+}
+
+Error ifs::filterIFSSyms(IFSStub &Stub, bool StripUndefined,
+                         const std::vector<std::string> &Exclude) {
+  std::function<bool(const IFSSymbol &)> Filter = [](const IFSSymbol &) {
+    return false;
+  };
+
+  if (StripUndefined) {
+    Filter = [Filter](const IFSSymbol &Sym) {
+      return Sym.Undefined || Filter(Sym);
+    };
+  }
+
+  for (StringRef Glob : Exclude) {
+    Expected<llvm::GlobPattern> PatternOrErr = llvm::GlobPattern::create(Glob);
+    if (!PatternOrErr)
+      return PatternOrErr.takeError();
+    Filter = [Pattern = *PatternOrErr, Filter](const IFSSymbol &Sym) {
+      return Pattern.match(Sym.Name) || Filter(Sym);
+    };
+  }
+
+  llvm::erase_if(Stub.Symbols, Filter);
+
+  return Error::success();
 }

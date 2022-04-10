@@ -241,7 +241,8 @@ bool MemIsApp(uptr p) {
   CHECK(GetTagFromPointer(p) == 0);
 #  endif
 
-  return p >= kHighMemStart || (p >= kLowMemStart && p <= kLowMemEnd);
+  return (p >= kHighMemStart && p <= kHighMemEnd) ||
+         (p >= kLowMemStart && p <= kLowMemEnd);
 }
 
 void InstallAtExitHandler() { atexit(HwasanAtExit); }
@@ -249,7 +250,7 @@ void InstallAtExitHandler() { atexit(HwasanAtExit); }
 // ---------------------- TSD ---------------- {{{1
 
 extern "C" void __hwasan_thread_enter() {
-  hwasanThreadList().CreateCurrentThread()->InitRandomState();
+  hwasanThreadList().CreateCurrentThread()->EnsureRandomStateInited();
 }
 
 extern "C" void __hwasan_thread_exit() {

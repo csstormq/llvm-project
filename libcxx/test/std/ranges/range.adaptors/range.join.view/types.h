@@ -31,8 +31,8 @@ struct ChildView : std::ranges::view_base {
   constexpr const int *end() const { return ptr_ + 4; }
 };
 
-constexpr bool operator==(const cpp20_input_iterator<int*> &lhs, int* rhs) { return lhs.base() == rhs; }
-constexpr bool operator==(int* lhs, const cpp20_input_iterator<int*> &rhs) { return rhs.base() == lhs; }
+constexpr bool operator==(const cpp20_input_iterator<int*> &lhs, int* rhs) { return base(lhs) == rhs; }
+constexpr bool operator==(int* lhs, const cpp20_input_iterator<int*> &rhs) { return base(rhs) == lhs; }
 
 ChildView globalChildren[4] = {ChildView(globalBuffer[0]), ChildView(globalBuffer[1]), ChildView(globalBuffer[2]), ChildView(globalBuffer[3])};
 
@@ -56,11 +56,11 @@ struct ParentView : std::ranges::view_base {
   constexpr T *end() { return ptr_ + size_; }
   constexpr const T *end() const { return ptr_ + size_; }
 };
-
+// TODO: remove these bogus operators
 template<class T>
-constexpr bool operator==(const cpp20_input_iterator<T*> &lhs, T *rhs) { return lhs.base() == rhs; }
+constexpr bool operator==(const cpp20_input_iterator<T*> &lhs, T *rhs) { return base(lhs) == rhs; }
 template<class T>
-constexpr bool operator==(T *lhs, const cpp20_input_iterator<T*> &rhs) { return rhs.base() == lhs; }
+constexpr bool operator==(T *lhs, const cpp20_input_iterator<T*> &rhs) { return base(rhs) == lhs; }
 
 struct CopyableChild : std::ranges::view_base {
   int *ptr_;
@@ -73,9 +73,9 @@ struct CopyableChild : std::ranges::view_base {
   constexpr int *end() { return ptr_ + size_; }
   constexpr const int *end() const { return ptr_ + size_; }
 };
-
-constexpr bool operator==(const cpp17_input_iterator<const int*> &lhs, const int* rhs) { return lhs.base() == rhs; }
-constexpr bool operator==(const int* lhs, const cpp17_input_iterator<const int*> &rhs) { return rhs.base() == lhs; }
+// TODO: remove these bogus operators
+constexpr bool operator==(const cpp17_input_iterator<const int*> &lhs, const int* rhs) { return base(lhs) == rhs; }
+constexpr bool operator==(const int* lhs, const cpp17_input_iterator<const int*> &rhs) { return base(rhs) == lhs; }
 
 struct CopyableParent : std::ranges::view_base {
   CopyableChild *ptr_;
@@ -86,9 +86,9 @@ struct CopyableParent : std::ranges::view_base {
   constexpr CopyableChild *end() { return ptr_ + 4; }
   constexpr const CopyableChild *end() const { return ptr_ + 4; }
 };
-
-constexpr bool operator==(const cpp17_input_iterator<const CopyableChild*> &lhs, const CopyableChild *rhs) { return lhs.base() == rhs; }
-constexpr bool operator==(const CopyableChild *lhs, const cpp17_input_iterator<const CopyableChild*> &rhs) { return rhs.base() == lhs; }
+// TODO: remove these bogus operators
+constexpr bool operator==(const cpp17_input_iterator<const CopyableChild*> &lhs, const CopyableChild *rhs) { return base(lhs) == rhs; }
+constexpr bool operator==(const CopyableChild *lhs, const cpp17_input_iterator<const CopyableChild*> &rhs) { return base(rhs) == lhs; }
 
 struct Box { int x; };
 
@@ -133,7 +133,7 @@ struct ValueView : std::ranges::view_base {
   ValueView& operator=(const ValueView&) = delete;
 
   constexpr InputValueIter<T> begin() { return ptr_; }
-  constexpr const InputValueIter<T> begin() const { return ptr_; }
+  constexpr InputValueIter<T> begin() const { return ptr_; }
   constexpr T *end() { return ptr_.ptr_ + 4; }
   constexpr const T *end() const { return ptr_.ptr_ + 4; }
 };

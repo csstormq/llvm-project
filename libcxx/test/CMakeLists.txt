@@ -59,7 +59,6 @@ pythonize_bool(LIBCXX_ENABLE_SHARED)
 pythonize_bool(LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXX)
 pythonize_bool(LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXXABI)
 pythonize_bool(LIBCXX_ENABLE_FILESYSTEM)
-pythonize_bool(LIBCXX_BUILD_32_BITS)
 pythonize_bool(LIBCXX_GENERATE_COVERAGE)
 pythonize_bool(LIBCXXABI_ENABLE_SHARED)
 pythonize_bool(LIBCXXABI_USE_LLVM_UNWINDER)
@@ -105,16 +104,18 @@ if (NOT LIBCXX_ENABLE_DEBUG_MODE_SUPPORT)
   serialize_lit_param(enable_debug_tests False)
 endif()
 
-if (LIBCXX_TARGET_TRIPLE)
-  serialize_lit_param(target_triple "\"${LIBCXX_TARGET_TRIPLE}\"")
+if (LIBCXX_ENABLE_ASSERTIONS)
+  serialize_lit_param(enable_assertions True)
+endif()
+
+if (CMAKE_CXX_COMPILER_TARGET)
+  serialize_lit_param(target_triple "\"${CMAKE_CXX_COMPILER_TARGET}\"")
+else()
+  serialize_lit_param(target_triple "\"${LLVM_DEFAULT_TARGET_TRIPLE}\"")
 endif()
 
 if (LLVM_USE_SANITIZER)
   serialize_lit_param(use_sanitizer "\"${LLVM_USE_SANITIZER}\"")
-endif()
-
-if (LIBCXX_BUILD_32_BITS)
-  serialize_lit_param(enable_32bit True)
 endif()
 
 foreach(param IN LISTS LIBCXX_TEST_PARAMS)
@@ -129,6 +130,10 @@ endif()
 
 if (LIBCXX_INCLUDE_TESTS)
   include(AddLLVM) # for configure_lit_site_cfg and add_lit_testsuite
+
+  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/configs/cmake-bridge.cfg.in"
+                 "${CMAKE_CURRENT_BINARY_DIR}/cmake-bridge.cfg"
+                 @ONLY)
 
   configure_lit_site_cfg(
     "${LIBCXX_TEST_CONFIG}"

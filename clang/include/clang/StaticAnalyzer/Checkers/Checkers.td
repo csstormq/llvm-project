@@ -73,6 +73,7 @@ def Taint : Package<"taint">, ParentPackage<SecurityAlpha>;
 
 def CERT : Package<"cert">, ParentPackage<SecurityAlpha>;
 def POS : Package<"pos">, ParentPackage<CERT>;
+def ENV : Package<"env">, ParentPackage<CERT>;
 
 def Unix : Package<"unix">;
 def UnixAlpha : Package<"unix">, ParentPackage<Alpha>;
@@ -347,6 +348,10 @@ def NullableReturnedFromNonnullChecker : Checker<"NullableReturnedFromNonnull">,
 
 let ParentPackage = APIModeling in {
 
+def ErrnoModeling : Checker<"Errno">,
+  HelpText<"Make the special value 'errno' available to other checkers.">,
+  Documentation<NotDocumented>;
+
 def StdCLibraryFunctionsChecker : Checker<"StdCLibraryFunctions">,
   HelpText<"Improve modeling of the C standard library functions">,
   // Uninitialized value check is a mandatory dependency. This Checker asserts
@@ -372,6 +377,11 @@ def StdCLibraryFunctionsChecker : Checker<"StdCLibraryFunctions">,
 
 def TrustNonnullChecker : Checker<"TrustNonnull">,
   HelpText<"Trust that returns from framework methods annotated with _Nonnull "
+           "are not null">,
+  Documentation<NotDocumented>;
+
+def TrustReturnsNonnullChecker : Checker<"TrustReturnsNonnull">,
+  HelpText<"Trust that returns from methods annotated with returns_nonnull "
            "are not null">,
   Documentation<NotDocumented>;
 
@@ -465,7 +475,12 @@ def CStringNotNullTerm : Checker<"NotNullTerminated">,
   HelpText<"Check for arguments which are not null-terminating strings">,
   Dependencies<[CStringModeling]>,
   Documentation<HasAlphaDocumentation>;
-
+ 
+def CStringUninitializedRead : Checker<"UninitializedRead">,
+  HelpText<"Checks if the string manipulation function would read uninitialized bytes">,
+  Dependencies<[CStringModeling]>,
+  Documentation<HasAlphaDocumentation>;
+  
 } // end "alpha.unix.cstring"
 
 let ParentPackage = Unix in {
@@ -493,8 +508,8 @@ def DynamicMemoryModeling: Checker<"DynamicMemoryModeling">,
                   "that neither deallocated it, or have taken responsibility "
                   "of the ownership are noted, similarly to "
                   "NoStoreFuncVisitor.",
-                  "false",
-                  InAlpha,
+                  "true",
+                  Released,
                   Hide>
   ]>,
   Dependencies<[CStringModeling]>,
@@ -551,7 +566,7 @@ def StdCLibraryFunctionArgsChecker : Checker<"StdCLibraryFunctionArgs">,
            "or is EOF.">,
   Dependencies<[StdCLibraryFunctionsChecker]>,
   WeakDependencies<[CallAndMessageChecker, NonNullParamChecker, StreamChecker]>,
-  Documentation<NotDocumented>;
+  Documentation<HasAlphaDocumentation>;
 
 } // end "alpha.unix"
 
@@ -601,6 +616,10 @@ def SmartPtrModeling: Checker<"SmartPtrModeling">,
                   Hide>,
   ]>,
   Hidden;
+
+def StringChecker: Checker<"StringChecker">,
+  HelpText<"Checks C++ std::string bugs">,
+  Documentation<HasDocumentation>;
 
 def MoveChecker: Checker<"Move">,
   HelpText<"Find use-after-move bugs in C++">,
@@ -946,6 +965,14 @@ let ParentPackage = POS in {
   Documentation<HasDocumentation>;
 
 } // end "alpha.cert.pos"
+
+let ParentPackage = ENV in {
+
+  def InvalidPtrChecker : Checker<"InvalidPtr">,
+  HelpText<"Finds usages of possibly invalidated pointers">,
+  Documentation<HasDocumentation>;
+
+} // end "alpha.cert.env"
 
 let ParentPackage = SecurityAlpha in {
 
@@ -1536,6 +1563,11 @@ def TaintTesterChecker : Checker<"TaintTest">,
 def StreamTesterChecker : Checker<"StreamTester">,
   HelpText<"Add test functions to StreamChecker for test and debugging "
            "purposes.">,
+  Documentation<NotDocumented>;
+
+def ErrnoTesterChecker : Checker<"ErrnoTest">,
+  HelpText<"Check modeling aspects of 'errno'.">,
+  Dependencies<[ErrnoModeling]>,
   Documentation<NotDocumented>;
 
 def ExprInspectionChecker : Checker<"ExprInspection">,

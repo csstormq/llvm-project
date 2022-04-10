@@ -194,6 +194,8 @@
 // MSEXT:#define _INTEGRAL_MAX_BITS 64
 // MSEXT-NOT:#define _NATIVE_WCHAR_T_DEFINED 1
 // MSEXT-NOT:#define _WCHAR_T_DEFINED 1
+// MSEXT:#define _MSVC_EXECUTION_CHARACTER_SET 65001
+// MSEXT:#define __STDC_NO_THREADS__ 1
 //
 //
 // RUN: %clang_cc1 -x c++ -fms-extensions -triple i686-pc-win32 -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix MSEXT-CXX %s
@@ -1245,6 +1247,7 @@
 // RUN: %clang_cc1 -E -dM -ffreestanding -fgnuc-version=4.2.1 -triple=x86_64-scei-ps4 < /dev/null | FileCheck -match-full-lines -check-prefix PS4 %s
 //
 // PS4:#define _LP64 1
+// PS4:#define __BIGGEST_ALIGNMENT__ 32
 // PS4:#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
 // PS4:#define __CHAR16_TYPE__ unsigned short
 // PS4:#define __CHAR32_TYPE__ unsigned int
@@ -1458,6 +1461,14 @@
 // OPENBSD:#define __WCHAR_TYPE__ int
 // OPENBSD:#define __WINT_TYPE__ int
 //
+// RUN: %clang_cc1 -x c -std=c11 -E -dM -ffreestanding -triple=amd64-unknown-openbsd < /dev/null | FileCheck -match-full-lines -check-prefix OPENBSD-STDC %s
+// RUN: %clang_cc1 -x c -std=gnu11 -E -dM -ffreestanding -triple=amd64-unknown-openbsd < /dev/null | FileCheck -match-full-lines -check-prefix OPENBSD-STDC %s
+// RUN: %clang_cc1 -x c -std=c17 -E -dM -ffreestanding -triple=amd64-unknown-openbsd < /dev/null | FileCheck -match-full-lines -check-prefix OPENBSD-STDC %s
+// OPENBSD-STDC:#define __STDC_NO_THREADS__ 1
+//
+// RUN: %clang_cc1 -x c -std=c99 -E -dM -ffreestanding -triple=amd64-unknown-openbsd < /dev/null | FileCheck -match-full-lines -check-prefix OPENBSD-STDC-N %s
+// OPENBSD-STDC-N-NOT:#define __STDC_NO_THREADS__ 1
+//
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=xcore-none-none < /dev/null | FileCheck -match-full-lines -check-prefix XCORE %s
 // XCORE:#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
 // XCORE:#define __LITTLE_ENDIAN__ 1
@@ -1473,7 +1484,7 @@
 // RUN: %clang_cc1 -E -dM -ffreestanding -fgnuc-version=4.2.1 -triple=wasm32-emscripten \
 // RUN:   < /dev/null \
 // RUN:   | FileCheck -match-full-lines -check-prefixes=WEBASSEMBLY,WEBASSEMBLY32,EMSCRIPTEN %s
-// RUN: %clang_cc1 -E -dM -ffreestanding -fgnuc-version=4.2.1 -triple=wasm32-emscripten -pthread -target-feature +atomics \
+// RUN: %clang_cc1 -E -dM -ffreestanding -fgnuc-version=4.2.1 -triple=wasm32-emscripten -pthread -target-feature +atomics -target-feature +bulk-memory \
 // RUN:   < /dev/null \
 // RUN:   | FileCheck -match-full-lines -check-prefixes=WEBASSEMBLY,WEBASSEMBLY32,EMSCRIPTEN,EMSCRIPTEN-THREADS %s
 // RUN: %clang_cc1 -E -dM -ffreestanding -fgnuc-version=4.2.1 -triple=wasm64-emscripten \
@@ -1488,7 +1499,7 @@
 // RUN: %clang_cc1 -E -dM -ffreestanding -fgnuc-version=4.2.1 -triple=wasm32-unknown-unknown -x c++ \
 // RUN:   < /dev/null \
 // RUN:   | FileCheck -match-full-lines -check-prefixes=WEBASSEMBLY-CXX %s
-// RUN: %clang_cc1 -E -dM -ffreestanding -fgnuc-version=4.2.1 -triple=wasm32-unknown-unknown -x c++ -pthread -target-feature +atomics \
+// RUN: %clang_cc1 -E -dM -ffreestanding -fgnuc-version=4.2.1 -triple=wasm32-unknown-unknown -x c++ -pthread -target-feature +atomics -target-feature +bulk-memory \
 // RUN:   < /dev/null \
 // RUN:   | FileCheck -match-full-lines -check-prefixes=WEBASSEMBLY-CXX-ATOMICS %s
 //
@@ -1504,6 +1515,8 @@
 // WEBASSEMBLY-NEXT:#define __ATOMIC_RELEASE 3
 // WEBASSEMBLY-NEXT:#define __ATOMIC_SEQ_CST 5
 // WEBASSEMBLY-NEXT:#define __BIGGEST_ALIGNMENT__ 16
+// WEBASSEMBLY-NEXT:#define __BITINT_MAXWIDTH__ 128
+// WEBASSEMBLY-NEXT:#define __BOOL_WIDTH__ 8
 // WEBASSEMBLY-NEXT:#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
 // WEBASSEMBLY-NEXT:#define __CHAR16_TYPE__ unsigned short
 // WEBASSEMBLY-NEXT:#define __CHAR32_TYPE__ unsigned int
@@ -1624,35 +1637,44 @@
 // WEBASSEMBLY-NEXT:#define __INT_FAST16_FMTi__ "hi"
 // WEBASSEMBLY-NEXT:#define __INT_FAST16_MAX__ 32767
 // WEBASSEMBLY-NEXT:#define __INT_FAST16_TYPE__ short
+// WEBASSEMBLY-NEXT:#define __INT_FAST16_WIDTH__ 16
 // WEBASSEMBLY-NEXT:#define __INT_FAST32_FMTd__ "d"
 // WEBASSEMBLY-NEXT:#define __INT_FAST32_FMTi__ "i"
 // WEBASSEMBLY-NEXT:#define __INT_FAST32_MAX__ 2147483647
 // WEBASSEMBLY-NEXT:#define __INT_FAST32_TYPE__ int
+// WEBASSEMBLY-NEXT:#define __INT_FAST32_WIDTH__ 32
 // WEBASSEMBLY-NEXT:#define __INT_FAST64_FMTd__ "lld"
 // WEBASSEMBLY-NEXT:#define __INT_FAST64_FMTi__ "lli"
 // WEBASSEMBLY-NEXT:#define __INT_FAST64_MAX__ 9223372036854775807LL
 // WEBASSEMBLY-NEXT:#define __INT_FAST64_TYPE__ long long int
+// WEBASSEMBLY-NEXT:#define __INT_FAST64_WIDTH__ 64
 // WEBASSEMBLY-NEXT:#define __INT_FAST8_FMTd__ "hhd"
 // WEBASSEMBLY-NEXT:#define __INT_FAST8_FMTi__ "hhi"
 // WEBASSEMBLY-NEXT:#define __INT_FAST8_MAX__ 127
 // WEBASSEMBLY-NEXT:#define __INT_FAST8_TYPE__ signed char
+// WEBASSEMBLY-NEXT:#define __INT_FAST8_WIDTH__ 8
 // WEBASSEMBLY-NEXT:#define __INT_LEAST16_FMTd__ "hd"
 // WEBASSEMBLY-NEXT:#define __INT_LEAST16_FMTi__ "hi"
 // WEBASSEMBLY-NEXT:#define __INT_LEAST16_MAX__ 32767
 // WEBASSEMBLY-NEXT:#define __INT_LEAST16_TYPE__ short
+// WEBASSEMBLY-NEXT:#define __INT_LEAST16_WIDTH__ 16
 // WEBASSEMBLY-NEXT:#define __INT_LEAST32_FMTd__ "d"
 // WEBASSEMBLY-NEXT:#define __INT_LEAST32_FMTi__ "i"
 // WEBASSEMBLY-NEXT:#define __INT_LEAST32_MAX__ 2147483647
 // WEBASSEMBLY-NEXT:#define __INT_LEAST32_TYPE__ int
+// WEBASSEMBLY-NEXT:#define __INT_LEAST32_WIDTH__ 32
 // WEBASSEMBLY-NEXT:#define __INT_LEAST64_FMTd__ "lld"
 // WEBASSEMBLY-NEXT:#define __INT_LEAST64_FMTi__ "lli"
 // WEBASSEMBLY-NEXT:#define __INT_LEAST64_MAX__ 9223372036854775807LL
 // WEBASSEMBLY-NEXT:#define __INT_LEAST64_TYPE__ long long int
+// WEBASSEMBLY-NEXT:#define __INT_LEAST64_WIDTH__ 64
 // WEBASSEMBLY-NEXT:#define __INT_LEAST8_FMTd__ "hhd"
 // WEBASSEMBLY-NEXT:#define __INT_LEAST8_FMTi__ "hhi"
 // WEBASSEMBLY-NEXT:#define __INT_LEAST8_MAX__ 127
 // WEBASSEMBLY-NEXT:#define __INT_LEAST8_TYPE__ signed char
+// WEBASSEMBLY-NEXT:#define __INT_LEAST8_WIDTH__ 8
 // WEBASSEMBLY-NEXT:#define __INT_MAX__ 2147483647
+// WEBASSEMBLY-NEXT:#define __INT_WIDTH__ 32
 // WEBASSEMBLY-NEXT:#define __LDBL_DECIMAL_DIG__ 36
 // WEBASSEMBLY-NEXT:#define __LDBL_DENORM_MIN__ 6.47517511943802511092443895822764655e-4966L
 // WEBASSEMBLY-NEXT:#define __LDBL_DIG__ 33
@@ -1668,12 +1690,16 @@
 // WEBASSEMBLY-NEXT:#define __LDBL_MIN_EXP__ (-16381)
 // WEBASSEMBLY-NEXT:#define __LDBL_MIN__ 3.36210314311209350626267781732175260e-4932L
 // WEBASSEMBLY-NEXT:#define __LITTLE_ENDIAN__ 1
+// WEBASSEMBLY-NEXT:#define __LLONG_WIDTH__ 64
 // WEBASSEMBLY-NEXT:#define __LONG_LONG_MAX__ 9223372036854775807LL
 // WEBASSEMBLY32-NEXT:#define __LONG_MAX__ 2147483647L
 // WEBASSEMBLY32-NOT:#define __LP64__
+// WEBASSEMBLY32-NEXT:#define __LONG_WIDTH__ 32
 // WEBASSEMBLY64-NEXT:#define __LONG_MAX__ 9223372036854775807L
+// WEBASSEMBLY64-NEXT:#define __LONG_WIDTH__ 64
 // WEBASSEMBLY64-NEXT:#define __LP64__ 1
 // WEBASSEMBLY-NEXT:#define __NO_INLINE__ 1
+// WEBASSEMBLY-NEXT:#define __NO_MATH_ERRNO__ 1
 // WEBASSEMBLY-NEXT:#define __OBJC_BOOL_IS_BOOL 0
 // WEBASSEMBLY-NEXT:#define __OPENCL_MEMORY_SCOPE_ALL_SVM_DEVICES 3
 // WEBASSEMBLY-NEXT:#define __OPENCL_MEMORY_SCOPE_DEVICE 2
@@ -1696,6 +1722,7 @@
 // WEBASSEMBLY-NOT:#define __REGISTER_PREFIX__
 // WEBASSEMBLY-NEXT:#define __SCHAR_MAX__ 127
 // WEBASSEMBLY-NEXT:#define __SHRT_MAX__ 32767
+// WEBASSEMBLY-NEXT:#define __SHRT_WIDTH__ 16
 // WEBASSEMBLY32-NEXT:#define __SIG_ATOMIC_MAX__ 2147483647L
 // WEBASSEMBLY32-NEXT:#define __SIG_ATOMIC_WIDTH__ 32
 // WEBASSEMBLY64-NEXT:#define __SIG_ATOMIC_MAX__ 9223372036854775807L
@@ -1847,8 +1874,10 @@
 // WEBASSEMBLY-NEXT:#define __clang_version__ "{{.*}}"
 // WEBASSEMBLY-NEXT:#define __clang_wide_literal_encoding__ {{.*}}
 // WEBASSEMBLY-NEXT:#define __llvm__ 1
-// WEBASSEMBLY-NOT:#define __unix
-// WEBASSEMBLY-NOT:#define __unix__
+// WEBASSEMBLY-WASI-NOT:#define __unix
+// WEBASSEMBLY-WASI-NOT:#define __unix__
+// EMSCRIPTEN-NEXT:#define __unix 1
+// EMSCRIPTEN-NEXT:#define __unix__ 1
 // WEBASSEMBLY-WASI-NEXT:#define __wasi__ 1
 // WEBASSEMBLY-NOT:#define __wasm_simd128__
 // WEBASSEMBLY-NOT:#define __wasm_simd256__
@@ -1863,6 +1892,8 @@
 // WEBASSEMBLY64-NEXT:#define __wasm64 1
 // WEBASSEMBLY64-NEXT:#define __wasm64__ 1
 // WEBASSEMBLY-NEXT:#define __wasm__ 1
+// EMSCRIPTEN:#define unix 1
+// WEBASSEMBLY-WASI-NOT:#define unix 1
 // WEBASSEMBLY-CXX-NOT:_REENTRANT
 // WEBASSEMBLY-CXX-NOT:__STDCPP_THREADS__
 // WEBASSEMBLY-CXX-ATOMICS:#define _REENTRANT 1
@@ -2044,7 +2075,6 @@
 // AVR:#define __WCHAR_MAX__ 32767
 // AVR:#define __WCHAR_TYPE__ int
 // AVR:#define __WINT_TYPE__ int
-
 
 // RUN: %clang_cc1 -E -dM -ffreestanding \
 // RUN:    -triple i686-windows-msvc -fms-compatibility -x c++ < /dev/null \

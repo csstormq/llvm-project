@@ -1,4 +1,4 @@
-//===-- flang/unittests/RuntimeGTest/CrashHandlerFixture.cpp ----*- C++ -*-===//
+//===-- flang/unittests/Runtime/CrashHandlerFixture.cpp ---------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 #include "CrashHandlerFixture.h"
-#include "../../runtime/io-api.h"
 #include "../../runtime/terminator.h"
+#include "flang/Runtime/io-api.h"
 #include <gtest/gtest.h>
 
 using namespace Fortran::runtime;
@@ -56,8 +56,8 @@ TEST(TestIOCrash, FormatDescriptorWriteMismatchTest) {
   static const char *format{"(A4)"};
   auto *cookie{IONAME(BeginInternalFormattedOutput)(
       buffer, bufferSize, format, std::strlen(format))};
-  ASSERT_DEATH(IONAME(OutputInteger64)(cookie, 0xfeedface),
-      "Data edit descriptor 'A' may not be used with an INTEGER data item");
+  ASSERT_DEATH(IONAME(OutputLogical)(cookie, true),
+      "Data edit descriptor 'A' may not be used with a LOGICAL data item");
 }
 
 TEST(TestIOCrash, InvalidFormatCharacterTest) {

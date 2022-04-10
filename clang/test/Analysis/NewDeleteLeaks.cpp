@@ -20,21 +20,24 @@
 
 bool coin();
 
+// TODO: AST analysis of sink would reveal that it doesn't intent to free the
+// allocated memory, but in this instance, its also the only function with
+// the ability to do so, we should see a note here.
 namespace memory_allocated_in_fn_call {
 
 void sink(int *P) {
-} // ownership-note {{Returning without deallocating memory or storing the pointer for later deallocation}}
+}
 
 void foo() {
   sink(new int(5)); // expected-note {{Memory is allocated}}
-                    // ownership-note@-1 {{Calling 'sink'}}
-                    // ownership-note@-2 {{Returning from 'sink'}}
 } // expected-warning {{Potential memory leak [cplusplus.NewDeleteLeaks]}}
 // expected-note@-1 {{Potential memory leak}}
 
 } // namespace memory_allocated_in_fn_call
 
-namespace memory_passed_to_fn_call {
+// Realize that sink() intends to deallocate memory, assume that it should've
+// taken care of the leaked object as well.
+namespace memory_passed_to_fn_call_delete {
 
 void sink(int *P) {
   if (coin()) // ownership-note {{Assuming the condition is false}}
@@ -49,7 +52,41 @@ void foo() {
 } // expected-warning {{Potential leak of memory pointed to by 'ptr' [cplusplus.NewDeleteLeaks]}}
 // expected-note@-1 {{Potential leak}}
 
-} // namespace memory_passed_to_fn_call
+} // namespace memory_passed_to_fn_call_delete
+
+namespace memory_passed_to_fn_call_free {
+
+void sink(int *P) {
+  if (coin()) // ownership-note {{Assuming the condition is false}}
+              // ownership-note@-1 {{Taking false branch}}
+    free(P);
+} // ownership-note {{Returning without deallocating memory or storing the pointer for later deallocation}}
+
+void foo() {
+  int *ptr = (int *)malloc(sizeof(int)); // expected-note {{Memory is allocated}}
+  sink(ptr);                             // ownership-note {{Calling 'sink'}}
+                                         // ownership-note@-1 {{Returning from 'sink'}}
+} // expected-warning {{Potential leak of memory pointed to by 'ptr' [unix.Malloc]}}
+// expected-note@-1 {{Potential leak}}
+
+} // namespace memory_passed_to_fn_call_free
+
+// Function pointers cannot be resolved syntactically.
+namespace memory_passed_to_fn_call_free_through_fn_ptr {
+void (*freeFn)(void *) = free;
+
+void sink(int *P) {
+  if (coin())
+    freeFn(P);
+}
+
+void foo() {
+  int *ptr = (int *)malloc(sizeof(int)); // expected-note {{Memory is allocated}}
+  sink(ptr);
+} // expected-warning {{Potential leak of memory pointed to by 'ptr' [unix.Malloc]}}
+// expected-note@-1 {{Potential leak}}
+
+} // namespace memory_passed_to_fn_call_free_through_fn_ptr
 
 namespace memory_shared_with_ptr_of_shorter_lifetime {
 
@@ -109,21 +146,36 @@ void foo() {
 
 } // namespace memory_shared_with_ptr_of_same_lifetime
 
-// TODO: We don't want a note here. sink() doesn't seem like a function that
-// even attempts to take care of any memory ownership problems.
 namespace memory_passed_into_fn_that_doesnt_intend_to_free {
 
 void sink(int *P) {
-} // ownership-note {{Returning without deallocating memory or storing the pointer for later deallocation}}
+}
 
 void foo() {
   int *ptr = new int(5); // expected-note {{Memory is allocated}}
-  sink(ptr);             // ownership-note {{Calling 'sink'}}
-                         // ownership-note@-1 {{Returning from 'sink'}}
+  sink(ptr);
 } // expected-warning {{Potential leak of memory pointed to by 'ptr' [cplusplus.NewDeleteLeaks]}}
 // expected-note@-1 {{Potential leak}}
 
 } // namespace memory_passed_into_fn_that_doesnt_intend_to_free
+
+namespace memory_passed_into_fn_that_doesnt_intend_to_free2 {
+
+void bar();
+
+void sink(int *P) {
+  // Correctly realize that calling bar() doesn't mean that this function would
+  // like to deallocate anything.
+  bar();
+}
+
+void foo() {
+  int *ptr = new int(5); // expected-note {{Memory is allocated}}
+  sink(ptr);
+} // expected-warning {{Potential leak of memory pointed to by 'ptr' [cplusplus.NewDeleteLeaks]}}
+// expected-note@-1 {{Potential leak}}
+
+} // namespace memory_passed_into_fn_that_doesnt_intend_to_free2
 
 namespace refkind_from_unoallocated_to_allocated {
 

@@ -20,6 +20,7 @@
 #include "lldb/Utility/TraceGDBRemotePackets.h"
 #include "lldb/Utility/UnimplementedError.h"
 #include "lldb/lldb-private.h"
+#include "lldb/lldb-types.h"
 
 namespace lldb_private {
 
@@ -54,6 +55,22 @@ public:
   /// \param[in] s
   ///     A stream object to dump the information to.
   virtual void Dump(Stream *s) const = 0;
+
+  /// Save the trace of a live process to the specified directory, which
+  /// will be created if needed.
+  /// This will also create a a file \a <directory>/trace.json with the main
+  /// properties of the trace session, along with others files which contain
+  /// the actual trace data. The trace.json file can be used later as input
+  /// for the "trace load" command to load the trace in LLDB.
+  /// The process being trace is not a live process, return an error.
+  ///
+  /// \param[in] directory
+  ///   The directory where the trace files will be saved.
+  ///
+  /// \return
+  ///   \a llvm::success if the operation was successful, or an \a llvm::Error
+  ///   otherwise.
+  virtual llvm::Error SaveLiveTraceToDisk(FileSpec directory) = 0;
 
   /// Find a trace plug-in using JSON data.
   ///
@@ -156,12 +173,12 @@ public:
 
   /// Check if a thread is currently traced by this object.
   ///
-  /// \param[in] thread
-  ///     The thread in question.
+  /// \param[in] tid
+  ///     The id of the thread in question.
   ///
   /// \return
   ///     \b true if the thread is traced by this instance, \b false otherwise.
-  virtual bool IsTraced(const Thread &thread) = 0;
+  virtual bool IsTraced(lldb::tid_t tid) = 0;
 
   /// \return
   ///     A description of the parameters to use for the \a Trace::Start method.
@@ -216,15 +233,76 @@ public:
   ///     \a llvm::Error otherwise.
   llvm::Error Stop();
 
-  /// Get the trace file of the given post mortem thread.
-  llvm::Expected<const FileSpec &> GetPostMortemTraceFile(lldb::tid_t tid);
-
   /// \return
   ///     The stop ID of the live process being traced, or an invalid stop ID
   ///     if the trace is in an error or invalid state.
   uint32_t GetStopID();
 
+  using OnBinaryDataReadCallback =
+      std::function<llvm::Error(llvm::ArrayRef<uint8_t> data)>;
+  /// Fetch binary data associated with a thread, either live or postmortem, and
+  /// pass it to the given callback. The reason of having a callback is to free
+  /// the caller from having to manage the life cycle of the data and to hide
+  /// the different data fetching procedures that exist for live and post mortem
+  /// threads.
+  ///
+  /// The fetched data is not persisted after the callback is invoked.
+  ///
+  /// \param[in] tid
+  ///     The tid who owns the data.
+  ///
+  /// \param[in] kind
+  ///     The kind of data to read.
+  ///
+  /// \param[in] callback
+  ///     The callback to be invoked once the data was successfully read. Its
+  ///     return value, which is an \a llvm::Error, is returned by this
+  ///     function.
+  ///
+  /// \return
+  ///     An \a llvm::Error if the data couldn't be fetched, or the return value
+  ///     of the callback, otherwise.
+  llvm::Error OnThreadBinaryDataRead(lldb::tid_t tid, llvm::StringRef kind,
+                                     OnBinaryDataReadCallback callback);
+
 protected:
+  /// Implementation of \a OnThreadBinaryDataRead() for live threads.
+  llvm::Error OnLiveThreadBinaryDataRead(lldb::tid_t tid, llvm::StringRef kind,
+                                         OnBinaryDataReadCallback callback);
+
+  /// Implementation of \a OnThreadBinaryDataRead() for post mortem threads.
+  llvm::Error
+  OnPostMortemThreadBinaryDataRead(lldb::tid_t tid, llvm::StringRef kind,
+                                   OnBinaryDataReadCallback callback);
+
+  /// Get the file path containing data of a postmortem thread given a data
+  /// identifier.
+  ///
+  /// \param[in] tid
+  ///     The thread whose data is requested.
+  ///
+  /// \param[in] kind
+  ///     The kind of data requested.
+  ///
+  /// \return
+  ///     The file spec containing the requested data, or an \a llvm::Error in
+  ///     case of failures.
+  llvm::Expected<FileSpec> GetPostMortemThreadDataFile(lldb::tid_t tid,
+                                                       llvm::StringRef kind);
+
+  /// Associate a given thread with a data file using a data identifier.
+  ///
+  /// \param[in] tid
+  ///     The thread associated with the data file.
+  ///
+  /// \param[in] kind
+  ///     The kind of data being registered.
+  ///
+  /// \param[in] file_spec
+  ///     The path of the data file.
+  void SetPostMortemThreadDataFile(lldb::tid_t tid, llvm::StringRef kind,
+                                   FileSpec file_spec);
+
   /// Get binary data of a live thread given a data identifier.
   ///
   /// \param[in] tid
@@ -236,7 +314,7 @@ protected:
   /// \return
   ///     A vector of bytes with the requested data, or an \a llvm::Error in
   ///     case of failures.
-  llvm::Expected<llvm::ArrayRef<uint8_t>>
+  llvm::Expected<std::vector<uint8_t>>
   GetLiveThreadBinaryData(lldb::tid_t tid, llvm::StringRef kind);
 
   /// Get binary data of the current process given a data identifier.
@@ -247,7 +325,7 @@ protected:
   /// \return
   ///     A vector of bytes with the requested data, or an \a llvm::Error in
   ///     case of failures.
-  llvm::Expected<llvm::ArrayRef<uint8_t>>
+  llvm::Expected<std::vector<uint8_t>>
   GetLiveProcessBinaryData(llvm::StringRef kind);
 
   /// Get the size of the data returned by \a GetLiveThreadBinaryData
@@ -298,11 +376,25 @@ protected:
   uint32_t m_stop_id = LLDB_INVALID_STOP_ID;
   /// Process traced by this object if doing live tracing. Otherwise it's null.
   Process *m_live_process = nullptr;
+
+  /// These data kinds are returned by lldb-server when fetching the state of
+  /// the tracing session. The size in bytes can be used later for fetching the
+  /// data in batches.
+  /// \{
+
   /// tid -> data kind -> size
-  std::map<lldb::tid_t, std::unordered_map<std::string, size_t>>
+  llvm::DenseMap<lldb::tid_t, std::unordered_map<std::string, size_t>>
       m_live_thread_data;
+
   /// data kind -> size
   std::unordered_map<std::string, size_t> m_live_process_data;
+  /// \}
+
+  /// Postmortem traces can specific additional data files, which are
+  /// represented in this variable using a data kind identifier for each file.
+  /// tid -> data kind -> file
+  llvm::DenseMap<lldb::tid_t, std::unordered_map<std::string, FileSpec>>
+      m_postmortem_thread_data;
 };
 
 } // namespace lldb_private

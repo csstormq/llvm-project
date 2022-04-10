@@ -26,7 +26,7 @@ def err_fe_linking_module : Error<"cannot link module '%0': %1">, DefaultFatal;
 def warn_fe_linking_module : Warning<"linking module '%0': %1">, InGroup<LinkerWarnings>;
 def note_fe_linking_module : Note<"linking module '%0': %1">;
 
-def warn_fe_frame_larger_than : Warning<"stack frame size (%0) exceeds limit (%1) in %q2">,
+def warn_fe_frame_larger_than : Warning<"stack frame size (%0) exceeds limit (%1) in '%2'">,
     BackendInfo, InGroup<BackendFrameLargerThan>;
 def warn_fe_backend_frame_larger_than: Warning<"%0">,
     BackendInfo, InGroup<BackendFrameLargerThan>;
@@ -47,6 +47,10 @@ def warn_fe_backend_unsupported_fp_rounding : Warning<
 def warn_fe_backend_unsupported_fp_exceptions : Warning<
     "overriding currently unsupported use of floating point exceptions "
     "on this target">, InGroup<UnsupportedFPOpt>;
+
+def err_incompatible_fp_eval_method_options : Error<
+    "option 'ffp-eval-method' cannot be used with option "
+    "%select{'fapprox-func'|'mreassociate'|'freciprocal'}0">;
 
 def remark_fe_backend_optimization_remark : Remark<"%0">, BackendInfo,
     InGroup<BackendOptimizationRemark>;
@@ -72,6 +76,12 @@ def note_fe_backend_invalid_loc : Note<"could "
 
 def err_fe_backend_unsupported : Error<"%0">, BackendInfo;
 def warn_fe_backend_unsupported : Warning<"%0">, BackendInfo;
+
+def err_fe_backend_error_attr :
+  Error<"call to %0 declared with 'error' attribute: %1">, BackendInfo;
+def warn_fe_backend_warning_attr :
+  Warning<"call to %0 declared with 'warning' attribute: %1">, BackendInfo,
+  InGroup<BackendWarningAttributes>;
 
 def err_fe_invalid_code_complete_file : Error<
     "cannot locate code-completion file %0">, DefaultFatal;

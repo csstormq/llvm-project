@@ -93,6 +93,9 @@
 /* Define if we have z3 and want to build it */
 /* #undef LLVM_WITH_Z3 */
 
+/* Define if we have curl and want to use it */
+/* #undef LLVM_ENABLE_CURL */
+
 /* Define if LLVM was built with a dependency to the libtensorflow dynamic library */
 /* #undef LLVM_HAVE_TF_API */
 
@@ -102,13 +105,23 @@
 /* Define to 1 if you have the <sysexits.h> header file. */
 /* HAVE_SYSEXITS_H defined in Bazel */
 
-/* Define to 1 to enable the experimental new pass manager by default */
-#define LLVM_ENABLE_NEW_PASS_MANAGER 0
-
 /* Define if the xar_open() function is supported this platform. */
 /* #undef HAVE_LIBXAR */
 
-/* Whether Timers signpost passes in Xcode Instruments */
-#define LLVM_SUPPORT_XCODE_SIGNPOSTS 0
+/* Define if building libLLVM shared library */
+/* #undef LLVM_BUILD_LLVM_DYLIB */
+
+/* Define if building LLVM with BUILD_SHARED_LIBS */
+/* #undef LLVM_BUILD_SHARED_LIBS */
+
+/* Define if building LLVM with LLVM_FORCE_USE_OLD_TOOLCHAIN_LIBS */
+/* #undef LLVM_FORCE_USE_OLD_TOOLCHAIN ${LLVM_FORCE_USE_OLD_TOOLCHAIN} */
+
+/* Define if llvm_unreachable should be optimized with undefined behavior
+ * in non assert builds */
+#define LLVM_UNREACHABLE_OPTIMIZE 1
+
+/* Define to 1 if you have the DIA SDK installed, and to 0 if you don't. */
+#define LLVM_ENABLE_DIA_SDK 0
 
 #endif

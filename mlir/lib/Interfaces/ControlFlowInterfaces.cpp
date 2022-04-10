@@ -18,6 +18,14 @@ using namespace mlir;
 
 #include "mlir/Interfaces/ControlFlowInterfaces.cpp.inc"
 
+SuccessorOperands::SuccessorOperands(MutableOperandRange forwardedOperands)
+    : producedOperandCount(0), forwardedOperands(forwardedOperands) {}
+
+SuccessorOperands::SuccessorOperands(unsigned int producedOperandCount,
+                                     MutableOperandRange forwardedOperands)
+    : producedOperandCount(producedOperandCount),
+      forwardedOperands(std::move(forwardedOperands)) {}
+
 //===----------------------------------------------------------------------===//
 // BranchOpInterface
 //===----------------------------------------------------------------------===//
@@ -26,32 +34,31 @@ using namespace mlir;
 /// successor if 'operandIndex' is within the range of 'operands', or None if
 /// `operandIndex` isn't a successor operand index.
 Optional<BlockArgument>
-detail::getBranchSuccessorArgument(Optional<OperandRange> operands,
+detail::getBranchSuccessorArgument(const SuccessorOperands &operands,
                                    unsigned operandIndex, Block *successor) {
+  OperandRange forwardedOperands = operands.getForwardedOperands();
   // Check that the operands are valid.
-  if (!operands || operands->empty())
+  if (forwardedOperands.empty())
     return llvm::None;
 
   // Check to ensure that this operand is within the range.
-  unsigned operandsStart = operands->getBeginOperandIndex();
+  unsigned operandsStart = forwardedOperands.getBeginOperandIndex();
   if (operandIndex < operandsStart ||
-      operandIndex >= (operandsStart + operands->size()))
+      operandIndex >= (operandsStart + forwardedOperands.size()))
     return llvm::None;
 
   // Index the successor.
-  unsigned argIndex = operandIndex - operandsStart;
+  unsigned argIndex =
+      operands.getProducedOperandCount() + operandIndex - operandsStart;
   return successor->getArgument(argIndex);
 }
 
 /// Verify that the given operands match those of the given successor block.
 LogicalResult
 detail::verifyBranchSuccessorOperands(Operation *op, unsigned succNo,
-                                      Optional<OperandRange> operands) {
-  if (!operands)
-    return success();
-
+                                      const SuccessorOperands &operands) {
   // Check the count.
-  unsigned operandCount = operands->size();
+  unsigned operandCount = operands.size();
   Block *destBB = op->getSuccessor(succNo);
   if (operandCount != destBB->getNumArguments())
     return op->emitError() << "branch has " << operandCount
@@ -60,9 +67,10 @@ detail::verifyBranchSuccessorOperands(Operation *op, unsigned succNo,
                            << destBB->getNumArguments();
 
   // Check the types.
-  auto operandIt = operands->begin();
-  for (unsigned i = 0; i != operandCount; ++i, ++operandIt) {
-    if ((*operandIt).getType() != destBB->getArgument(i).getType())
+  for (unsigned i = operands.getProducedOperandCount(); i != operandCount;
+       ++i) {
+    if (!cast<BranchOpInterface>(op).areTypesCompatible(
+            operands[i].getType(), destBB->getArgument(i).getType()))
       return op->emitError() << "type mismatch for bb argument #" << i
                              << " of successor #" << succNo;
   }
@@ -72,9 +80,6 @@ detail::verifyBranchSuccessorOperands(Operation *op, unsigned succNo,
 //===----------------------------------------------------------------------===//
 // RegionBranchOpInterface
 //===----------------------------------------------------------------------===//
-
-// A constant value to represent unknown number of region invocations.
-const int64_t mlir::kUnknownNumRegionInvocations = -1;
 
 /// Verify that types match along all region control flow edges originating from
 /// `sourceNo` (region # if source is a region, llvm::None if source is parent
@@ -131,11 +136,11 @@ verifyTypesAlongAllEdges(Operation *op, Optional<unsigned> sourceNo,
                                  << succInputsTypes.size();
     }
 
-    for (auto typesIdx :
+    for (const auto &typesIdx :
          llvm::enumerate(llvm::zip(*sourceTypes, succInputsTypes))) {
       Type sourceType = std::get<0>(typesIdx.value());
       Type inputType = std::get<1>(typesIdx.value());
-      if (sourceType != inputType) {
+      if (!regionInterface.areTypesCompatible(sourceType, inputType)) {
         InFlightDiagnostic diag = op->emitOpError(" along control flow edge ");
         return printEdgeName(diag)
                << ": source type #" << typesIdx.index() << " " << sourceType
@@ -172,6 +177,18 @@ LogicalResult detail::verifyTypesAlongControlFlowEdges(Operation *op) {
   // attached regions.
   assert(op->getNumRegions() != 0);
 
+  auto areTypesCompatible = [&](TypeRange lhs, TypeRange rhs) {
+    if (lhs.size() != rhs.size())
+      return false;
+    for (auto types : llvm::zip(lhs, rhs)) {
+      if (!regionInterface.areTypesCompatible(std::get<0>(types),
+                                              std::get<1>(types))) {
+        return false;
+      }
+    }
+    return true;
+  };
+
   // Verify types along control flow edges originating from each region.
   for (unsigned regionNo : llvm::seq(0U, op->getNumRegions())) {
     Region &region = op->getRegion(regionNo);
@@ -195,7 +212,8 @@ LogicalResult detail::verifyTypesAlongControlFlowEdges(Operation *op) {
 
       // Found more than one ReturnLike terminator. Make sure the operand types
       // match with the first one.
-      if (regionReturnOperands->getTypes() != terminatorOperands->getTypes())
+      if (!areTypesCompatible(regionReturnOperands->getTypes(),
+                              terminatorOperands->getTypes()))
         return op->emitOpError("Region #")
                << regionNo
                << " operands mismatch between return-like terminators";
@@ -217,6 +235,78 @@ LogicalResult detail::verifyTypesAlongControlFlowEdges(Operation *op) {
   }
 
   return success();
+}
+
+/// Return `true` if `a` and `b` are in mutually exclusive regions.
+///
+/// 1. Find the first common of `a` and `b` (ancestor) that implements
+///    RegionBranchOpInterface.
+/// 2. Determine the regions `regionA` and `regionB` in which `a` and `b` are
+///    contained.
+/// 3. Check if `regionA` and `regionB` are mutually exclusive. They are
+///    mutually exclusive if they are not reachable from each other as per
+///    RegionBranchOpInterface::getSuccessorRegions.
+bool mlir::insideMutuallyExclusiveRegions(Operation *a, Operation *b) {
+  assert(a && "expected non-empty operation");
+  assert(b && "expected non-empty operation");
+
+  auto branchOp = a->getParentOfType<RegionBranchOpInterface>();
+  while (branchOp) {
+    // Check if b is inside branchOp. (We already know that a is.)
+    if (!branchOp->isProperAncestor(b)) {
+      // Check next enclosing RegionBranchOpInterface.
+      branchOp = branchOp->getParentOfType<RegionBranchOpInterface>();
+      continue;
+    }
+
+    // b is contained in branchOp. Retrieve the regions in which `a` and `b`
+    // are contained.
+    Region *regionA = nullptr, *regionB = nullptr;
+    for (Region &r : branchOp->getRegions()) {
+      if (r.findAncestorOpInRegion(*a)) {
+        assert(!regionA && "already found a region for a");
+        regionA = &r;
+      }
+      if (r.findAncestorOpInRegion(*b)) {
+        assert(!regionB && "already found a region for b");
+        regionB = &r;
+      }
+    }
+    assert(regionA && regionB && "could not find region of op");
+
+    // Helper function that checks if region `r` is reachable from region
+    // `begin`.
+    std::function<bool(Region *, Region *)> isRegionReachable =
+        [&](Region *begin, Region *r) {
+          if (begin == r)
+            return true;
+          if (begin == nullptr)
+            return false;
+          // Compute index of region.
+          int64_t beginIndex = -1;
+          for (const auto &it : llvm::enumerate(branchOp->getRegions()))
+            if (&it.value() == begin)
+              beginIndex = it.index();
+          assert(beginIndex != -1 && "could not find region in op");
+          // Retrieve all successors of the region.
+          SmallVector<RegionSuccessor> successors;
+          branchOp.getSuccessorRegions(beginIndex, successors);
+          // Call function recursively on all successors.
+          for (RegionSuccessor successor : successors)
+            if (isRegionReachable(successor.getSuccessor(), r))
+              return true;
+          return false;
+        };
+
+    // `a` and `b` are in mutually exclusive regions if neither region is
+    // reachable from the other region.
+    return !isRegionReachable(regionA, regionB) &&
+           !isRegionReachable(regionB, regionA);
+  }
+
+  // Could not find a common RegionBranchOpInterface among a's and b's
+  // ancestors.
+  return false;
 }
 
 //===----------------------------------------------------------------------===//

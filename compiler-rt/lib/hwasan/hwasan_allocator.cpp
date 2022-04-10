@@ -132,6 +132,11 @@ static void *HwasanAllocate(StackTrace *stack, uptr orig_size, uptr alignment,
     }
     ReportAllocationSizeTooBig(orig_size, kMaxAllowedMallocSize, stack);
   }
+  if (UNLIKELY(IsRssLimitExceeded())) {
+    if (AllocatorMayReturnNull())
+      return nullptr;
+    ReportRssLimitExceeded(stack);
+  }
 
   alignment = Max(alignment, kShadowAlignment);
   uptr size = TaggedSize(orig_size);
@@ -211,7 +216,7 @@ static bool PointerAndMemoryTagsMatch(void *tagged_ptr) {
 static bool CheckInvalidFree(StackTrace *stack, void *untagged_ptr,
                              void *tagged_ptr) {
   // This function can return true if halt_on_error is false.
-  if (!allocator.PointerIsMine(untagged_ptr) ||
+  if (!MemIsApp(reinterpret_cast<uptr>(untagged_ptr)) ||
       !PointerAndMemoryTagsMatch(tagged_ptr)) {
     ReportInvalidFree(stack, reinterpret_cast<uptr>(tagged_ptr));
     return true;

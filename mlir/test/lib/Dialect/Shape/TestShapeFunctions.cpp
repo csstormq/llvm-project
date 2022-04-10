@@ -19,19 +19,21 @@ namespace {
 /// This is a pass that reports shape functions associated with ops.
 struct ReportShapeFnPass
     : public PassWrapper<ReportShapeFnPass, OperationPass<ModuleOp>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ReportShapeFnPass)
+
   void runOnOperation() override;
   StringRef getArgument() const final { return "test-shape-function-report"; }
   StringRef getDescription() const final {
     return "Test pass to report associated shape functions";
   }
 };
-} // end anonymous namespace
+} // namespace
 
 void ReportShapeFnPass::runOnOperation() {
   auto module = getOperation();
 
   // Report the shape function available to refine the op.
-  auto shapeFnId = Identifier::get("shape.function", &getContext());
+  auto shapeFnId = StringAttr::get(&getContext(), "shape.function");
   auto remarkShapeFn = [&](shape::FunctionLibraryOp shapeFnLib, Operation *op) {
     if (op->hasTrait<OpTrait::IsTerminator>())
       return true;

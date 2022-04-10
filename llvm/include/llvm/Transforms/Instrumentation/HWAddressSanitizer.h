@@ -13,10 +13,14 @@
 #ifndef LLVM_TRANSFORMS_INSTRUMENTATION_HWADDRESSSANITIZER_H
 #define LLVM_TRANSFORMS_INSTRUMENTATION_HWADDRESSSANITIZER_H
 
-#include "llvm/IR/Function.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/IR/PassManager.h"
 
 namespace llvm {
+class FunctionPass;
+class Module;
+class StringRef;
+class raw_ostream;
 
 struct HWAddressSanitizerOptions {
   HWAddressSanitizerOptions()
@@ -39,6 +43,8 @@ public:
       : Options(Options){};
   PreservedAnalyses run(Module &M, ModuleAnalysisManager &MAM);
   static bool isRequired() { return true; }
+  void printPipeline(raw_ostream &OS,
+                     function_ref<StringRef(StringRef)> MapClassName2PassName);
 
 private:
   HWAddressSanitizerOptions Options;

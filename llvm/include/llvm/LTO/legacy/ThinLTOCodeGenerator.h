@@ -29,7 +29,6 @@
 
 namespace llvm {
 class StringRef;
-class LLVMContext;
 class TargetMachine;
 
 /// Helper to gather options relevant to the target machine creation
@@ -350,7 +349,7 @@ private:
 
   /// Flag to indicate whether the new pass manager should be used for IR
   /// optimizations.
-  bool UseNewPM = LLVM_ENABLE_NEW_PASS_MANAGER;
+  bool UseNewPM = true;
 
   /// Flag to indicate whether debug output should be enabled for the new pass
   /// manager.

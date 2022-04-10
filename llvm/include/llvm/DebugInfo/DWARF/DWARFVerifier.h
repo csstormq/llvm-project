@@ -12,8 +12,8 @@
 #include "llvm/ADT/Optional.h"
 #include "llvm/DebugInfo/DIContext.h"
 #include "llvm/DebugInfo/DWARF/DWARFAcceleratorTable.h"
+#include "llvm/DebugInfo/DWARF/DWARFAddressRange.h"
 #include "llvm/DebugInfo/DWARF/DWARFDie.h"
-#include "llvm/DebugInfo/DWARF/DWARFUnitIndex.h"
 #include <cstdint>
 #include <map>
 #include <set>
@@ -21,13 +21,14 @@
 namespace llvm {
 class raw_ostream;
 struct DWARFAddressRange;
+class DWARFUnit;
+class DWARFUnitVector;
 struct DWARFAttribute;
 class DWARFContext;
 class DWARFDataExtractor;
 class DWARFDebugAbbrev;
 class DataExtractor;
 struct DWARFSection;
-class DWARFUnit;
 
 /// A class that verifies DWARF debug information given a DWARF Context.
 class DWARFVerifier {
@@ -125,6 +126,7 @@ private:
   bool verifyUnitHeader(const DWARFDataExtractor DebugInfoData,
                         uint64_t *Offset, unsigned UnitIndex, uint8_t &UnitType,
                         bool &isUnitDWARF64);
+  bool verifyName(const DWARFDie &Die);
 
   /// Verifies the header of a unit in a .debug_info or .debug_types section.
   ///
@@ -149,11 +151,10 @@ private:
   /// section.
   ///
   /// \param S           The DWARF Section to verify.
-  /// \param SectionKind The object-file section kind that S comes from.
   ///
   /// \returns The number of errors that occurred during verification.
-  unsigned verifyUnitSection(const DWARFSection &S,
-                             DWARFSectionKind SectionKind);
+  unsigned verifyUnitSection(const DWARFSection &S);
+  unsigned verifyUnits(const DWARFUnitVector &Units);
 
   /// Verifies that a call site entry is nested within a subprogram with a
   /// DW_AT_call attribute.
