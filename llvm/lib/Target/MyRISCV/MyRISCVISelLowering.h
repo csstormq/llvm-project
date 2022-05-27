@@ -14,6 +14,7 @@ namespace MyRISCVISD {
 enum NodeType {
   FIRST_NUMBER = ISD::BUILTIN_OP_END,
   RET_FLAG,
+  TEST,
 };
 
 } // // end namespace MyRISCVISD
@@ -36,6 +37,12 @@ public:
                       const SmallVectorImpl<ISD::OutputArg> &Outs,
                       const SmallVectorImpl<SDValue> &OutVals, const SDLoc &DL,
                       SelectionDAG &DAG) const override;
+
+  void ReplaceNodeResults(SDNode *N, SmallVectorImpl<SDValue> &Results,
+                          SelectionDAG &DAG) const override;
+
+  void LowerOperationWrapper(SDNode *N, SmallVectorImpl<SDValue> &Results,
+                             SelectionDAG &DAG) const override;
 };
 
 } // end namespace llvm

@@ -41,7 +41,7 @@ let RegAltNameIndices = [ABIRegAltName] in {
 	def X31 : MyRISCVReg<31, "x31", ["t6"]>;
 }
 
-def GPR : RegisterClass<"MyRISCV", [i32], 32, (add
+def GPR : RegisterClass<"MyRISCV", [i1, i8, i16, i32, v16i1, v32i1, v1i16, v2i16, f16, f32, v1f16, v2f16], 32, (add
 	(sequence "X%u", 10, 17),
 	(sequence "X%u", 5, 7),
 	(sequence "X%u", 28, 31),

@@ -6,18 +6,24 @@
 
 using namespace llvm;
 
+#define DEBUG_TYPE "myriscv-lower"
+
 #include "MyRISCVGenCallingConv.inc"
 
 MyRISCVTargetLowering::MyRISCVTargetLowering(MyRISCVTargetMachine &TM)
     : TargetLowering(TM), Subtarget(*TM.getSubtargetImpl()) {
   addRegisterClass(MVT::i32, &MyRISCV::GPRRegClass);
 	computeRegisterProperties(Subtarget.getRegisterInfo());
+  setOperationAction(ISD::ADD, MVT::i8, Custom);
+  setOperationAction(ISD::SDIV, MVT::i32, Expand);
 }
 
 const char *MyRISCVTargetLowering::getTargetNodeName(unsigned Opcode) const {
 	switch (Opcode) {
 		case MyRISCVISD::RET_FLAG:
 			return "MyRISCVISD::RET_FLAG";
+		case MyRISCVISD::TEST:
+			return "MyRISCVISD::TEST";
 		default:
 			return nullptr;
 	}
@@ -35,7 +41,17 @@ SDValue MyRISCVTargetLowering::LowerFormalArguments(SDValue Chain,
 
   for (unsigned i = 0, e = ArgLocs.size(); i < e; ++i) {
     CCValAssign &VA = ArgLocs[i];
-
+    const auto LocVT = VA.getLocVT();
+    if (VA.isRegLoc()) {
+      MachineRegisterInfo &RegInfo = MF.getRegInfo();
+      const TargetRegisterClass *RC =  &MyRISCV::GPRRegClass;
+      auto VReg = RegInfo.createVirtualRegister(RC);
+      RegInfo.addLiveIn(VA.getLocReg(), VReg);
+      SDValue ArgValue = DAG.getCopyFromReg(Chain, DL, VReg, LocVT);
+      InVals.push_back(ArgValue);
+    } else {
+      llvm_unreachable("Unknown LocVT");
+    }
   }
 
   return Chain;
@@ -71,4 +87,44 @@ MyRISCVTargetLowering::LowerReturn(SDValue Chain, CallingConv::ID CallConv,
   }
 
   return DAG.getNode(MyRISCVISD::RET_FLAG, DL, MVT::Other, RetOps);
+}
+
+void
+MyRISCVTargetLowering::ReplaceNodeResults(SDNode *N,
+                                          SmallVectorImpl<SDValue> &Results,
+                                          SelectionDAG &DAG) const {
+  SDLoc DL(N);
+  switch (N->getOpcode()) {
+  case ISD::ADD: {
+    assert(N->getValueType(0) == MVT::i8 && "Unexpected custom legalisation!");
+    auto NewOp0 = DAG.getNode(ISD::SIGN_EXTEND, DL, MVT::i32, N->getOperand(0));
+    auto NewOp1 = DAG.getNode(ISD::SIGN_EXTEND, DL, MVT::i32, N->getOperand(1));
+    auto NewRes = DAG.getNode(ISD::ADD, DL, MVT::i32, NewOp0, NewOp1);
+    Results.push_back(NewRes);
+    break;
+  }
+  default:
+    LLVM_DEBUG({ dbgs() << "ReplaceNodeResults: "; N->dump(&DAG); });
+    llvm_unreachable("Don't know how to custom type legalize this operation!");
+  }
+}
+
+void
+MyRISCVTargetLowering::LowerOperationWrapper(SDNode *N,
+                                             SmallVectorImpl<SDValue> &Results,
+                                             SelectionDAG &DAG) const {
+  SDLoc DL(N);
+  switch (N->getOpcode()) {
+  case ISD::ADD: {
+    assert(N->getValueType(0) == MVT::i8 && "Unexpected custom legalisation!");
+    auto NewOp0 = DAG.getNode(ISD::SIGN_EXTEND, DL, MVT::i32, N->getOperand(0));
+    auto NewOp1 = DAG.getNode(ISD::SIGN_EXTEND, DL, MVT::i32, N->getOperand(1));
+    auto NewRes = DAG.getNode(ISD::ADD, DL, MVT::i32, NewOp0, NewOp1);
+    Results.push_back(NewRes);
+    break;
+  }
+  default:
+    LLVM_DEBUG({ dbgs() << "ReplaceNodeResults: "; N->dump(&DAG); });
+    llvm_unreachable("Don't know how to custom type legalize this operation!");
+  }
 }

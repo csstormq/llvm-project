@@ -28,17 +28,17 @@ void MyRISCVDAGToDAGISel::Select(SDNode *N) {
   SDLoc DL(N);
 
   switch (N->getOpcode()) {
-    case ISD::Constant: {
-      int64_t Imm = cast<ConstantSDNode>(N)->getSExtValue();
-      if (-2048 <= Imm && Imm <= 2047) {
-        SDValue SDImm = CurDAG->getTargetConstant(Imm, DL, MVT::i32);
-        SDValue SrcReg = CurDAG->getRegister(MyRISCV::X0, MVT::i32);
-        SDNode *Result =
-            CurDAG->getMachineNode(MyRISCV::ADDI, DL, MVT::i32, SrcReg, SDImm);
-        ReplaceNode(N, Result);
-        return;
-      }
+  case ISD::Constant: {
+    int64_t Imm = cast<ConstantSDNode>(N)->getSExtValue();
+    if (-2048 <= Imm && Imm <= 2047) {
+      SDValue SDImm = CurDAG->getTargetConstant(Imm, DL, MVT::i32);
+      SDValue SrcReg = CurDAG->getRegister(MyRISCV::X0, MVT::i32);
+      SDNode *Result =
+          CurDAG->getMachineNode(MyRISCV::ADDI, DL, MVT::i32, SrcReg, SDImm);
+      ReplaceNode(N, Result);
+      return;
     }
+  }
   }
 
   SelectCode(N);
