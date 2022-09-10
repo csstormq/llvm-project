@@ -22,6 +22,7 @@ set(sources
   MyRISCVInstrInfo.cpp
   MyRISCVRegisterInfo.cpp
   MyRISCVMCInstLower.cpp
+  MyRISCVTestMF.cpp
 )
 
 add_llvm_target(MyRISCVCodeGen ${sources}

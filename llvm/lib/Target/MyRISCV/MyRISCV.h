@@ -8,6 +8,8 @@ class FunctionPass;
 
 FunctionPass *createMyRISCVISelDag(MyRISCVTargetMachine &TM);
 
+FunctionPass *createMyRISCVTestMF();
+
 } // end namespace llvm
 
 #endif // LLVM_LIB_TARGET_MYRISCV_MYRISCV_H

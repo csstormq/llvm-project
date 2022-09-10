@@ -19,6 +19,10 @@ public:
     return false;
   }
 
+  void addPreRegAlloc() override {
+    addPass(createMyRISCVTestMF());
+  }
+
 private:
   MyRISCVTargetMachine &getMyRISCVTargetMachine() const {
     return getTM<MyRISCVTargetMachine>();

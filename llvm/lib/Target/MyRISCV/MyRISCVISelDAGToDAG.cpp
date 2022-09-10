@@ -2,6 +2,7 @@
 #include "MyRISCV.h"
 #include "MyRISCVTargetMachine.h"
 #include "llvm/CodeGen/SelectionDAGISel.h"
+#include "llvm/IR/IntrinsicsMyRISCV.h"
 
 using namespace llvm;
 
@@ -39,6 +40,18 @@ void MyRISCVDAGToDAGISel::Select(SDNode *N) {
       return;
     }
   }
+  }
+
+  if (N->getOpcode() == ISD::INTRINSIC_W_CHAIN) {
+    Intrinsic::ID IntrinsicID = static_cast<Intrinsic::ID>(
+        cast<ConstantSDNode>(N->getOperand(1))->getZExtValue());
+    if (IntrinsicID == Intrinsic::myriscv_fptosi) {
+      SDNode *Result =
+          CurDAG->getMachineNode(MyRISCV::FPTOSI, DL, {MVT::i32, MVT::Other},
+                                 {N->getOperand(2), N->getOperand(0)});
+      ReplaceNode(N, Result);
+      return;
+    }
   }
 
   SelectCode(N);

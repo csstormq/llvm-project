@@ -11,6 +11,7 @@ using namespace llvm;
 MyRISCVTargetLowering::MyRISCVTargetLowering(MyRISCVTargetMachine &TM)
     : TargetLowering(TM), Subtarget(*TM.getSubtargetImpl()) {
   addRegisterClass(MVT::i32, &MyRISCV::GPRRegClass);
+  addRegisterClass(MVT::f32, &MyRISCV::FPR32RegClass);
   computeRegisterProperties(Subtarget.getRegisterInfo());
 }
 
@@ -27,13 +28,21 @@ SDValue MyRISCVTargetLowering::LowerFormalArguments(
     SDValue Chain, CallingConv::ID CallConv, bool IsVarArg,
     const SmallVectorImpl<ISD::InputArg> &Ins, const SDLoc &DL,
     SelectionDAG &DAG, SmallVectorImpl<SDValue> &InVals) const {
-  SmallVector<CCValAssign, 16> ArgLocs;
   MachineFunction &MF = DAG.getMachineFunction();
+  MachineRegisterInfo &MRI = MF.getRegInfo();
+
+  SmallVector<CCValAssign, 16> ArgLocs;
   CCState CCInfo(CallConv, IsVarArg, MF, ArgLocs, *DAG.getContext());
   CCInfo.AnalyzeFormalArguments(Ins, CC_MyRISCV);
 
   for (unsigned i = 0, e = ArgLocs.size(); i < e; ++i) {
     CCValAssign &VA = ArgLocs[i];
+    if (VA.getValVT() == MVT::f32) {
+      const TargetRegisterClass *FPR32 = &MyRISCV::FPR32RegClass;
+      Register VReg = MRI.createVirtualRegister(FPR32);
+      MRI.addLiveIn(VA.getLocReg(), VReg);
+      InVals.push_back(DAG.getCopyFromReg(Chain, DL, VReg, VA.getValVT()));
+    }
   }
 
   return Chain;

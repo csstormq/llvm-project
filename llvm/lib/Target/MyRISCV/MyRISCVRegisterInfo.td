@@ -49,3 +49,46 @@ def GPR : RegisterClass<"MyRISCV", [i32], 32, (add
 	(sequence "X%u", 18, 27),
 	(sequence "X%u", 0, 4)
 )>;
+
+let RegAltNameIndices = [ABIRegAltName] in {
+  def F0_F  : MyRISCVReg<0,  "f0",  ["ft0"]>;
+  def F1_F  : MyRISCVReg<1,  "f1",  ["ft1"]>;
+  def F2_F  : MyRISCVReg<2,  "f2",  ["ft2"]>;
+  def F3_F  : MyRISCVReg<3,  "f3",  ["ft3"]>;
+  def F4_F  : MyRISCVReg<4,  "f4",  ["ft4"]>;
+  def F5_F  : MyRISCVReg<5,  "f5",  ["ft5"]>;
+  def F6_F  : MyRISCVReg<6,  "f6",  ["ft6"]>;
+  def F7_F  : MyRISCVReg<7,  "f7",  ["ft7"]>;
+  def F8_F  : MyRISCVReg<8,  "f8",  ["fs0"]>;
+  def F9_F  : MyRISCVReg<9,  "f9",  ["fs1"]>;
+  def F10_F : MyRISCVReg<10, "f10", ["fa0"]>;
+  def F11_F : MyRISCVReg<11, "f11", ["fa1"]>;
+  def F12_F : MyRISCVReg<12, "f12", ["fa2"]>;
+  def F13_F : MyRISCVReg<13, "f13", ["fa3"]>;
+  def F14_F : MyRISCVReg<14, "f14", ["fa4"]>;
+  def F15_F : MyRISCVReg<15, "f15", ["fa5"]>;
+  def F16_F : MyRISCVReg<16, "f16", ["fa6"]>;
+  def F17_F : MyRISCVReg<17, "f17", ["fa7"]>;
+  def F18_F : MyRISCVReg<18, "f18", ["fs2"]>;
+  def F19_F : MyRISCVReg<19, "f19", ["fs3"]>;
+  def F20_F : MyRISCVReg<20, "f20", ["fs4"]>;
+  def F21_F : MyRISCVReg<21, "f21", ["fs5"]>;
+  def F22_F : MyRISCVReg<22, "f22", ["fs6"]>;
+  def F23_F : MyRISCVReg<23, "f23", ["fs7"]>;
+  def F24_F : MyRISCVReg<24, "f24", ["fs8"]>;
+  def F25_F : MyRISCVReg<25, "f25", ["fs9"]>;
+  def F26_F : MyRISCVReg<26, "f26", ["fs10"]>;
+  def F27_F : MyRISCVReg<27, "f27", ["fs11"]>;
+  def F28_F : MyRISCVReg<28, "f28", ["ft8"]>;
+  def F29_F : MyRISCVReg<29, "f29", ["ft9"]>;
+  def F30_F : MyRISCVReg<30, "f30", ["ft10"]>;
+  def F31_F : MyRISCVReg<31, "f31", ["ft11"]>;
+}
+
+def FPR32 : RegisterClass<"MyRISCV", [f32], 32, (add
+  (sequence "F%u_F", 0, 7),
+  (sequence "F%u_F", 10, 17),
+  (sequence "F%u_F", 28, 31),
+  (sequence "F%u_F", 8, 9),
+  (sequence "F%u_F", 18, 27)
+)>;
