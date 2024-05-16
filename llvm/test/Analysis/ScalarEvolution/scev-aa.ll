@@ -366,3 +366,43 @@ for.body:
 for.end:
   ret void
 }
+
+; CHECK-LABEL: Function: test_negative: 2 pointers, 0 call sites
+; CHECK:   NoAlias:	<704 x i8>* %tmp20, <704 x i8>* %tmp4
+
+define void @test_negative() {
+entry:
+  br label %for.body
+
+for.body:
+  %tmp = phi i32 [ %next, %for.body ], [ 1, %entry ]
+  %tmp1 = mul nuw nsw i32 %tmp, 146432
+  %tmp2 = add nuw nsw i32 %tmp1, 140800
+  %tmp3 = getelementptr inbounds i8, i8* inttoptr (i32 1171584 to i8*), i32 %tmp2
+  %tmp4 = bitcast i8* %tmp3 to <704 x i8>*
+  %tmp5 = load <704 x i8>, <704 x i8>* %tmp4, align 1
+
+  %tmp6 = mul nuw nsw i32 %tmp, 5632
+  %tmp7 = and i32 %tmp, 1
+  %tmp8 = mul nuw nsw i32 %tmp7, -146432
+  %tmp9 = mul nuw nsw i32 %tmp, 26
+  %tmp10 = add nuw nsw i32 %tmp, 1
+  %tmp11 = and i32 %tmp10, 1
+  %tmp12 = add nuw nsw i32 %tmp10, %tmp9
+  %tmp13 = urem i32 %tmp12, 52
+  %tmp14 = add nuw nsw i32 %tmp13, %tmp11
+  %tmp15 = mul nuw nsw i32 %tmp14, 5632
+  %tmp16 = sub nsw i32 %tmp15, %tmp6
+  %tmp17 = add i32 %tmp16, %tmp8
+  %tmp18 = add nsw i32 %tmp17, -704
+  %tmp19 = getelementptr inbounds i8, i8* inttoptr (i32 11556928 to i8*), i32 %tmp18
+  %tmp20 = bitcast i8* %tmp19 to <704 x i8>*
+  store <704 x i8> %tmp5, <704 x i8>* %tmp20, align 1
+
+  %next = add i32 %tmp, 2
+  %exitcond = icmp slt i32 %next, 4
+  br i1 %exitcond, label %for.body, label %for.end
+
+for.end:
+  ret void
+}

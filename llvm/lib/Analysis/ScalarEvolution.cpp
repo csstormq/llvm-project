@@ -10918,6 +10918,222 @@ ScalarEvolution::evaluatePredicateAt(ICmpInst::Predicate Pred, const SCEV *LHS,
   return std::nullopt;
 }
 
+template <typename T>
+static bool evaluateAllOperandsAtIteration(const T *Expr, const SCEV *It,
+                                           ScalarEvolution *SE,
+                                           SmallVectorImpl<const SCEV *> &Ops,
+                                           unsigned &EvaluatedCount) {
+  Ops.reserve(Expr->getNumOperands());
+  unsigned MaxEvaluatedCount = 0;
+  for (size_t i = 0, e = Expr->getNumOperands(); i < e; ++i) {
+    unsigned OpEvaluatedCount = 0;
+    const SCEV *Op =
+        SE->evaluateAtIteration(Expr->getOperand(i), It, OpEvaluatedCount);
+    if (!Op) {
+      return false;
+    }
+
+    Ops.push_back(Op);
+    MaxEvaluatedCount = std::max(MaxEvaluatedCount, OpEvaluatedCount);
+  }
+
+  if (Ops.empty()) {
+    return false;
+  }
+
+  EvaluatedCount = MaxEvaluatedCount;
+  return true;
+}
+
+static const SCEV *evaluateUnknownAtIteration(const SCEVUnknown *Unknown,
+                                              const SCEV *It,
+                                              ScalarEvolution *SE,
+                                              unsigned &EvaluatedCount) {
+  ConstantInt *CI = nullptr;
+  if (auto *CE = dyn_cast<ConstantExpr>(Unknown->getValue())) {
+    if (CE->getOpcode() == Instruction::IntToPtr &&
+        isa<ConstantInt>(CE->getOperand(0))) {
+      CI = dyn_cast<ConstantInt>(CE->getOperand(0));
+    }
+  } else if (auto *I = dyn_cast<Instruction>(Unknown->getValue())) {
+    if (I->getOpcode() == Instruction::IntToPtr &&
+        isa<ConstantInt>(I->getOperand(0))) {
+      CI = dyn_cast<ConstantInt>(I->getOperand(0));
+    }
+  }
+  if (CI) {
+    EvaluatedCount = 1;
+    return SE->getConstant(CI);
+  }
+
+  auto *I = dyn_cast<Instruction>(Unknown->getValue());
+  if (!I) {
+    return nullptr;
+  }
+
+  if (I->getOpcode() == Instruction::IntToPtr) {
+    const SCEV *Tmp = SE->getSCEV(I->getOperand(0));
+    return SE->evaluateAtIteration(Tmp, It, EvaluatedCount);
+  }
+
+  if (I->getOpcode() == Instruction::Or) {
+    const SCEV *Op0 = SE->getSCEV(I->getOperand(0));
+    const SCEV *Op1 = SE->getSCEV(I->getOperand(1));
+    unsigned Op0EvaluatedCount = 0;
+    unsigned Op1EvaluatedCount = 0;
+    const SCEV *EvaluatedOp0 =
+        SE->evaluateAtIteration(Op0, It, Op0EvaluatedCount);
+    const SCEV *EvaluatedOp1 =
+        SE->evaluateAtIteration(Op1, It, Op1EvaluatedCount);
+    if (!EvaluatedOp0 || !EvaluatedOp1 ||
+        !SCEVConstant::classof(EvaluatedOp0) ||
+        !SCEVConstant::classof(EvaluatedOp1)) {
+      return nullptr;
+    }
+
+    ConstantFolder Folder;
+    Value *Result = Folder.FoldBinOp(
+        Instruction::Or, dyn_cast<SCEVConstant>(EvaluatedOp0)->getValue(),
+        dyn_cast<SCEVConstant>(EvaluatedOp1)->getValue());
+    if (!Result) {
+      return nullptr;
+    }
+
+    if (auto *CI = dyn_cast<ConstantInt>(Result)) {
+      EvaluatedCount = std::max(Op0EvaluatedCount, Op1EvaluatedCount);
+      return SE->getConstant(CI);
+    }
+  }
+
+  return nullptr;
+}
+
+const SCEV *ScalarEvolution::evaluateAtIteration(const SCEV *P, const SCEV *It,
+                                                 unsigned &EvaluatedCount) {
+
+  if (!P || !It) {
+    return nullptr;
+  }
+
+  const SCEV *Result = nullptr;
+  switch (P->getSCEVType()) {
+  case scConstant: {
+    Result = P;
+    EvaluatedCount = 1;
+    break;
+  }
+  case scTruncate: {
+    auto *Expr = dyn_cast<SCEVTruncateExpr>(P);
+    const SCEV *Op =
+        evaluateAtIteration(Expr->getOperand(), It, EvaluatedCount);
+    Result = Op ? getTruncateExpr(Op, Expr->getType()) : nullptr;
+    break;
+  }
+  case scZeroExtend: {
+    auto *Expr = dyn_cast<SCEVZeroExtendExpr>(P);
+    const SCEV *Op =
+        evaluateAtIteration(Expr->getOperand(), It, EvaluatedCount);
+    Result = Op ? getZeroExtendExpr(Op, Expr->getType()) : nullptr;
+    break;
+  }
+  case scSignExtend: {
+    auto *Expr = dyn_cast<SCEVSignExtendExpr>(P);
+    const SCEV *Op =
+        evaluateAtIteration(Expr->getOperand(), It, EvaluatedCount);
+    Result = Op ? getSignExtendExpr(Op, Expr->getType()) : nullptr;
+    break;
+  }
+  case scAddExpr: {
+    auto *Expr = dyn_cast<SCEVAddExpr>(P);
+    SmallVector<const SCEV *, 4> Ops;
+    Result = evaluateAllOperandsAtIteration(Expr, It, this, Ops, EvaluatedCount)
+                 ? getAddExpr(Ops)
+                 : nullptr;
+    break;
+  }
+  case scMulExpr: {
+    auto *Expr = dyn_cast<SCEVMulExpr>(P);
+    SmallVector<const SCEV *, 4> Ops;
+    Result = evaluateAllOperandsAtIteration(Expr, It, this, Ops, EvaluatedCount)
+                 ? getMulExpr(Ops)
+                 : nullptr;
+    break;
+  }
+  case scUDivExpr: {
+    auto *Expr = dyn_cast<SCEVUDivExpr>(P);
+    SmallVector<const SCEV *, 2> Ops;
+    Result = evaluateAllOperandsAtIteration(Expr, It, this, Ops, EvaluatedCount)
+                 ? getUDivExpr(Ops[0], Ops[1])
+                 : nullptr;
+    break;
+  }
+  case scAddRecExpr: {
+    auto *AR = dyn_cast<SCEVAddRecExpr>(P);
+    Result = AR->evaluateAtIteration(It, *this);
+    unsigned TripCount = getSmallConstantTripCount(AR->getLoop());
+    unsigned TmpCount = 0;
+    Result = evaluateAtIteration(Result, It, TmpCount);
+    EvaluatedCount = std::max(TripCount, TmpCount);
+    break;
+  }
+  case scUMaxExpr: {
+    auto *Expr = dyn_cast<SCEVUMaxExpr>(P);
+    SmallVector<const SCEV *, 4> Ops;
+    Result = evaluateAllOperandsAtIteration(Expr, It, this, Ops, EvaluatedCount)
+                 ? getUMaxExpr(Ops)
+                 : nullptr;
+    break;
+  }
+  case scSMaxExpr: {
+    auto *Expr = dyn_cast<SCEVSMaxExpr>(P);
+    SmallVector<const SCEV *, 4> Ops;
+    Result = evaluateAllOperandsAtIteration(Expr, It, this, Ops, EvaluatedCount)
+                 ? getSMaxExpr(Ops)
+                 : nullptr;
+    break;
+  }
+  case scUMinExpr: {
+    auto *Expr = dyn_cast<SCEVUMinExpr>(P);
+    SmallVector<const SCEV *, 4> Ops;
+    Result = evaluateAllOperandsAtIteration(Expr, It, this, Ops, EvaluatedCount)
+                 ? getUMinExpr(Ops)
+                 : nullptr;
+    break;
+  }
+  case scSMinExpr: {
+    auto *Expr = dyn_cast<SCEVSMinExpr>(P);
+    SmallVector<const SCEV *, 4> Ops;
+    Result = evaluateAllOperandsAtIteration(Expr, It, this, Ops, EvaluatedCount)
+                 ? getSMinExpr(Ops)
+                 : nullptr;
+    break;
+  }
+  case scSequentialUMinExpr: {
+    auto *Expr = dyn_cast<SCEVSequentialUMinExpr>(P);
+    SmallVector<const SCEV *, 4> Ops;
+    Result = evaluateAllOperandsAtIteration(Expr, It, this, Ops, EvaluatedCount)
+                 ? getSequentialMinMaxExpr(scSequentialUMinExpr, Ops)
+                 : nullptr;
+    break;
+  }
+  case scPtrToInt: {
+    auto *Expr = dyn_cast<SCEVPtrToIntExpr>(P);
+    const SCEV *Op =
+        evaluateAtIteration(Expr->getOperand(), It, EvaluatedCount);
+    Result = Op ? getPtrToIntExpr(Op, Expr->getType()) : nullptr;
+    break;
+  }
+  case scUnknown:
+    Result = evaluateUnknownAtIteration(dyn_cast<SCEVUnknown>(P), It, this,
+                                        EvaluatedCount);
+    break;
+  default:
+    break;
+  }
+
+  return Result;
+}
+
 bool ScalarEvolution::isKnownOnEveryIteration(ICmpInst::Predicate Pred,
                                               const SCEVAddRecExpr *LHS,
                                               const SCEV *RHS) {

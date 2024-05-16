@@ -33,6 +33,35 @@ static bool canComputePointerDiff(ScalarEvolution &SE,
   return SE.instructionCouldExistWithOperands(A, B);
 }
 
+static bool areMemAccessesDisjoint(ScalarEvolution &SE, const SCEV *AS,
+                                   uint64_t WidthA, const SCEV *BS,
+                                   uint64_t WidthB) {
+  uint64_t StartA = SE.getUnsignedRangeMin(AS).getZExtValue();
+  uint64_t StartB = SE.getUnsignedRangeMin(BS).getZExtValue();
+  uint64_t EndA = StartA + WidthA;
+  uint64_t EndB = StartB + WidthB;
+  return std::max(StartA, StartB) >= std::min(EndA, EndB);
+}
+
+static bool getSafeRange(ScalarEvolution &SE, const SCEV *P, uint64_t Width,
+                         uint64_t &Start, uint64_t &End) {
+  if (SCEVConstant::classof(P)) {
+    Start = SE.getUnsignedRangeMin(P).getZExtValue();
+    End = Start + Width;
+    return true;
+  }
+
+  int64_t Min = SE.getSignedRangeMin(P).getSExtValue();
+  if (Min <= 0) {
+    return false;
+  }
+
+  int64_t Max = SE.getSignedRangeMax(P).getSExtValue();
+  Start = static_cast<uint64_t>(Min);
+  End = static_cast<uint64_t>(Max + Width);
+  return Start < End;
+}
+
 AliasResult SCEVAAResult::alias(const MemoryLocation &LocA,
                                 const MemoryLocation &LocB, AAQueryInfo &AAQI,
                                 const Instruction *) {
@@ -99,6 +128,57 @@ AliasResult SCEVAAResult::alias(const MemoryLocation &LocA,
         (-ASizeInt).uge(SE.getUnsignedRange(AB).getUnsignedMax()))
       return AliasResult::NoAlias;
   }
+
+  auto Evaluator = [&]() {
+    bool HasEvaluated = false;
+    uint64_t WidthA = LocA.Size.getValue();
+    uint64_t WidthB = LocB.Size.getValue();
+    for (unsigned i = 0, EvaluatedCount = 1; i < EvaluatedCount; ++i) {
+      unsigned EvaluatedCountA = 0;
+      unsigned EvaluatedCountB = 0;
+      const SCEV *It =
+          SE.getConstant(Type::getInt32Ty(LocA.Ptr->getContext()), i);
+      const SCEV *EvaluatedAS = SE.evaluateAtIteration(AS, It, EvaluatedCountA);
+      const SCEV *EvaluatedBS = SE.evaluateAtIteration(BS, It, EvaluatedCountB);
+
+      if (!EvaluatedAS || !EvaluatedBS || !SCEVConstant::classof(EvaluatedAS) ||
+          !SCEVConstant::classof(EvaluatedBS)) {
+        uint64_t StartA = 0, EndA = 0;
+        if (!getSafeRange(SE, EvaluatedAS ? EvaluatedAS : AS, WidthA, StartA,
+                          EndA)) {
+          return AliasResult::MayAlias;
+        }
+
+        uint64_t StartB = 0, EndB = 0;
+        if (!getSafeRange(SE, EvaluatedBS ? EvaluatedBS : BS, WidthB, StartB,
+                          EndB)) {
+          return AliasResult::MayAlias;
+        }
+
+        if (std::max(StartA, StartB) < std::min(EndA, EndB)) {
+          return AliasResult::MayAlias;
+        }
+
+        continue;
+      }
+
+      if (!HasEvaluated) {
+        EvaluatedCount = std::max(EvaluatedCountA, EvaluatedCountB);
+        HasEvaluated = true;
+      }
+
+      if (!areMemAccessesDisjoint(SE, EvaluatedAS, WidthA, EvaluatedBS,
+                                  WidthB)) {
+        return AliasResult::MustAlias;
+      }
+    }
+
+    return AliasResult::NoAlias;
+  };
+
+  AliasResult Res = Evaluator();
+  if (Res != AliasResult::MayAlias)
+    return Res;
 
   // If ScalarEvolution can find an underlying object, form a new query.
   // The correctness of this depends on ScalarEvolution not recognizing

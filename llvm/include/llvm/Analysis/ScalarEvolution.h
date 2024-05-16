@@ -1084,6 +1084,9 @@ public:
                                           const SCEV *LHS, const SCEV *RHS,
                                           const Instruction *CtxI);
 
+  const SCEV *evaluateAtIteration(const SCEV *P, const SCEV *It,
+                                  unsigned &EvaluatedCount);
+
   /// Test if the condition described by Pred, LHS, RHS is known to be true on
   /// every iteration of the loop of the recurrency LHS.
   bool isKnownOnEveryIteration(ICmpInst::Predicate Pred,
