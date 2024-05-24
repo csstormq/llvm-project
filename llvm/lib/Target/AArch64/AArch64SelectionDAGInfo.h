@@ -34,7 +34,7 @@ public:
   SDValue EmitTargetCodeForMemset(SelectionDAG &DAG, const SDLoc &dl,
                                   SDValue Chain, SDValue Dst, SDValue Src,
                                   SDValue Size, Align Alignment,
-                                  bool isVolatile,
+                                  bool isVolatile, bool AlwaysInline,
                                   MachinePointerInfo DstPtrInfo) const override;
   SDValue
   EmitTargetCodeForMemmove(SelectionDAG &DAG, const SDLoc &dl, SDValue Chain,
@@ -47,6 +47,11 @@ public:
                                   SDValue Chain, SDValue Op1, SDValue Op2,
                                   MachinePointerInfo DstPtrInfo,
                                   bool ZeroData) const override;
+
+  SDValue EmitStreamingCompatibleMemLibCall(SelectionDAG &DAG, const SDLoc &DL,
+                                            SDValue Chain, SDValue Dst,
+                                            SDValue Src, SDValue Size,
+                                            RTLIB::Libcall LC) const;
 };
 }
 

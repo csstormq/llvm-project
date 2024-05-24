@@ -115,7 +115,8 @@ public:
   /// By default this will lookup for registered operations and return the
   /// `parse()` method registered on the RegisteredOperationName. Dialects can
   /// override this behavior and handle unregistered operations as well.
-  virtual Optional<ParseOpHook> getParseOperationHook(StringRef opName) const;
+  virtual std::optional<ParseOpHook>
+  getParseOperationHook(StringRef opName) const;
 
   /// Print an operation registered to this dialect.
   /// This hook is invoked for registered operation which don't override the
@@ -157,12 +158,23 @@ public:
 
   /// Lookup an interface for the given ID if one is registered, otherwise
   /// nullptr.
-  const DialectInterface *getRegisteredInterface(TypeID interfaceID) {
+  DialectInterface *getRegisteredInterface(TypeID interfaceID) {
+#ifndef NDEBUG
+    handleUseOfUndefinedPromisedInterface(getTypeID(), interfaceID);
+#endif
+
     auto it = registeredInterfaces.find(interfaceID);
     return it != registeredInterfaces.end() ? it->getSecond().get() : nullptr;
   }
-  template <typename InterfaceT> const InterfaceT *getRegisteredInterface() {
-    return static_cast<const InterfaceT *>(
+  template <typename InterfaceT>
+  InterfaceT *getRegisteredInterface() {
+#ifndef NDEBUG
+    handleUseOfUndefinedPromisedInterface(getTypeID(),
+                                          InterfaceT::getInterfaceID(),
+                                          llvm::getTypeName<InterfaceT>());
+#endif
+
+    return static_cast<InterfaceT *>(
         getRegisteredInterface(InterfaceT::getInterfaceID()));
   }
 
@@ -185,8 +197,71 @@ public:
   /// Register a set of dialect interfaces with this dialect instance.
   template <typename... Args>
   void addInterfaces() {
-    (void)std::initializer_list<int>{
-        0, (addInterface(std::make_unique<Args>(this)), 0)...};
+    (addInterface(std::make_unique<Args>(this)), ...);
+  }
+  template <typename InterfaceT, typename... Args>
+  InterfaceT &addInterface(Args &&...args) {
+    InterfaceT *interface = new InterfaceT(this, std::forward<Args>(args)...);
+    addInterface(std::unique_ptr<DialectInterface>(interface));
+    return *interface;
+  }
+
+  /// Declare that the given interface will be implemented, but has a delayed
+  /// registration. The promised interface type can be an interface of any type
+  /// not just a dialect interface, i.e. it may also be an
+  /// AttributeInterface/OpInterface/TypeInterface/etc.
+  template <typename InterfaceT, typename ConcreteT>
+  void declarePromisedInterface() {
+    unresolvedPromisedInterfaces.insert(
+        {TypeID::get<ConcreteT>(), InterfaceT::getInterfaceID()});
+  }
+
+  // Declare the same interface for multiple types.
+  // Example:
+  // declarePromisedInterfaces<FunctionOpInterface, MyFuncType1, MyFuncType2>()
+  template <typename InterfaceT, typename... ConcreteT>
+  void declarePromisedInterfaces() {
+    (declarePromisedInterface<InterfaceT, ConcreteT>(), ...);
+  }
+
+  /// Checks if the given interface, which is attempting to be used, is a
+  /// promised interface of this dialect that has yet to be implemented. If so,
+  /// emits a fatal error. `interfaceName` is an optional string that contains a
+  /// more user readable name for the interface (such as the class name).
+  void handleUseOfUndefinedPromisedInterface(TypeID interfaceRequestorID,
+                                             TypeID interfaceID,
+                                             StringRef interfaceName = "") {
+    if (unresolvedPromisedInterfaces.count(
+            {interfaceRequestorID, interfaceID})) {
+      llvm::report_fatal_error(
+          "checking for an interface (`" + interfaceName +
+          "`) that was promised by dialect '" + getNamespace() +
+          "' but never implemented. This is generally an indication "
+          "that the dialect extension implementing the interface was never "
+          "registered.");
+    }
+  }
+
+  /// Checks if the given interface, which is attempting to be attached to a
+  /// construct owned by this dialect, is a promised interface of this dialect
+  /// that has yet to be implemented. If so, it resolves the interface promise.
+  void handleAdditionOfUndefinedPromisedInterface(TypeID interfaceRequestorID,
+                                                  TypeID interfaceID) {
+    unresolvedPromisedInterfaces.erase({interfaceRequestorID, interfaceID});
+  }
+
+  /// Checks if a promise has been made for the interface/requestor pair.
+  bool hasPromisedInterface(TypeID interfaceRequestorID,
+                            TypeID interfaceID) const {
+    return unresolvedPromisedInterfaces.count(
+        {interfaceRequestorID, interfaceID});
+  }
+
+  /// Checks if a promise has been made for the interface/requestor pair.
+  template <typename ConcreteT, typename InterfaceT>
+  bool hasPromisedInterface() const {
+    return hasPromisedInterface(TypeID::get<ConcreteT>(),
+                                InterfaceT::getInterfaceID());
   }
 
 protected:
@@ -201,13 +276,23 @@ protected:
 
   /// This method is used by derived classes to add their operations to the set.
   ///
-  template <typename... Args> void addOperations() {
+  template <typename... Args>
+  void addOperations() {
+    // This initializer_list argument pack expansion is essentially equal to
+    // using a fold expression with a comma operator. Clang however, refuses
+    // to compile a fold expression with a depth of more than 256 by default.
+    // There seem to be no such limitations for initializer_list.
     (void)std::initializer_list<int>{
         0, (RegisteredOperationName::insert<Args>(*this), 0)...};
   }
 
   /// Register a set of type classes with this dialect.
-  template <typename... Args> void addTypes() {
+  template <typename... Args>
+  void addTypes() {
+    // This initializer_list argument pack expansion is essentially equal to
+    // using a fold expression with a comma operator. Clang however, refuses
+    // to compile a fold expression with a depth of more than 256 by default.
+    // There seem to be no such limitations for initializer_list.
     (void)std::initializer_list<int>{0, (addType<Args>(), 0)...};
   }
 
@@ -217,9 +302,19 @@ protected:
   void addType(TypeID typeID, AbstractType &&typeInfo);
 
   /// Register a set of attribute classes with this dialect.
-  template <typename... Args> void addAttributes() {
+  template <typename... Args>
+  void addAttributes() {
+    // This initializer_list argument pack expansion is essentially equal to
+    // using a fold expression with a comma operator. Clang however, refuses
+    // to compile a fold expression with a depth of more than 256 by default.
+    // There seem to be no such limitations for initializer_list.
     (void)std::initializer_list<int>{0, (addAttribute<Args>(), 0)...};
   }
+
+  /// Register an attribute instance with this dialect.
+  /// The use of this method is in general discouraged in favor of
+  /// 'addAttributes<CustomAttr>()'.
+  void addAttribute(TypeID typeID, AbstractAttribute &&attrInfo);
 
   /// Enable support for unregistered operations.
   void allowUnknownOperations(bool allow = true) { unknownOpsAllowed = allow; }
@@ -232,15 +327,16 @@ private:
   void operator=(Dialect &) = delete;
 
   /// Register an attribute instance with this dialect.
-  template <typename T> void addAttribute() {
+  template <typename T>
+  void addAttribute() {
     // Add this attribute to the dialect and register it with the uniquer.
     addAttribute(T::getTypeID(), AbstractAttribute::get<T>(*this));
     detail::AttributeUniquer::registerAttribute<T>(context);
   }
-  void addAttribute(TypeID typeID, AbstractAttribute &&attrInfo);
 
   /// Register a type instance with this dialect.
-  template <typename T> void addType() {
+  template <typename T>
+  void addType() {
     // Add this type to the dialect and register it with the uniquer.
     addType(T::getTypeID(), AbstractType::get<T>(*this));
     detail::TypeUniquer::registerType<T>(context);
@@ -269,6 +365,11 @@ private:
   /// A collection of registered dialect interfaces.
   DenseMap<TypeID, std::unique_ptr<DialectInterface>> registeredInterfaces;
 
+  /// A set of interfaces that the dialect (or its constructs, i.e.
+  /// Attributes/Operations/Types/etc.) has promised to implement, but has yet
+  /// to provide an implementation for.
+  DenseSet<std::pair<TypeID, TypeID>> unresolvedPromisedInterfaces;
+
   friend class DialectRegistry;
   friend void registerDialect();
   friend class MLIRContext;
@@ -295,15 +396,11 @@ struct isa_impl<
 };
 template <typename T>
 struct cast_retty_impl<T, ::mlir::Dialect *> {
-  using ret_type =
-      std::conditional_t<std::is_base_of<::mlir::Dialect, T>::value, T *,
-                         const T *>;
+  using ret_type = T *;
 };
 template <typename T>
 struct cast_retty_impl<T, ::mlir::Dialect> {
-  using ret_type =
-      std::conditional_t<std::is_base_of<::mlir::Dialect, T>::value, T &,
-                         const T &>;
+  using ret_type = T &;
 };
 
 template <typename T>
@@ -315,7 +412,7 @@ struct cast_convert_val<T, ::mlir::Dialect, ::mlir::Dialect> {
   }
   template <typename To>
   static std::enable_if_t<std::is_base_of<::mlir::DialectInterface, To>::value,
-                          const To &>
+                          To &>
   doitImpl(::mlir::Dialect &dialect) {
     return *dialect.getRegisteredInterface<To>();
   }

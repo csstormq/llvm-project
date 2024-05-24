@@ -20,6 +20,7 @@
 //   weak symbol.
 //===----------------------------------------------------------------------===//
 
+#include "llvm/CodeGen/JMCInstrumenter.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/CodeGen/Passes.h"
@@ -39,18 +40,24 @@
 
 using namespace llvm;
 
-#define DEBUG_TYPE "jmc-instrument"
+#define DEBUG_TYPE "jmc-instrumenter"
 
+static bool runImpl(Module &M);
 namespace {
 struct JMCInstrumenter : public ModulePass {
   static char ID;
   JMCInstrumenter() : ModulePass(ID) {
     initializeJMCInstrumenterPass(*PassRegistry::getPassRegistry());
   }
-  bool runOnModule(Module &M) override;
+  bool runOnModule(Module &M) override { return runImpl(M); }
 };
 char JMCInstrumenter::ID = 0;
 } // namespace
+
+PreservedAnalyses JMCInstrumenterPass::run(Module &M, ModuleAnalysisManager &) {
+  bool Changed = runImpl(M);
+  return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
+}
 
 INITIALIZE_PASS(
     JMCInstrumenter, DEBUG_TYPE,
@@ -70,8 +77,8 @@ std::string getFlagName(DISubprogram &SP, bool UseX86FastCall) {
   // relative posix path:             posix
   sys::path::Style PathStyle =
       has_root_name(SP.getDirectory(), sys::path::Style::windows_backslash) ||
-              SP.getDirectory().find("\\") != StringRef::npos ||
-              SP.getFilename().find("\\") != StringRef::npos
+              SP.getDirectory().contains("\\") ||
+              SP.getFilename().contains("\\")
           ? sys::path::Style::windows_backslash
           : sys::path::Style::posix;
   // Best effort path normalization. This is to guarantee an unique flag symbol
@@ -120,7 +127,7 @@ void attachDebugInfo(GlobalVariable &GV, DISubprogram &SP) {
 
 FunctionType *getCheckFunctionType(LLVMContext &Ctx) {
   Type *VoidTy = Type::getVoidTy(Ctx);
-  PointerType *VoidPtrTy = Type::getInt8PtrTy(Ctx);
+  PointerType *VoidPtrTy = PointerType::getUnqual(Ctx);
   return FunctionType::get(VoidTy, VoidPtrTy, false);
 }
 
@@ -143,7 +150,7 @@ Function *createDefaultCheckFunction(Module &M, bool UseX86FastCall) {
 }
 } // namespace
 
-bool JMCInstrumenter::runOnModule(Module &M) {
+bool runImpl(Module &M) {
   bool Changed = false;
   LLVMContext &Ctx = M.getContext();
   Triple ModuleTriple(M.getTargetTriple());
@@ -151,7 +158,7 @@ bool JMCInstrumenter::runOnModule(Module &M) {
   bool IsELF = ModuleTriple.isOSBinFormatELF();
   assert((IsELF || IsMSVC) && "Unsupported triple for JMC");
   bool UseX86FastCall = IsMSVC && ModuleTriple.getArch() == Triple::x86;
-  const char *const FlagSymbolSection = IsELF ? ".just.my.code" : ".msvcjmc";
+  const char *const FlagSymbolSection = IsELF ? ".data.just.my.code" : ".msvcjmc";
 
   GlobalValue *CheckFunction = nullptr;
   DenseMap<DISubprogram *, Constant *> SavedFlags(8);
@@ -220,7 +227,7 @@ bool JMCInstrumenter::runOnModule(Module &M) {
     // FIXME: it would be nice to make CI scheduling boundary, although in
     //        practice it does not matter much.
     auto *CI = CallInst::Create(getCheckFunctionType(Ctx), CheckFunction,
-                                {Flag}, "", &*F.begin()->getFirstInsertionPt());
+                                {Flag}, "", F.begin()->getFirstInsertionPt());
     CI->addParamAttr(0, Attribute::NoUndef);
     if (UseX86FastCall) {
       CI->setCallingConv(CallingConv::X86_FastCall);

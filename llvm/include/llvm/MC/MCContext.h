@@ -10,7 +10,6 @@
 #define LLVM_MC_MCCONTEXT_H
 
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
@@ -27,6 +26,7 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/MD5.h"
+#include "llvm/Support/StringSaver.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
@@ -35,6 +35,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -49,9 +50,11 @@ class MCObjectFileInfo;
 class MCRegisterInfo;
 class MCSection;
 class MCSectionCOFF;
+class MCSectionDXContainer;
 class MCSectionELF;
 class MCSectionGOFF;
 class MCSectionMachO;
+class MCSectionSPIRV;
 class MCSectionWasm;
 class MCSectionXCOFF;
 class MCStreamer;
@@ -66,6 +69,11 @@ template <typename T> class SmallVectorImpl;
 class SMDiagnostic;
 class SMLoc;
 class SourceMgr;
+enum class EmitDwarfUnwindType;
+
+namespace wasm {
+struct WasmSignature;
+}
 
 /// Context object for machine code objects.  This class owns all of the
 /// sections that it creates.
@@ -81,6 +89,7 @@ public:
     IsELF,
     IsGOFF,
     IsCOFF,
+    IsSPIRV,
     IsWasm,
     IsXCOFF,
     IsDXContainer
@@ -97,7 +106,7 @@ private:
   Triple TT;
 
   /// The SourceMgr for this object, if any.
-  const SourceMgr *SrcMgr;
+  const SourceMgr *SrcMgr = nullptr;
 
   /// The SourceMgr for inline assembly, if any.
   std::unique_ptr<SourceMgr> InlineSrcMgr;
@@ -106,16 +115,16 @@ private:
   DiagHandlerTy DiagHandler;
 
   /// The MCAsmInfo for this target.
-  const MCAsmInfo *MAI;
+  const MCAsmInfo *MAI = nullptr;
 
   /// The MCRegisterInfo for this target.
-  const MCRegisterInfo *MRI;
+  const MCRegisterInfo *MRI = nullptr;
 
   /// The MCObjectFileInfo for this target.
-  const MCObjectFileInfo *MOFI;
+  const MCObjectFileInfo *MOFI = nullptr;
 
   /// The MCSubtargetInfo for this target.
-  const MCSubtargetInfo *MSTI;
+  const MCSubtargetInfo *MSTI = nullptr;
 
   std::unique_ptr<CodeViewContext> CVContext;
 
@@ -126,12 +135,16 @@ private:
   BumpPtrAllocator Allocator;
 
   SpecificBumpPtrAllocator<MCSectionCOFF> COFFAllocator;
+  SpecificBumpPtrAllocator<MCSectionDXContainer> DXCAllocator;
   SpecificBumpPtrAllocator<MCSectionELF> ELFAllocator;
   SpecificBumpPtrAllocator<MCSectionMachO> MachOAllocator;
   SpecificBumpPtrAllocator<MCSectionGOFF> GOFFAllocator;
+  SpecificBumpPtrAllocator<MCSectionSPIRV> SPIRVAllocator;
   SpecificBumpPtrAllocator<MCSectionWasm> WasmAllocator;
   SpecificBumpPtrAllocator<MCSectionXCOFF> XCOFFAllocator;
   SpecificBumpPtrAllocator<MCInst> MCInstAllocator;
+
+  SpecificBumpPtrAllocator<wasm::WasmSignature> WasmSignatureAllocator;
 
   /// Bindings of names to symbols.
   SymbolTable Symbols;
@@ -166,10 +179,13 @@ private:
   /// for the LocalLabelVal and adds it to the map if needed.
   unsigned GetInstance(unsigned LocalLabelVal);
 
+  /// LLVM_BB_ADDR_MAP version to emit.
+  uint8_t BBAddrMapVersion = 2;
+
   /// The file name of the log file from the environment variable
   /// AS_SECURE_LOG_FILE.  Which must be set before the .secure_log_unique
   /// directive is used or it is an error.
-  char *SecureLogFile;
+  std::string SecureLogFile;
   /// The stream that gets written to for the .secure_log_unique directive.
   std::unique_ptr<raw_fd_ostream> SecureLog;
   /// Boolean toggled when .secure_log_unique / .secure_log_reset is seen to
@@ -181,7 +197,7 @@ private:
   SmallString<128> CompilationDir;
 
   /// Prefix replacement map for source file information.
-  std::map<const std::string, const std::string> DebugPrefixMap;
+  SmallVector<std::pair<std::string, std::string>, 0> DebugPrefixMap;
 
   /// The main file name if passed in explicitly.
   std::string MainFileName;
@@ -339,6 +355,7 @@ private:
   std::map<std::string, MCSectionGOFF *> GOFFUniquingMap;
   std::map<WasmSectionKey, MCSectionWasm *> WasmUniquingMap;
   std::map<XCOFFSectionKey, MCSectionXCOFF *> XCOFFUniquingMap;
+  StringMap<MCSectionDXContainer *> DXCUniquingMap;
   StringMap<bool> RelSecNames;
 
   SpecificBumpPtrAllocator<MCSubtargetInfo> MCSubtargetAllocator;
@@ -374,29 +391,13 @@ private:
   /// Map of currently defined macros.
   StringMap<MCAsmMacro> MacroMap;
 
-  struct ELFEntrySizeKey {
-    std::string SectionName;
-    unsigned Flags;
-    unsigned EntrySize;
-
-    ELFEntrySizeKey(StringRef SectionName, unsigned Flags, unsigned EntrySize)
-        : SectionName(SectionName), Flags(Flags), EntrySize(EntrySize) {}
-
-    bool operator<(const ELFEntrySizeKey &Other) const {
-      if (SectionName != Other.SectionName)
-        return SectionName < Other.SectionName;
-      if (Flags != Other.Flags)
-        return Flags < Other.Flags;
-      return EntrySize < Other.EntrySize;
-    }
-  };
-
   // Symbols must be assigned to a section with a compatible entry size and
   // flags. This map is used to assign unique IDs to sections to distinguish
   // between sections with identical names but incompatible entry sizes and/or
   // flags. This can occur when a symbol is explicitly assigned to a section,
-  // e.g. via __attribute__((section("myname"))).
-  std::map<ELFEntrySizeKey, unsigned> ELFEntrySizeMap;
+  // e.g. via __attribute__((section("myname"))). The map key is the tuple
+  // (section name, flags, entry size).
+  DenseMap<std::tuple<StringRef, unsigned, unsigned>, unsigned> ELFEntrySizeMap;
 
   // This set is used to record the generic mergeable section names seen.
   // These are sections that are created as mergeable e.g. .debug_str. We need
@@ -441,6 +442,8 @@ public:
 
   const MCSubtargetInfo *getSubtargetInfo() const { return MSTI; }
 
+  const MCTargetOptions *getTargetOptions() const { return TargetOptions; }
+
   CodeViewContext &getCVContext();
 
   void setAllowTemporaryLabels(bool Value) { AllowTemporaryLabels = Value; }
@@ -463,9 +466,11 @@ public:
   /// \name Symbol Management
   /// @{
 
-  /// Create and return a new linker temporary symbol with a unique but
-  /// unspecified name.
+  /// Create a new linker temporary symbol with the specified prefix (Name) or
+  /// "tmp". This creates a "l"-prefixed symbol for Mach-O and is identical to
+  /// createNamedTempSymbol for other object file formats.
   MCSymbol *createLinkerPrivateTempSymbol();
+  MCSymbol *createLinkerPrivateSymbol(const Twine &Name);
 
   /// Create a temporary symbol with a unique name. The name will be omitted
   /// in the symbol table if UseNamesOnTempLabels is false (default except
@@ -496,17 +501,17 @@ public:
   /// variable after codegen.
   ///
   /// \param Idx - The index of a local variable passed to \@llvm.localescape.
-  MCSymbol *getOrCreateFrameAllocSymbol(StringRef FuncName, unsigned Idx);
+  MCSymbol *getOrCreateFrameAllocSymbol(const Twine &FuncName, unsigned Idx);
 
-  MCSymbol *getOrCreateParentFrameOffsetSymbol(StringRef FuncName);
+  MCSymbol *getOrCreateParentFrameOffsetSymbol(const Twine &FuncName);
 
-  MCSymbol *getOrCreateLSDASymbol(StringRef FuncName);
+  MCSymbol *getOrCreateLSDASymbol(const Twine &FuncName);
 
   /// Get the symbol for \p Name, or null.
   MCSymbol *lookupSymbol(const Twine &Name) const;
 
   /// Set value for a symbol.
-  void setSymbolValue(MCStreamer &Streamer, StringRef Sym, uint64_t Val);
+  void setSymbolValue(MCStreamer &Streamer, const Twine &Sym, uint64_t Val);
 
   /// getSymbols - Get a reference for the symbol table for clients that
   /// want to, for example, iterate over all symbols. 'const' because we
@@ -523,6 +528,10 @@ public:
   /// registerInlineAsmLabel - Records that the name is a label referenced in
   /// inline assembly.
   void registerInlineAsmLabel(MCSymbol *Sym);
+
+  /// Allocates and returns a new `WasmSignature` instance (with empty parameter
+  /// and return type lists).
+  wasm::WasmSignature *createWasmSignature();
 
   /// @}
 
@@ -593,8 +602,6 @@ public:
                                     const MCSymbolELF *Group,
                                     const MCSectionELF *RelInfoSection);
 
-  void renameELFSection(MCSectionELF *Section, StringRef Name);
-
   MCSectionELF *createELFGroupSection(const MCSymbolELF *Group, bool IsComdat);
 
   void recordELFMergeableSectionInfo(StringRef SectionName, unsigned Flags,
@@ -606,11 +613,12 @@ public:
 
   /// Return the unique ID of the section with the given name, flags and entry
   /// size, if it exists.
-  Optional<unsigned> getELFUniqueIDForEntsize(StringRef SectionName,
-                                              unsigned Flags,
-                                              unsigned EntrySize);
+  std::optional<unsigned> getELFUniqueIDForEntsize(StringRef SectionName,
+                                                   unsigned Flags,
+                                                   unsigned EntrySize);
 
-  MCSectionGOFF *getGOFFSection(StringRef Section, SectionKind Kind);
+  MCSectionGOFF *getGOFFSection(StringRef Section, SectionKind Kind,
+                                MCSection *Parent, const MCExpr *SubsectionId);
 
   MCSectionCOFF *getCOFFSection(StringRef Section, unsigned Characteristics,
                                 SectionKind Kind, StringRef COMDATSymName,
@@ -629,6 +637,8 @@ public:
   MCSectionCOFF *
   getAssociativeCOFFSection(MCSectionCOFF *Sec, const MCSymbol *KeySym,
                             unsigned UniqueID = GenericSectionID);
+
+  MCSectionSPIRV *getSPIRVSection();
 
   MCSectionWasm *getWasmSection(const Twine &Section, SectionKind K,
                                 unsigned Flags = 0) {
@@ -654,17 +664,23 @@ public:
                                 unsigned Flags, const MCSymbolWasm *Group,
                                 unsigned UniqueID, const char *BeginSymName);
 
+  /// Get the section for the provided Section name
+  MCSectionDXContainer *getDXContainerSection(StringRef Section, SectionKind K);
+
   bool hasXCOFFSection(StringRef Section,
                        XCOFF::CsectProperties CsectProp) const;
 
   MCSectionXCOFF *getXCOFFSection(
       StringRef Section, SectionKind K,
-      Optional<XCOFF::CsectProperties> CsectProp = None,
+      std::optional<XCOFF::CsectProperties> CsectProp = std::nullopt,
       bool MultiSymbolsAllowed = false, const char *BeginSymName = nullptr,
-      Optional<XCOFF::DwarfSectionSubtypeFlags> DwarfSubtypeFlags = None);
+      std::optional<XCOFF::DwarfSectionSubtypeFlags> DwarfSubtypeFlags =
+          std::nullopt);
 
   // Create and save a copy of STI and return a reference to the copy.
   MCSubtargetInfo &getSubtargetCopy(const MCSubtargetInfo &STI);
+
+  uint8_t getBBAddrMapVersion() const { return BBAddrMapVersion; }
 
   /// @}
 
@@ -682,6 +698,9 @@ public:
   /// Add an entry to the debug prefix map.
   void addDebugPrefixMapEntry(const std::string &From, const std::string &To);
 
+  /// Remap one path in-place as per the debug prefix map.
+  void remapDebugPath(SmallVectorImpl<char> &Path);
+
   // Remaps all debug directory paths in-place as per the debug prefix map.
   void RemapDebugPaths();
 
@@ -696,8 +715,9 @@ public:
   /// Creates an entry in the dwarf file and directory tables.
   Expected<unsigned> getDwarfFile(StringRef Directory, StringRef FileName,
                                   unsigned FileNumber,
-                                  Optional<MD5::MD5Result> Checksum,
-                                  Optional<StringRef> Source, unsigned CUID);
+                                  std::optional<MD5::MD5Result> Checksum,
+                                  std::optional<StringRef> Source,
+                                  unsigned CUID);
 
   bool isValidDwarfFileNumber(unsigned FileNumber, unsigned CUID = 0);
 
@@ -731,8 +751,8 @@ public:
   /// These are "file 0" and "directory 0" in DWARF v5.
   void setMCLineTableRootFile(unsigned CUID, StringRef CompilationDir,
                               StringRef Filename,
-                              Optional<MD5::MD5Result> Checksum,
-                              Optional<StringRef> Source) {
+                              std::optional<MD5::MD5Result> Checksum,
+                              std::optional<StringRef> Source) {
     getMCDwarfLineTable(CUID).setRootFile(CompilationDir, Filename, Checksum,
                                           Source);
   }
@@ -766,6 +786,8 @@ public:
   bool getGenDwarfForAssembly() { return GenDwarfForAssembly; }
   void setGenDwarfForAssembly(bool Value) { GenDwarfForAssembly = Value; }
   unsigned getGenDwarfFileNumber() { return GenDwarfFileNumber; }
+  EmitDwarfUnwindType emitDwarfUnwindInfo() const;
+  bool emitCompactUnwindNonCanonical() const;
 
   void setGenDwarfFileNumber(unsigned FileNumber) {
     GenDwarfFileNumber = FileNumber;
@@ -807,7 +829,7 @@ public:
 
   /// @}
 
-  char *getSecureLogFile() { return SecureLogFile; }
+  StringRef getSecureLogFile() { return SecureLogFile; }
   raw_fd_ostream *getSecureLog() { return SecureLog.get(); }
 
   void setSecureLog(std::unique_ptr<raw_fd_ostream> Value) {
@@ -823,12 +845,18 @@ public:
 
   void deallocate(void *Ptr) {}
 
+  /// Allocates a copy of the given string on the allocator managed by this
+  /// context and returns the result.
+  StringRef allocateString(StringRef s) {
+    return StringSaver(Allocator).save(s);
+  }
+
   bool hadError() { return HadError; }
   void diagnose(const SMDiagnostic &SMD);
   void reportError(SMLoc L, const Twine &Msg);
   void reportWarning(SMLoc L, const Twine &Msg);
 
-  const MCAsmMacro *lookupMacro(StringRef Name) {
+  MCAsmMacro *lookupMacro(StringRef Name) {
     StringMap<MCAsmMacro>::iterator I = MacroMap.find(Name);
     return (I == MacroMap.end()) ? nullptr : &I->getValue();
   }

@@ -17,6 +17,7 @@
 #include "HexagonInstrInfo.h"
 #include "HexagonRegisterInfo.h"
 #include "HexagonSubtarget.h"
+#include "HexagonTargetStreamer.h"
 #include "MCTargetDesc/HexagonInstPrinter.h"
 #include "MCTargetDesc/HexagonMCExpr.h"
 #include "MCTargetDesc/HexagonMCInstrInfo.h"
@@ -46,6 +47,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Target/TargetMachine.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -66,8 +68,7 @@ void HexagonLowerToMC(const MCInstrInfo &MCII, const MachineInstr *MI,
 inline static unsigned getHexagonRegisterPair(unsigned Reg,
       const MCRegisterInfo *RI) {
   assert(Hexagon::IntRegsRegClass.contains(Reg));
-  MCSuperRegIterator SR(Reg, RI, false);
-  unsigned Pair = *SR;
+  unsigned Pair = *RI->superregs(Reg).begin();
   assert(Hexagon::DoubleRegsRegClass.contains(Pair));
   return Pair;
 }
@@ -202,14 +203,14 @@ static MCSymbol *smallData(AsmPrinter &AP, const MachineInstr &MI,
 
     MCSectionELF *Section = OutStreamer.getContext().getELFSection(
         sectionName, ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC);
-    OutStreamer.SwitchSection(Section);
+    OutStreamer.switchSection(Section);
 
     Sym = AP.OutContext.getOrCreateSymbol(Twine(symbolName));
     if (Sym->isUndefined()) {
       OutStreamer.emitLabel(Sym);
       OutStreamer.emitSymbolAttribute(Sym, MCSA_Global);
       OutStreamer.emitIntValue(Value, AlignSize);
-      OutStreamer.emitCodeAlignment(AlignSize, &STI);
+      OutStreamer.emitCodeAlignment(Align(AlignSize), &STI);
     }
   } else {
     assert(Imm.isExpr() && "Expected expression and found none");
@@ -231,13 +232,13 @@ static MCSymbol *smallData(AsmPrinter &AP, const MachineInstr &MI,
     MCSectionELF *Section = OutStreamer.getContext().getELFSection(
         ".lita", ELF::SHT_PROGBITS, ELF::SHF_WRITE | ELF::SHF_ALLOC);
 
-    OutStreamer.SwitchSection(Section);
+    OutStreamer.switchSection(Section);
     Sym = AP.OutContext.getOrCreateSymbol(Twine(LitaName));
     if (Sym->isUndefined()) {
       OutStreamer.emitLabel(Sym);
       OutStreamer.emitSymbolAttribute(Sym, MCSA_Local);
       OutStreamer.emitValue(Imm.getExpr(), AlignSize);
-      OutStreamer.emitCodeAlignment(AlignSize, &STI);
+      OutStreamer.emitCodeAlignment(Align(AlignSize), &STI);
     }
   }
   return Sym;
@@ -331,7 +332,7 @@ void HexagonAsmPrinter::HexagonProcessInstruction(MCInst &Inst,
       MCSymbol *Sym =
           smallData(*this, MI, *OutStreamer, Imm, 8, getSubtargetInfo());
 
-      OutStreamer->SwitchSection(Current.first, Current.second);
+      OutStreamer->switchSection(Current.first, Current.second);
       MCInst TmpInst;
       MCOperand &Reg = MappedInst.getOperand(0);
       TmpInst.setOpcode(Hexagon::L2_loadrdgp);
@@ -348,7 +349,7 @@ void HexagonAsmPrinter::HexagonProcessInstruction(MCInst &Inst,
       MCSectionSubPair Current = OutStreamer->getCurrentSection();
       MCSymbol *Sym =
           smallData(*this, MI, *OutStreamer, Imm, 4, getSubtargetInfo());
-      OutStreamer->SwitchSection(Current.first, Current.second);
+      OutStreamer->switchSection(Current.first, Current.second);
       MCInst TmpInst;
       MCOperand &Reg = MappedInst.getOperand(0);
       TmpInst.setOpcode(Hexagon::L2_loadrigp);
@@ -743,6 +744,9 @@ void HexagonAsmPrinter::HexagonProcessInstruction(MCInst &Inst,
 
 /// Print out a single Hexagon MI to the current output stream.
 void HexagonAsmPrinter::emitInstruction(const MachineInstr *MI) {
+  Hexagon_MC::verifyInstructionPredicates(MI->getOpcode(),
+                                          getSubtargetInfo().getFeatureBits());
+
   MCInst MCB;
   MCB.setOpcode(Hexagon::BUNDLE);
   MCB.addOperand(MCOperand::createImm(0));
@@ -771,6 +775,24 @@ void HexagonAsmPrinter::emitInstruction(const MachineInstr *MI) {
   if (HexagonMCInstrInfo::bundleSize(MCB) == 0)
     return;
   OutStreamer->emitInstruction(MCB, getSubtargetInfo());
+}
+
+void HexagonAsmPrinter::emitStartOfAsmFile(Module &M) {
+  if (TM.getTargetTriple().isOSBinFormatELF())
+    emitAttributes();
+}
+
+void HexagonAsmPrinter::emitEndOfAsmFile(Module &M) {
+  HexagonTargetStreamer &HTS =
+      static_cast<HexagonTargetStreamer &>(*OutStreamer->getTargetStreamer());
+  if (TM.getTargetTriple().isOSBinFormatELF())
+    HTS.finishAttributeSection();
+}
+
+void HexagonAsmPrinter::emitAttributes() {
+  HexagonTargetStreamer &HTS =
+      static_cast<HexagonTargetStreamer &>(*OutStreamer->getTargetStreamer());
+  HTS.emitTargetAttributes(*TM.getMCSubtargetInfo());
 }
 
 void HexagonAsmPrinter::EmitSled(const MachineInstr &MI, SledKind Kind) {
@@ -819,7 +841,7 @@ void HexagonAsmPrinter::EmitSled(const MachineInstr &MI, SledKind Kind) {
   emitNops(NoopsInSledCount);
 
   OutStreamer->emitLabel(PostSled);
-  recordSled(CurSled, MI, Kind, 0);
+  recordSled(CurSled, MI, Kind, 2);
 }
 
 void HexagonAsmPrinter::LowerPATCHABLE_FUNCTION_ENTER(const MachineInstr &MI) {

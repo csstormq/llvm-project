@@ -9,8 +9,8 @@
 #include "flang/Optimizer/Builder/Complex.h"
 #include "gtest/gtest.h"
 #include "flang/Optimizer/Builder/FIRBuilder.h"
+#include "flang/Optimizer/Dialect/Support/KindMapping.h"
 #include "flang/Optimizer/Support/InitFIR.h"
-#include "flang/Optimizer/Support/KindMapping.h"
 
 struct ComplexTest : public testing::Test {
 public:
@@ -23,8 +23,8 @@ public:
     // Set up a Module with a dummy function operation inside.
     // Set the insertion point in the function entry block.
     mlir::ModuleOp mod = builder.create<mlir::ModuleOp>(loc);
-    mlir::FuncOp func = mlir::FuncOp::create(
-        loc, "func1", builder.getFunctionType(llvm::None, llvm::None));
+    mlir::func::FuncOp func = mlir::func::FuncOp::create(
+        loc, "func1", builder.getFunctionType(std::nullopt, std::nullopt));
     auto *entryBlock = func.addEntryBlock();
     mod.push_back(mod);
     builder.setInsertionPointToStart(entryBlock);
@@ -96,6 +96,6 @@ TEST_F(ComplexTest, verifyConvertWithSemantics) {
 
   // Convert complex to integer
   mlir::Value v2 = firBuilder->convertWithSemantics(loc, integerTy1, v1);
-  EXPECT_TRUE(v2.getType().isa<mlir::IntegerType>());
+  EXPECT_TRUE(mlir::isa<mlir::IntegerType>(v2.getType()));
   EXPECT_TRUE(mlir::dyn_cast<fir::ConvertOp>(v2.getDefiningOp()));
 }

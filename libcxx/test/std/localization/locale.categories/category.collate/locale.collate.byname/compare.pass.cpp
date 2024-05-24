@@ -6,6 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+// Bionic has minimal locale support, investigate this later.
+// XFAIL: LIBCXX-ANDROID-FIXME
+
 // REQUIRES: locale.en_US.UTF-8
 
 // <locale>
@@ -21,8 +24,6 @@
 
 // https://llvm.org/PR41018
 // XFAIL: windows-dll && msvc
-
-// XFAIL: LIBCXX-AIX-FIXME
 
 #include <locale>
 #include <string>

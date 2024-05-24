@@ -58,16 +58,15 @@ display their output.  For brevity, the '-t' output is not included here.
 Notice the 'expected failures=1' message at the end of the run.  This is because
 of a bug currently in lldb such that setting target.process.output-path to
 'stdout.txt' does not have any effect on the redirection of the standard output
-of the subsequent launched process.  We are using unittest2 (a backport of new
-unittest features for Python 2.4-2.6) to decorate (mark) the particular test
-method as such:
+of the subsequent launched process.  We are using unittest to decorate (mark)
+the particular test method as such:
 
-    @unittest2.expectedFailure
+    @unittest.expectedFailure
     # rdar://problem/8435794
     # settings set target.process.output-path does not seem to work
     def test_set_output_path(self):
 
-See http://pypi.python.org/pypi/unittest2 for more details.
+See http://docs.python.org/library/unittest.html for more details.
 
 Now let's look inside the test method:
 
@@ -110,19 +109,9 @@ executable by lldb:
         exe = self.getBuildArtifact("a.out")
         self.runCmd("file " + exe, CURRENT_EXECUTABLE_SET)
 
-This is where the attribute assignment:
-
-class SettingsCommandTestCase(TestBase):
-
-    mydir = "settings"
-
-which happens right after the SettingsCommandTestCase class declaration comes
-into place. It specifies the relative directory to the top level 'test' so that
-the test harness can change its working directory in order to find the
-executable as well as the source code files. The runCmd() method is defined in
-the TestBase base class (within test/lldbtest.py) and its purpose is to pass the
-specified command to the lldb command interpreter. It's like you're typing the
-command within an interactive lldb session.
+The runCmd() method is defined in the TestBase base class and its purpose is to
+pass the specified command to the lldb command interpreter. It's like you're
+typing the command within an interactive lldb session.
 
 The CURRENT_EXECUTABLE_SET is an assert message defined in the lldbtest module
 so that it can be reused from other test modules.

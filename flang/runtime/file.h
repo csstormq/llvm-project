@@ -12,9 +12,9 @@
 #define FORTRAN_RUNTIME_FILE_H_
 
 #include "io-error.h"
+#include "flang/Common/optional.h"
 #include "flang/Runtime/memory.h"
 #include <cinttypes>
-#include <optional>
 
 namespace Fortran::runtime::io {
 
@@ -28,8 +28,8 @@ public:
   using FileOffset = std::int64_t;
 
   const char *path() const { return path_.get(); }
-  void set_path(OwningPtr<char> &&, std::size_t bytes);
   std::size_t pathLength() const { return pathLength_; }
+  void set_path(OwningPtr<char> &&, std::size_t bytes);
   bool mayRead() const { return mayRead_; }
   bool mayWrite() const { return mayWrite_; }
   bool mayPosition() const { return mayPosition_; }
@@ -37,10 +37,11 @@ public:
   void set_mayAsynchronous(bool yes) { mayAsynchronous_ = yes; }
   bool isTerminal() const { return isTerminal_; }
   bool isWindowsTextFile() const { return isWindowsTextFile_; }
-  std::optional<FileOffset> knownSize() const { return knownSize_; }
+  Fortran::common::optional<FileOffset> knownSize() const { return knownSize_; }
 
   bool IsConnected() const { return fd_ >= 0; }
-  void Open(OpenStatus, std::optional<Action>, Position, IoErrorHandler &);
+  void Open(OpenStatus, Fortran::common::optional<Action>, Position,
+      IoErrorHandler &);
   void Predefine(int fd);
   void Close(CloseStatus, IoErrorHandler &);
 
@@ -94,9 +95,10 @@ private:
   bool mayWrite_{false};
   bool mayPosition_{false};
   bool mayAsynchronous_{false};
-  std::optional<Position> openPosition_; // from Open(); reset after positioning
+  Fortran::common::optional<Position>
+      openPosition_; // from Open(); reset after positioning
   FileOffset position_{0};
-  std::optional<FileOffset> knownSize_;
+  Fortran::common::optional<FileOffset> knownSize_;
   bool isTerminal_{false};
   bool isWindowsTextFile_{false}; // expands LF to CR+LF on write
 
@@ -104,10 +106,11 @@ private:
   OwningPtr<Pending> pending_;
 };
 
-bool IsATerminal(int fd);
-bool IsExtant(const char *path);
-bool MayRead(const char *path);
-bool MayWrite(const char *path);
-bool MayReadAndWrite(const char *path);
+RT_API_ATTRS bool IsATerminal(int fd);
+RT_API_ATTRS bool IsExtant(const char *path);
+RT_API_ATTRS bool MayRead(const char *path);
+RT_API_ATTRS bool MayWrite(const char *path);
+RT_API_ATTRS bool MayReadAndWrite(const char *path);
+RT_API_ATTRS std::int64_t SizeInBytes(const char *path);
 } // namespace Fortran::runtime::io
 #endif // FORTRAN_RUNTIME_FILE_H_

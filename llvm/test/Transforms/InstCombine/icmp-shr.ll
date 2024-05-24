@@ -3,6 +3,8 @@
 
 target datalayout = "e-p:64:64:64-p1:16:16:16-p2:32:32:32-p3:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64"
 
+declare void @use(i8)
+
 define i1 @lshr_eq_msb_low_last_zero(i8 %a) {
 ; CHECK-LABEL: @lshr_eq_msb_low_last_zero(
 ; CHECK-NEXT:    [[CMP:%.*]] = icmp ugt i8 [[A:%.*]], 6
@@ -574,6 +576,19 @@ define i1 @ashr_ugt_0(i4 %x) {
   ret i1 %r
 }
 
+define i1 @ashr_ugt_0_multiuse(i4 %x, ptr %p) {
+; CHECK-LABEL: @ashr_ugt_0_multiuse(
+; CHECK-NEXT:    [[S:%.*]] = ashr i4 [[X:%.*]], 1
+; CHECK-NEXT:    [[R:%.*]] = icmp ugt i4 [[X]], 1
+; CHECK-NEXT:    store i4 [[S]], ptr [[P:%.*]], align 1
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = ashr i4 %x, 1
+  %r = icmp ugt i4 %s, 0 ; 0b0000
+  store i4 %s, ptr %p
+  ret i1 %r
+}
+
 define i1 @ashr_ugt_1(i4 %x) {
 ; CHECK-LABEL: @ashr_ugt_1(
 ; CHECK-NEXT:    [[R:%.*]] = icmp ugt i4 [[X:%.*]], 3
@@ -594,13 +609,9 @@ define i1 @ashr_ugt_2(i4 %x) {
   ret i1 %r
 }
 
-; negative test
-; TODO: This is a sign-bit test, but we don't recognize the pattern.
-
 define i1 @ashr_ugt_3(i4 %x) {
 ; CHECK-LABEL: @ashr_ugt_3(
-; CHECK-NEXT:    [[S:%.*]] = ashr i4 [[X:%.*]], 1
-; CHECK-NEXT:    [[R:%.*]] = icmp ugt i4 [[S]], 3
+; CHECK-NEXT:    [[R:%.*]] = icmp slt i4 [[X:%.*]], 0
 ; CHECK-NEXT:    ret i1 [[R]]
 ;
   %s = ashr i4 %x, 1
@@ -766,6 +777,19 @@ define i1 @ashr_ult_2(i4 %x) {
   ret i1 %r
 }
 
+define i1 @ashr_ult_2_multiuse(i4 %x, ptr %p) {
+; CHECK-LABEL: @ashr_ult_2_multiuse(
+; CHECK-NEXT:    [[S:%.*]] = ashr i4 [[X:%.*]], 1
+; CHECK-NEXT:    [[R:%.*]] = icmp ult i4 [[S]], 2
+; CHECK-NEXT:    store i4 [[S]], ptr [[P:%.*]], align 1
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = ashr i4 %x, 1
+  %r = icmp ult i4 %s, 2 ; 0b0010
+  store i4 %s, ptr %p
+  ret i1 %r
+}
+
 ; negative test
 
 define i1 @ashr_ult_3(i4 %x) {
@@ -859,7 +883,6 @@ define i1 @ashr_ult_11(i4 %x) {
 }
 
 ; negative test
-; TODO: This is a sign-bit test, but we don't recognize the pattern.
 
 define i1 @ashr_ult_12(i4 %x) {
 ; CHECK-LABEL: @ashr_ult_12(
@@ -1011,4 +1034,659 @@ define i1 @ashr_exact_ne_0_multiuse(i8 %x) {
   ret i1 %c
 }
 
-declare void @use(i8)
+define i1 @lshr_pow2_ugt(i8 %x) {
+; CHECK-LABEL: @lshr_pow2_ugt(
+; CHECK-NEXT:    [[R:%.*]] = icmp eq i8 [[X:%.*]], 0
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 2, %x
+  %r = icmp ugt i8 %s, 1
+  ret i1 %r
+}
+
+define i1 @lshr_pow2_ugt_use(i8 %x) {
+; CHECK-LABEL: @lshr_pow2_ugt_use(
+; CHECK-NEXT:    [[S:%.*]] = lshr exact i8 -128, [[X:%.*]]
+; CHECK-NEXT:    call void @use(i8 [[S]])
+; CHECK-NEXT:    [[R:%.*]] = icmp ult i8 [[X]], 5
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 128, %x
+  call void @use(i8 %s)
+  %r = icmp ugt i8 %s, 5
+  ret i1 %r
+}
+
+define <2 x i1> @lshr_pow2_ugt_vec(<2 x i8> %x) {
+; CHECK-LABEL: @lshr_pow2_ugt_vec(
+; CHECK-NEXT:    [[R:%.*]] = icmp eq <2 x i8> [[X:%.*]], zeroinitializer
+; CHECK-NEXT:    ret <2 x i1> [[R]]
+;
+  %s = lshr <2 x i8> <i8 8, i8 8>, %x
+  %r = icmp ugt <2 x i8> %s, <i8 6, i8 6>
+  ret <2 x i1> %r
+}
+
+; negative test - need power-of-2
+
+define i1 @lshr_not_pow2_ugt(i8 %x) {
+; CHECK-LABEL: @lshr_not_pow2_ugt(
+; CHECK-NEXT:    [[S:%.*]] = lshr i8 3, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp ugt i8 [[S]], 1
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 3, %x
+  %r = icmp ugt i8 %s, 1
+  ret i1 %r
+}
+
+define i1 @lshr_pow2_ugt1(i8 %x) {
+; CHECK-LABEL: @lshr_pow2_ugt1(
+; CHECK-NEXT:    [[R:%.*]] = icmp ult i8 [[X:%.*]], 7
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 128, %x
+  %r = icmp ugt i8 %s, 1
+  ret i1 %r
+}
+
+; negative test - need logical shift
+
+define i1 @ashr_pow2_ugt(i8 %x) {
+; CHECK-LABEL: @ashr_pow2_ugt(
+; CHECK-NEXT:    [[S:%.*]] = ashr exact i8 -128, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp ugt i8 [[S]], -96
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = ashr i8 128, %x
+  %r = icmp ugt i8 %s, 160
+  ret i1 %r
+}
+
+; negative test - need unsigned pred
+
+define i1 @lshr_pow2_sgt(i8 %x) {
+; CHECK-LABEL: @lshr_pow2_sgt(
+; CHECK-NEXT:    [[S:%.*]] = lshr exact i8 -128, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp sgt i8 [[S]], 3
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 128, %x
+  %r = icmp sgt i8 %s, 3
+  ret i1 %r
+}
+
+define i1 @lshr_pow2_ult(i8 %x) {
+; CHECK-LABEL: @lshr_pow2_ult(
+; CHECK-NEXT:    [[R:%.*]] = icmp ugt i8 [[X:%.*]], 1
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 4, %x
+  %r = icmp ult i8 %s, 2
+  ret i1 %r
+}
+
+define i1 @lshr_pow2_ult_use(i8 %x) {
+; CHECK-LABEL: @lshr_pow2_ult_use(
+; CHECK-NEXT:    [[S:%.*]] = lshr exact i8 -128, [[X:%.*]]
+; CHECK-NEXT:    call void @use(i8 [[S]])
+; CHECK-NEXT:    [[R:%.*]] = icmp ugt i8 [[X]], 4
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 128, %x
+  call void @use(i8 %s)
+  %r = icmp ult i8 %s, 5
+  ret i1 %r
+}
+
+define <2 x i1> @lshr_pow2_ult_vec(<2 x i8> %x) {
+; CHECK-LABEL: @lshr_pow2_ult_vec(
+; CHECK-NEXT:    [[R:%.*]] = icmp ne <2 x i8> [[X:%.*]], zeroinitializer
+; CHECK-NEXT:    ret <2 x i1> [[R]]
+;
+  %s = lshr <2 x i8> <i8 8, i8 8>, %x
+  %r = icmp ult <2 x i8> %s, <i8 6, i8 6>
+  ret <2 x i1> %r
+}
+
+; negative test - need power-of-2
+
+define i1 @lshr_not_pow2_ult(i8 %x) {
+; CHECK-LABEL: @lshr_not_pow2_ult(
+; CHECK-NEXT:    [[S:%.*]] = lshr i8 3, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp ult i8 [[S]], 2
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 3, %x
+  %r = icmp ult i8 %s, 2
+  ret i1 %r
+}
+
+define i1 @lshr_pow2_ult_equal_constants(i32 %x) {
+; CHECK-LABEL: @lshr_pow2_ult_equal_constants(
+; CHECK-NEXT:    [[R:%.*]] = icmp ne i32 [[X:%.*]], 0
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %shr = lshr i32 16, %x
+  %r = icmp ult i32 %shr, 16
+  ret i1 %r
+}
+
+define i1 @lshr_pow2_ult_smin(i8 %x) {
+; CHECK-LABEL: @lshr_pow2_ult_smin(
+; CHECK-NEXT:    [[R:%.*]] = icmp ne i8 [[X:%.*]], 0
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 128, %x
+  %r = icmp ult i8 %s, 128
+  ret i1 %r
+}
+
+; negative test - need logical shift
+
+define i1 @ashr_pow2_ult(i8 %x) {
+; CHECK-LABEL: @ashr_pow2_ult(
+; CHECK-NEXT:    [[S:%.*]] = ashr exact i8 -128, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp ult i8 [[S]], -96
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = ashr i8 128, %x
+  %r = icmp ult i8 %s, 160
+  ret i1 %r
+}
+
+; negative test - need unsigned pred
+
+define i1 @lshr_pow2_slt(i8 %x) {
+; CHECK-LABEL: @lshr_pow2_slt(
+; CHECK-NEXT:    [[S:%.*]] = lshr exact i8 -128, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp slt i8 [[S]], 3
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 128, %x
+  %r = icmp slt i8 %s, 3
+  ret i1 %r
+}
+
+; (ShiftValC >> X) >s -1 --> X != 0 with ShiftValC < 0
+
+define i1 @lshr_neg_sgt_minus_1(i8 %x) {
+; CHECK-LABEL: @lshr_neg_sgt_minus_1(
+; CHECK-NEXT:    [[R:%.*]] = icmp ne i8 [[X:%.*]], 0
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 -17, %x
+  %r = icmp sgt i8 %s, -1
+  ret i1 %r
+}
+
+define <2 x i1> @lshr_neg_sgt_minus_1_vector(<2 x i8> %x) {
+; CHECK-LABEL: @lshr_neg_sgt_minus_1_vector(
+; CHECK-NEXT:    [[R:%.*]] = icmp ne <2 x i8> [[X:%.*]], zeroinitializer
+; CHECK-NEXT:    ret <2 x i1> [[R]]
+;
+  %s = lshr <2 x i8> <i8 -17, i8 -17>, %x
+  %r = icmp sgt <2 x i8> %s, <i8 -1, i8 -1>
+  ret <2 x i1> %r
+}
+
+define i1 @lshr_neg_sgt_minus_1_extra_use(i8 %x) {
+; CHECK-LABEL: @lshr_neg_sgt_minus_1_extra_use(
+; CHECK-NEXT:    [[S:%.*]] = lshr i8 -17, [[X:%.*]]
+; CHECK-NEXT:    call void @use(i8 [[S]])
+; CHECK-NEXT:    [[R:%.*]] = icmp ne i8 [[X]], 0
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 -17, %x
+  call void @use(i8 %s)
+  %r = icmp sgt i8 %s, -1
+  ret i1 %r
+}
+
+; Negative tests
+
+define i1 @lshr_neg_sgt_minus_2(i8 %x) {
+; CHECK-LABEL: @lshr_neg_sgt_minus_2(
+; CHECK-NEXT:    [[S:%.*]] = lshr i8 -17, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp sgt i8 [[S]], -2
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 -17, %x
+  %r = icmp sgt i8 %s, -2
+  ret i1 %r
+}
+
+define i1 @lshr_neg_slt_minus_1(i8 %x) {
+; CHECK-LABEL: @lshr_neg_slt_minus_1(
+; CHECK-NEXT:    [[S:%.*]] = lshr i8 -17, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp slt i8 [[S]], -1
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 -17, %x
+  %r = icmp slt i8 %s, -1
+  ret i1 %r
+}
+
+; (ShiftValC >> X) <s 0 --> X == 0 with ShiftValC < 0
+
+define i1 @lshr_neg_slt_zero(i8 %x) {
+; CHECK-LABEL: @lshr_neg_slt_zero(
+; CHECK-NEXT:    [[R:%.*]] = icmp eq i8 [[X:%.*]], 0
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 -17, %x
+  %r = icmp slt i8 %s, 0
+  ret i1 %r
+}
+
+define <2 x i1> @lshr_neg_slt_zero_vector(<2 x i8> %x) {
+; CHECK-LABEL: @lshr_neg_slt_zero_vector(
+; CHECK-NEXT:    [[R:%.*]] = icmp eq <2 x i8> [[X:%.*]], zeroinitializer
+; CHECK-NEXT:    ret <2 x i1> [[R]]
+;
+  %s = lshr <2 x i8> <i8 -17, i8 -17>, %x
+  %r = icmp slt <2 x i8> %s, <i8 0, i8 0>
+  ret <2 x i1> %r
+}
+
+define i1 @lshr_neg_slt_zero_extra_use(i8 %x) {
+; CHECK-LABEL: @lshr_neg_slt_zero_extra_use(
+; CHECK-NEXT:    [[S:%.*]] = lshr i8 -17, [[X:%.*]]
+; CHECK-NEXT:    call void @use(i8 [[S]])
+; CHECK-NEXT:    [[R:%.*]] = icmp eq i8 [[X]], 0
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 -17, %x
+  call void @use(i8 %s)
+  %r = icmp slt i8 %s, 0
+  ret i1 %r
+}
+
+; Negative tests
+
+define i1 @lshr_neg_slt_non-zero(i8 %x) {
+; CHECK-LABEL: @lshr_neg_slt_non-zero(
+; CHECK-NEXT:    [[S:%.*]] = lshr i8 -17, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp slt i8 [[S]], 2
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 -17, %x
+  %r = icmp slt i8 %s, 2
+  ret i1 %r
+}
+
+define i1 @lshr_neg_sgt_zero(i8 %x) {
+; CHECK-LABEL: @lshr_neg_sgt_zero(
+; CHECK-NEXT:    [[S:%.*]] = lshr i8 -17, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = icmp sgt i8 [[S]], 0
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %s = lshr i8 -17, %x
+  %r = icmp sgt i8 %s, 0
+  ret i1 %r
+}
+
+define i1 @exactly_one_set_signbit(i8 %x, i8 %y) {
+; CHECK-LABEL: @exactly_one_set_signbit(
+; CHECK-NEXT:    [[TMP1:%.*]] = xor i8 [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    [[TMP2:%.*]] = icmp slt i8 [[TMP1]], 0
+; CHECK-NEXT:    ret i1 [[TMP2]]
+;
+  %xsign = lshr i8 %x, 7
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = zext i1 %ypos to i8
+  %r = icmp eq i8 %xsign, %yposz
+  ret i1 %r
+}
+
+define i1 @exactly_one_set_signbit_use1(i8 %x, i8 %y) {
+; CHECK-LABEL: @exactly_one_set_signbit_use1(
+; CHECK-NEXT:    [[XSIGN:%.*]] = lshr i8 [[X:%.*]], 7
+; CHECK-NEXT:    call void @use(i8 [[XSIGN]])
+; CHECK-NEXT:    [[TMP1:%.*]] = xor i8 [[X]], [[Y:%.*]]
+; CHECK-NEXT:    [[TMP2:%.*]] = icmp slt i8 [[TMP1]], 0
+; CHECK-NEXT:    ret i1 [[TMP2]]
+;
+  %xsign = lshr i8 %x, 7
+  call void @use(i8 %xsign)
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = zext i1 %ypos to i8
+  %r = icmp eq i8 %xsign, %yposz
+  ret i1 %r
+}
+
+define <2 x i1> @same_signbit(<2 x i8> %x, <2 x i8> %y) {
+; CHECK-LABEL: @same_signbit(
+; CHECK-NEXT:    [[TMP1:%.*]] = xor <2 x i8> [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    [[R1:%.*]] = icmp sgt <2 x i8> [[TMP1]], <i8 -1, i8 -1>
+; CHECK-NEXT:    ret <2 x i1> [[R1]]
+;
+  %xsign = lshr <2 x i8> %x, <i8 7, i8 7>
+  %ypos = icmp sgt <2 x i8> %y, <i8 -1, i8 -1>
+  %yposz = zext <2 x i1> %ypos to <2 x i8>
+  %r = icmp ne <2 x i8> %xsign, %yposz
+  ret <2 x i1> %r
+}
+
+define i1 @same_signbit_use2(i8 %x, i8 %y) {
+; CHECK-LABEL: @same_signbit_use2(
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt i8 [[Y:%.*]], -1
+; CHECK-NEXT:    [[YPOSZ:%.*]] = zext i1 [[YPOS]] to i8
+; CHECK-NEXT:    call void @use(i8 [[YPOSZ]])
+; CHECK-NEXT:    [[TMP1:%.*]] = xor i8 [[X:%.*]], [[Y]]
+; CHECK-NEXT:    [[R1:%.*]] = icmp sgt i8 [[TMP1]], -1
+; CHECK-NEXT:    ret i1 [[R1]]
+;
+  %xsign = lshr i8 %x, 7
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = zext i1 %ypos to i8
+  call void @use(i8 %yposz)
+  %r = icmp ne i8 %xsign, %yposz
+  ret i1 %r
+}
+
+; negative test
+
+define i1 @same_signbit_use3(i8 %x, i8 %y) {
+; CHECK-LABEL: @same_signbit_use3(
+; CHECK-NEXT:    [[XSIGN:%.*]] = lshr i8 [[X:%.*]], 7
+; CHECK-NEXT:    call void @use(i8 [[XSIGN]])
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt i8 [[Y:%.*]], -1
+; CHECK-NEXT:    [[YPOSZ:%.*]] = zext i1 [[YPOS]] to i8
+; CHECK-NEXT:    call void @use(i8 [[YPOSZ]])
+; CHECK-NEXT:    [[R:%.*]] = icmp ne i8 [[XSIGN]], [[YPOSZ]]
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %xsign = lshr i8 %x, 7
+  call void @use(i8 %xsign)
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = zext i1 %ypos to i8
+  call void @use(i8 %yposz)
+  %r = icmp ne i8 %xsign, %yposz
+  ret i1 %r
+}
+
+define <2 x i1> @same_signbit_poison_elts(<2 x i8> %x, <2 x i8> %y) {
+; CHECK-LABEL: @same_signbit_poison_elts(
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt <2 x i8> [[Y:%.*]], <i8 -1, i8 poison>
+; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt <2 x i8> [[X:%.*]], zeroinitializer
+; CHECK-NEXT:    [[R1:%.*]] = xor <2 x i1> [[TMP1]], [[YPOS]]
+; CHECK-NEXT:    ret <2 x i1> [[R1]]
+;
+  %xsign = lshr <2 x i8> %x, <i8 7, i8 poison>
+  %ypos = icmp sgt <2 x i8> %y, <i8 -1, i8 poison>
+  %yposz = zext <2 x i1> %ypos to <2 x i8>
+  %r = icmp ne <2 x i8> %xsign, %yposz
+  ret <2 x i1> %r
+}
+
+; negative test
+
+define i1 @same_signbit_wrong_type(i8 %x, i32 %y) {
+; CHECK-LABEL: @same_signbit_wrong_type(
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt i32 [[Y:%.*]], -1
+; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt i8 [[X:%.*]], 0
+; CHECK-NEXT:    [[R1:%.*]] = xor i1 [[TMP1]], [[YPOS]]
+; CHECK-NEXT:    ret i1 [[R1]]
+;
+  %xsign = lshr i8 %x, 7
+  %ypos = icmp sgt i32 %y, -1
+  %yposz = zext i1 %ypos to i8
+  %r = icmp ne i8 %xsign, %yposz
+  ret i1 %r
+}
+
+; negative test
+
+define i1 @exactly_one_set_signbit_wrong_shamt(i8 %x, i8 %y) {
+; CHECK-LABEL: @exactly_one_set_signbit_wrong_shamt(
+; CHECK-NEXT:    [[XSIGN:%.*]] = lshr i8 [[X:%.*]], 6
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt i8 [[Y:%.*]], -1
+; CHECK-NEXT:    [[YPOSZ:%.*]] = zext i1 [[YPOS]] to i8
+; CHECK-NEXT:    [[R:%.*]] = icmp eq i8 [[XSIGN]], [[YPOSZ]]
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %xsign = lshr i8 %x, 6
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = zext i1 %ypos to i8
+  %r = icmp eq i8 %xsign, %yposz
+  ret i1 %r
+}
+
+; negative test
+; TODO: This could reduce.
+
+define i1 @exactly_one_set_signbit_wrong_shr(i8 %x, i8 %y) {
+; CHECK-LABEL: @exactly_one_set_signbit_wrong_shr(
+; CHECK-NEXT:    [[XSIGN:%.*]] = ashr i8 [[X:%.*]], 7
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt i8 [[Y:%.*]], -1
+; CHECK-NEXT:    [[YPOSZ:%.*]] = zext i1 [[YPOS]] to i8
+; CHECK-NEXT:    [[R:%.*]] = icmp eq i8 [[XSIGN]], [[YPOSZ]]
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %xsign = ashr i8 %x, 7
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = zext i1 %ypos to i8
+  %r = icmp eq i8 %xsign, %yposz
+  ret i1 %r
+}
+
+; negative test
+; TODO: This could reduce.
+
+define i1 @exactly_one_set_signbit_wrong_pred(i8 %x, i8 %y) {
+; CHECK-LABEL: @exactly_one_set_signbit_wrong_pred(
+; CHECK-NEXT:    [[TMP1:%.*]] = and i8 [[Y:%.*]], [[X:%.*]]
+; CHECK-NEXT:    [[R1:%.*]] = icmp slt i8 [[TMP1]], 0
+; CHECK-NEXT:    ret i1 [[R1]]
+;
+  %xsign = lshr i8 %x, 7
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = zext i1 %ypos to i8
+  %r = icmp sgt i8 %xsign, %yposz
+  ret i1 %r
+}
+
+define i1 @exactly_one_set_signbit_signed(i8 %x, i8 %y) {
+; CHECK-LABEL: @exactly_one_set_signbit_signed(
+; CHECK-NEXT:    [[TMP1:%.*]] = xor i8 [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    [[TMP2:%.*]] = icmp slt i8 [[TMP1]], 0
+; CHECK-NEXT:    ret i1 [[TMP2]]
+;
+  %xsign = ashr i8 %x, 7
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = sext i1 %ypos to i8
+  %r = icmp eq i8 %xsign, %yposz
+  ret i1 %r
+}
+
+define i1 @exactly_one_set_signbit_use1_signed(i8 %x, i8 %y) {
+; CHECK-LABEL: @exactly_one_set_signbit_use1_signed(
+; CHECK-NEXT:    [[XSIGN:%.*]] = ashr i8 [[X:%.*]], 7
+; CHECK-NEXT:    call void @use(i8 [[XSIGN]])
+; CHECK-NEXT:    [[TMP1:%.*]] = xor i8 [[X]], [[Y:%.*]]
+; CHECK-NEXT:    [[TMP2:%.*]] = icmp slt i8 [[TMP1]], 0
+; CHECK-NEXT:    ret i1 [[TMP2]]
+;
+  %xsign = ashr i8 %x, 7
+  call void @use(i8 %xsign)
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = sext i1 %ypos to i8
+  %r = icmp eq i8 %xsign, %yposz
+  ret i1 %r
+}
+
+define <2 x i1> @same_signbit_signed(<2 x i8> %x, <2 x i8> %y) {
+; CHECK-LABEL: @same_signbit_signed(
+; CHECK-NEXT:    [[TMP1:%.*]] = xor <2 x i8> [[X:%.*]], [[Y:%.*]]
+; CHECK-NEXT:    [[R1:%.*]] = icmp sgt <2 x i8> [[TMP1]], <i8 -1, i8 -1>
+; CHECK-NEXT:    ret <2 x i1> [[R1]]
+;
+  %xsign = ashr <2 x i8> %x, <i8 7, i8 7>
+  %ypos = icmp sgt <2 x i8> %y, <i8 -1, i8 -1>
+  %yposz = sext <2 x i1> %ypos to <2 x i8>
+  %r = icmp ne <2 x i8> %xsign, %yposz
+  ret <2 x i1> %r
+}
+
+define i1 @same_signbit_use2_signed(i8 %x, i8 %y) {
+; CHECK-LABEL: @same_signbit_use2_signed(
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt i8 [[Y:%.*]], -1
+; CHECK-NEXT:    [[YPOSZ:%.*]] = sext i1 [[YPOS]] to i8
+; CHECK-NEXT:    call void @use(i8 [[YPOSZ]])
+; CHECK-NEXT:    [[TMP1:%.*]] = xor i8 [[X:%.*]], [[Y]]
+; CHECK-NEXT:    [[R1:%.*]] = icmp sgt i8 [[TMP1]], -1
+; CHECK-NEXT:    ret i1 [[R1]]
+;
+  %xsign = ashr i8 %x, 7
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = sext i1 %ypos to i8
+  call void @use(i8 %yposz)
+  %r = icmp ne i8 %xsign, %yposz
+  ret i1 %r
+}
+
+; negative test
+
+define i1 @same_signbit_use3_signed(i8 %x, i8 %y) {
+; CHECK-LABEL: @same_signbit_use3_signed(
+; CHECK-NEXT:    [[XSIGN:%.*]] = ashr i8 [[X:%.*]], 7
+; CHECK-NEXT:    call void @use(i8 [[XSIGN]])
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt i8 [[Y:%.*]], -1
+; CHECK-NEXT:    [[YPOSZ:%.*]] = sext i1 [[YPOS]] to i8
+; CHECK-NEXT:    call void @use(i8 [[YPOSZ]])
+; CHECK-NEXT:    [[R:%.*]] = icmp ne i8 [[XSIGN]], [[YPOSZ]]
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %xsign = ashr i8 %x, 7
+  call void @use(i8 %xsign)
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = sext i1 %ypos to i8
+  call void @use(i8 %yposz)
+  %r = icmp ne i8 %xsign, %yposz
+  ret i1 %r
+}
+
+define <2 x i1> @same_signbit_poison_elts_signed(<2 x i8> %x, <2 x i8> %y) {
+; CHECK-LABEL: @same_signbit_poison_elts_signed(
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt <2 x i8> [[Y:%.*]], <i8 -1, i8 poison>
+; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt <2 x i8> [[X:%.*]], zeroinitializer
+; CHECK-NEXT:    [[R1:%.*]] = xor <2 x i1> [[TMP1]], [[YPOS]]
+; CHECK-NEXT:    ret <2 x i1> [[R1]]
+;
+  %xsign = ashr <2 x i8> %x, <i8 7, i8 poison>
+  %ypos = icmp sgt <2 x i8> %y, <i8 -1, i8 poison>
+  %yposz = sext <2 x i1> %ypos to <2 x i8>
+  %r = icmp ne <2 x i8> %xsign, %yposz
+  ret <2 x i1> %r
+}
+
+; negative test
+
+define i1 @same_signbit_wrong_type_signed(i8 %x, i32 %y) {
+; CHECK-LABEL: @same_signbit_wrong_type_signed(
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt i32 [[Y:%.*]], -1
+; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt i8 [[X:%.*]], 0
+; CHECK-NEXT:    [[R1:%.*]] = xor i1 [[TMP1]], [[YPOS]]
+; CHECK-NEXT:    ret i1 [[R1]]
+;
+  %xsign = ashr i8 %x, 7
+  %ypos = icmp sgt i32 %y, -1
+  %yposz = sext i1 %ypos to i8
+  %r = icmp ne i8 %xsign, %yposz
+  ret i1 %r
+}
+
+; negative test
+
+define i1 @exactly_one_set_signbit_wrong_shamt_signed(i8 %x, i8 %y) {
+; CHECK-LABEL: @exactly_one_set_signbit_wrong_shamt_signed(
+; CHECK-NEXT:    [[XSIGN:%.*]] = ashr i8 [[X:%.*]], 6
+; CHECK-NEXT:    [[YPOS:%.*]] = icmp sgt i8 [[Y:%.*]], -1
+; CHECK-NEXT:    [[YPOSZ:%.*]] = sext i1 [[YPOS]] to i8
+; CHECK-NEXT:    [[R:%.*]] = icmp eq i8 [[XSIGN]], [[YPOSZ]]
+; CHECK-NEXT:    ret i1 [[R]]
+;
+  %xsign = ashr i8 %x, 6
+  %ypos = icmp sgt i8 %y, -1
+  %yposz = sext i1 %ypos to i8
+  %r = icmp eq i8 %xsign, %yposz
+  ret i1 %r
+}
+
+define i1 @slt_zero_ult_i1(i32 %a, i1 %b) {
+; CHECK-LABEL: @slt_zero_ult_i1(
+; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt i32 [[A:%.*]], 0
+; CHECK-NEXT:    [[TMP2:%.*]] = xor i1 [[B:%.*]], true
+; CHECK-NEXT:    [[CMP21:%.*]] = and i1 [[TMP1]], [[TMP2]]
+; CHECK-NEXT:    ret i1 [[CMP21]]
+;
+  %conv = zext i1 %b to i32
+  %cmp1 = lshr i32 %a, 31
+  %cmp2 = icmp ult i32 %conv, %cmp1
+  ret i1 %cmp2
+}
+
+define i1 @slt_zero_ult_i1_fail1(i32 %a, i1 %b) {
+; CHECK-LABEL: @slt_zero_ult_i1_fail1(
+; CHECK-NEXT:    [[CONV:%.*]] = zext i1 [[B:%.*]] to i32
+; CHECK-NEXT:    [[CMP1:%.*]] = lshr i32 [[A:%.*]], 30
+; CHECK-NEXT:    [[CMP2:%.*]] = icmp ugt i32 [[CMP1]], [[CONV]]
+; CHECK-NEXT:    ret i1 [[CMP2]]
+;
+  %conv = zext i1 %b to i32
+  %cmp1 = lshr i32 %a, 30
+  %cmp2 = icmp ult i32 %conv, %cmp1
+  ret i1 %cmp2
+}
+
+define i1 @slt_zero_ult_i1_fail2(i32 %a, i1 %b) {
+; CHECK-LABEL: @slt_zero_ult_i1_fail2(
+; CHECK-NEXT:    [[CONV:%.*]] = zext i1 [[B:%.*]] to i32
+; CHECK-NEXT:    [[CMP1:%.*]] = ashr i32 [[A:%.*]], 31
+; CHECK-NEXT:    [[CMP2:%.*]] = icmp ugt i32 [[CMP1]], [[CONV]]
+; CHECK-NEXT:    ret i1 [[CMP2]]
+;
+  %conv = zext i1 %b to i32
+  %cmp1 = ashr i32 %a, 31
+  %cmp2 = icmp ult i32 %conv, %cmp1
+  ret i1 %cmp2
+}
+
+define i1 @slt_zero_slt_i1_fail(i32 %a, i1 %b) {
+; CHECK-LABEL: @slt_zero_slt_i1_fail(
+; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt i32 [[A:%.*]], 0
+; CHECK-NEXT:    [[TMP2:%.*]] = xor i1 [[B:%.*]], true
+; CHECK-NEXT:    [[CMP21:%.*]] = and i1 [[TMP1]], [[TMP2]]
+; CHECK-NEXT:    ret i1 [[CMP21]]
+;
+  %conv = zext i1 %b to i32
+  %cmp1 = lshr i32 %a, 31
+  %cmp2 = icmp slt i32 %conv, %cmp1
+  ret i1 %cmp2
+}
+
+define i1 @slt_zero_eq_i1_signed(i32 %a, i1 %b) {
+; CHECK-LABEL: @slt_zero_eq_i1_signed(
+; CHECK-NEXT:    [[TMP1:%.*]] = icmp sgt i32 [[A:%.*]], -1
+; CHECK-NEXT:    [[CMP21:%.*]] = xor i1 [[TMP1]], [[B:%.*]]
+; CHECK-NEXT:    ret i1 [[CMP21]]
+;
+  %conv = sext i1 %b to i32
+  %cmp1 = ashr i32 %a, 31
+  %cmp2 = icmp eq i32 %conv, %cmp1
+  ret i1 %cmp2
+}
+
+define i1 @slt_zero_eq_i1_fail_signed(i32 %a, i1 %b) {
+; CHECK-LABEL: @slt_zero_eq_i1_fail_signed(
+; CHECK-NEXT:    [[CONV:%.*]] = sext i1 [[B:%.*]] to i32
+; CHECK-NEXT:    [[CMP1:%.*]] = lshr i32 [[A:%.*]], 31
+; CHECK-NEXT:    [[CMP2:%.*]] = icmp eq i32 [[CMP1]], [[CONV]]
+; CHECK-NEXT:    ret i1 [[CMP2]]
+;
+  %conv = sext i1 %b to i32
+  %cmp1 = lshr i32 %a, 31
+  %cmp2 = icmp eq i32 %conv, %cmp1
+  ret i1 %cmp2
+}

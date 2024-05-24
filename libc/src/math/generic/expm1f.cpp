@@ -13,13 +13,17 @@
 #include "src/__support/FPUtil/FMA.h"
 #include "src/__support/FPUtil/FPBits.h"
 #include "src/__support/FPUtil/PolyEval.h"
+#include "src/__support/FPUtil/multiply_add.h"
+#include "src/__support/FPUtil/nearest_integer.h"
+#include "src/__support/FPUtil/rounding_mode.h"
 #include "src/__support/common.h"
+#include "src/__support/macros/optimization.h"            // LIBC_UNLIKELY
+#include "src/__support/macros/properties/cpu_features.h" // LIBC_TARGET_CPU_HAS_FMA
 
 #include <errno.h>
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE {
 
-INLINE_FMA
 LLVM_LIBC_FUNCTION(float, expm1f, (float x)) {
   using FPBits = typename fputil::FPBits<float>;
   FPBits xbits(x);
@@ -28,24 +32,33 @@ LLVM_LIBC_FUNCTION(float, expm1f, (float x)) {
   uint32_t x_abs = x_u & 0x7fff'ffffU;
 
   // Exceptional value
-  if (unlikely(x_u == 0x3e35'bec5U)) { // x = 0x1.6b7d8ap-3f
-    int round_mode = fputil::get_round();
+  if (LIBC_UNLIKELY(x_u == 0x3e35'bec5U)) { // x = 0x1.6b7d8ap-3f
+    int round_mode = fputil::quick_get_round();
     if (round_mode == FE_TONEAREST || round_mode == FE_UPWARD)
       return 0x1.8dbe64p-3f;
     return 0x1.8dbe62p-3f;
   }
 
+#if !defined(LIBC_TARGET_CPU_HAS_FMA)
+  if (LIBC_UNLIKELY(x_u == 0xbdc1'c6cbU)) { // x = -0x1.838d96p-4f
+    int round_mode = fputil::quick_get_round();
+    if (round_mode == FE_TONEAREST || round_mode == FE_DOWNWARD)
+      return -0x1.71c884p-4f;
+    return -0x1.71c882p-4f;
+  }
+#endif // LIBC_TARGET_CPU_HAS_FMA
+
   // When |x| > 25*log(2), or nan
-  if (unlikely(x_abs >= 0x418a'a123U)) {
+  if (LIBC_UNLIKELY(x_abs >= 0x418a'a123U)) {
     // x < log(2^-25)
-    if (xbits.get_sign()) {
+    if (xbits.is_neg()) {
       // exp(-Inf) = 0
       if (xbits.is_inf())
         return -1.0f;
       // exp(nan) = nan
       if (xbits.is_nan())
         return x;
-      int round_mode = fputil::get_round();
+      int round_mode = fputil::quick_get_round();
       if (round_mode == FE_UPWARD || round_mode == FE_TOWARDZERO)
         return -0x1.ffff'fep-1f; // -1.0f + 0x1.0p-24f
       return -1.0f;
@@ -53,13 +66,14 @@ LLVM_LIBC_FUNCTION(float, expm1f, (float x)) {
       // x >= 89 or nan
       if (xbits.uintval() >= 0x42b2'0000) {
         if (xbits.uintval() < 0x7f80'0000U) {
-          int rounding = fputil::get_round();
+          int rounding = fputil::quick_get_round();
           if (rounding == FE_DOWNWARD || rounding == FE_TOWARDZERO)
-            return static_cast<float>(FPBits(FPBits::MAX_NORMAL));
+            return FPBits::max_normal().get_val();
 
-          errno = ERANGE;
+          fputil::set_errno_if_required(ERANGE);
+          fputil::raise_except_if_required(FE_OVERFLOW);
         }
-        return x + static_cast<float>(FPBits::inf());
+        return x + FPBits::inf().get_val();
       }
     }
   }
@@ -69,22 +83,41 @@ LLVM_LIBC_FUNCTION(float, expm1f, (float x)) {
     // |x| < 2^-25
     if (x_abs < 0x3300'0000U) {
       // x = -0.0f
-      if (unlikely(xbits.uintval() == 0x8000'0000U))
+      if (LIBC_UNLIKELY(xbits.uintval() == 0x8000'0000U))
         return x;
-      // When |x| < 2^-25, the relative error of the approximation e^x - 1 ~ x
-      // is:
-      //   |(e^x - 1) - x| / |e^x - 1| < |x^2| / |x|
-      //                               = |x|
-      //                               < 2^-25
-      //                               < epsilon(1)/2.
-      // So the correctly rounded values of expm1(x) are:
-      //   = x + eps(x) if rounding mode = FE_UPWARD,
-      //                   or (rounding mode = FE_TOWARDZERO and x is negative),
-      //   = x otherwise.
-      // To simplify the rounding decision and make it more efficient, we use
-      //   fma(x, x, x) ~ x + x^2 instead.
-      return fputil::multiply_add(x, x, x);
+        // When |x| < 2^-25, the relative error of the approximation e^x - 1 ~ x
+        // is:
+        //   |(e^x - 1) - x| / |e^x - 1| < |x^2| / |x|
+        //                               = |x|
+        //                               < 2^-25
+        //                               < epsilon(1)/2.
+        // So the correctly rounded values of expm1(x) are:
+        //   = x + eps(x) if rounding mode = FE_UPWARD,
+        //                   or (rounding mode = FE_TOWARDZERO and x is
+        //                   negative),
+        //   = x otherwise.
+        // To simplify the rounding decision and make it more efficient, we use
+        //   fma(x, x, x) ~ x + x^2 instead.
+        // Note: to use the formula x + x^2 to decide the correct rounding, we
+        // do need fma(x, x, x) to prevent underflow caused by x*x when |x| <
+        // 2^-76. For targets without FMA instructions, we simply use double for
+        // intermediate results as it is more efficient than using an emulated
+        // version of FMA.
+#if defined(LIBC_TARGET_CPU_HAS_FMA)
+      return fputil::fma(x, x, x);
+#else
+      double xd = x;
+      return static_cast<float>(fputil::multiply_add(xd, xd, xd));
+#endif // LIBC_TARGET_CPU_HAS_FMA
     }
+
+    constexpr double COEFFS[] = {0x1p-1,
+                                 0x1.55555555557ddp-3,
+                                 0x1.55555555552fap-5,
+                                 0x1.111110fcd58b7p-7,
+                                 0x1.6c16c1717660bp-10,
+                                 0x1.a0241f0006d62p-13,
+                                 0x1.a01e3f8d3c06p-16};
 
     // 2^-25 <= |x| < 2^-4
     double xd = static_cast<double>(x);
@@ -92,10 +125,12 @@ LLVM_LIBC_FUNCTION(float, expm1f, (float x)) {
     // Degree-8 minimax polynomial generated by Sollya with:
     // > display = hexadecimal;
     // > P = fpminimax((expm1(x) - x)/x^2, 6, [|D...|], [-2^-4, 2^-4]);
-    double r =
-        fputil::polyeval(xd, 0x1p-1, 0x1.55555555557ddp-3, 0x1.55555555552fap-5,
-                         0x1.111110fcd58b7p-7, 0x1.6c16c1717660bp-10,
-                         0x1.a0241f0006d62p-13, 0x1.a01e3f8d3c06p-16);
+
+    double c0 = fputil::multiply_add(xd, COEFFS[1], COEFFS[0]);
+    double c1 = fputil::multiply_add(xd, COEFFS[3], COEFFS[2]);
+    double c2 = fputil::multiply_add(xd, COEFFS[5], COEFFS[4]);
+
+    double r = fputil::polyeval(xsq, c0, c1, c2, COEFFS[6]);
     return static_cast<float>(fputil::multiply_add(r, xsq, xd));
   }
 
@@ -114,10 +149,10 @@ LLVM_LIBC_FUNCTION(float, expm1f, (float x)) {
   // generated by Sollya.
 
   // x_hi = hi + mid.
-  int x_hi = static_cast<int>(x * 0x1.0p7f + (xbits.get_sign() ? -0.5f : 0.5f));
+  float kf = fputil::nearest_integer(x * 0x1.0p7f);
+  int x_hi = static_cast<int>(kf);
   // Subtract (hi + mid) from x to get lo.
-  x -= static_cast<float>(x_hi) * 0x1.0p-7f;
-  double xd = static_cast<double>(x);
+  double xd = static_cast<double>(fputil::multiply_add(kf, -0x1.0p-7f, x));
   x_hi += 104 << 7;
   // hi = x_hi >> 7
   double exp_hi = EXP_M1[x_hi >> 7];
@@ -135,4 +170,4 @@ LLVM_LIBC_FUNCTION(float, expm1f, (float x)) {
   return static_cast<float>(fputil::multiply_add(exp_hi_mid, exp_lo, -1.0));
 }
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE

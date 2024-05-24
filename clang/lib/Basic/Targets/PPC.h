@@ -16,9 +16,9 @@
 #include "OSTargets.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/TargetParser/Triple.h"
 
 namespace clang {
 namespace targets {
@@ -50,7 +50,6 @@ class LLVM_LIBRARY_VISIBILITY PPCTargetInfo : public TargetInfo {
   } ArchDefineTypes;
 
   ArchDefineTypes ArchDefs = ArchDefineNone;
-  static const Builtin::Info BuiltinInfo[];
   static const char *const GCCRegNames[];
   static const TargetInfo::GCCRegAlias GCCRegAliases[];
   std::string CPU;
@@ -61,7 +60,10 @@ class LLVM_LIBRARY_VISIBILITY PPCTargetInfo : public TargetInfo {
   bool HasMMA = false;
   bool HasROPProtect = false;
   bool HasPrivileged = false;
+  bool HasAIXSmallLocalExecTLS = false;
+  bool HasAIXSmallLocalDynamicTLS = false;
   bool HasVSX = false;
+  bool UseCRBits = false;
   bool HasP8Vector = false;
   bool HasP8Crypto = false;
   bool HasDirectMove = false;
@@ -79,6 +81,7 @@ class LLVM_LIBRARY_VISIBILITY PPCTargetInfo : public TargetInfo {
   bool IsISA3_0 = false;
   bool IsISA3_1 = false;
   bool HasQuadwordAtomics = false;
+  bool HasAIXShLibTLSModelOpt = false;
 
 protected:
   std::string ABI;
@@ -87,11 +90,11 @@ public:
   PPCTargetInfo(const llvm::Triple &Triple, const TargetOptions &)
       : TargetInfo(Triple) {
     SuitableAlign = 128;
-    SimdDefaultAlign = 128;
     LongDoubleWidth = LongDoubleAlign = 128;
     LongDoubleFormat = &llvm::APFloat::PPCDoubleDouble();
     HasStrictFP = true;
     HasIbm128 = true;
+    HasUnalignedAccess = true;
   }
 
   // Set the language option for altivec based on our value.
@@ -198,6 +201,8 @@ public:
   void setFeatureEnabled(llvm::StringMap<bool> &Features, StringRef Name,
                          bool Enabled) const override;
 
+  bool supportsTargetAttributeTune() const override { return true; }
+
   ArrayRef<const char *> getGCCRegNames() const override;
 
   ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override;
@@ -215,7 +220,7 @@ public:
       // Don't use floating point registers on soft float ABI.
       if (FloatABI == SoftFloat)
         return false;
-      LLVM_FALLTHROUGH;
+      [[fallthrough]];
     case 'b': // Base register
       Info.setAllowsRegister();
       break;
@@ -294,7 +299,7 @@ public:
     case 'Q': // Memory operand that is an offset from a register (it is
               // usually better to use `m' or `es' in asm statements)
       Info.setAllowsRegister();
-      LLVM_FALLTHROUGH;
+      [[fallthrough]];
     case 'Z': // Memory operand that is an indexed or indirect from a
               // register (it is usually better to use `m' or `es' in
               // asm statements)
@@ -331,7 +336,7 @@ public:
     return R;
   }
 
-  const char *getClobbers() const override { return ""; }
+  std::string_view getClobbers() const override { return ""; }
   int getEHDataRegisterNumber(unsigned RegNo) const override {
     if (RegNo == 0)
       return 3;
@@ -355,8 +360,30 @@ public:
   bool hasBitIntType() const override { return true; }
 
   bool isSPRegName(StringRef RegName) const override {
-    return RegName.equals("r1") || RegName.equals("x1");
+    return RegName == "r1" || RegName == "x1";
   }
+
+  // We support __builtin_cpu_supports/__builtin_cpu_is on targets that
+  // have Glibc since it is Glibc that provides the HWCAP[2] in the auxv.
+  static constexpr int MINIMUM_AIX_OS_MAJOR = 7;
+  static constexpr int MINIMUM_AIX_OS_MINOR = 2;
+  bool supportsCpuSupports() const override {
+    llvm::Triple Triple = getTriple();
+    // AIX 7.2 is the minimum requirement to support __builtin_cpu_supports().
+    return Triple.isOSGlibc() ||
+           (Triple.isOSAIX() &&
+            !Triple.isOSVersionLT(MINIMUM_AIX_OS_MAJOR, MINIMUM_AIX_OS_MINOR));
+  }
+
+  bool supportsCpuIs() const override {
+    llvm::Triple Triple = getTriple();
+    // AIX 7.2 is the minimum requirement to support __builtin_cpu_is().
+    return Triple.isOSGlibc() ||
+           (Triple.isOSAIX() &&
+            !Triple.isOSVersionLT(MINIMUM_AIX_OS_MAJOR, MINIMUM_AIX_OS_MINOR));
+  }
+  bool validateCpuSupports(StringRef Feature) const override;
+  bool validateCpuIs(StringRef Name) const override;
 };
 
 class LLVM_LIBRARY_VISIBILITY PPC32TargetInfo : public PPCTargetInfo {
@@ -364,11 +391,11 @@ public:
   PPC32TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : PPCTargetInfo(Triple, Opts) {
     if (Triple.isOSAIX())
-      resetDataLayout("E-m:a-p:32:32-i64:64-n32");
+      resetDataLayout("E-m:a-p:32:32-Fi32-i64:64-n32");
     else if (Triple.getArch() == llvm::Triple::ppcle)
-      resetDataLayout("e-m:e-p:32:32-i64:64-n32");
+      resetDataLayout("e-m:e-p:32:32-Fn32-i64:64-n32");
     else
-      resetDataLayout("E-m:e-p:32:32-i64:64-n32");
+      resetDataLayout("E-m:e-p:32:32-Fn32-i64:64-n32");
 
     switch (getTriple().getOS()) {
     case llvm::Triple::Linux:
@@ -401,8 +428,12 @@ public:
   }
 
   BuiltinVaListKind getBuiltinVaListKind() const override {
-    // This is the ELF definition, and is overridden by the Darwin sub-target
+    // This is the ELF definition
     return TargetInfo::PowerABIBuiltinVaList;
+  }
+
+  std::pair<unsigned, unsigned> hardwareInterferenceSizes() const override {
+    return std::make_pair(32, 32);
   }
 };
 
@@ -419,16 +450,23 @@ public:
 
     if (Triple.isOSAIX()) {
       // TODO: Set appropriate ABI for AIX platform.
-      DataLayout = "E-m:a-i64:64-n32:64";
+      DataLayout = "E-m:a-Fi64-i64:64-n32:64";
       LongDoubleWidth = 64;
       LongDoubleAlign = DoubleAlign = 32;
       LongDoubleFormat = &llvm::APFloat::IEEEdouble();
     } else if ((Triple.getArch() == llvm::Triple::ppc64le)) {
-      DataLayout = "e-m:e-i64:64-n32:64";
+      DataLayout = "e-m:e-Fn32-i64:64-n32:64";
       ABI = "elfv2";
     } else {
-      DataLayout = "E-m:e-i64:64-n32:64";
-      ABI = "elfv1";
+      DataLayout = "E-m:e";
+      if (Triple.isPPC64ELFv2ABI()) {
+        ABI = "elfv2";
+        DataLayout += "-Fn32";
+      } else {
+        ABI = "elfv1";
+        DataLayout += "-Fi64";
+      }
+      DataLayout += "-i64:64-n32:64";
     }
 
     if (Triple.isOSFreeBSD() || Triple.isOSOpenBSD() || Triple.isMusl()) {
@@ -477,32 +515,9 @@ public:
       return CCCR_Warning;
     }
   }
-};
 
-class LLVM_LIBRARY_VISIBILITY DarwinPPC32TargetInfo
-    : public DarwinTargetInfo<PPC32TargetInfo> {
-public:
-  DarwinPPC32TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
-      : DarwinTargetInfo<PPC32TargetInfo>(Triple, Opts) {
-    HasAlignMac68kSupport = true;
-    BoolWidth = BoolAlign = 32; // XXX support -mone-byte-bool?
-    PtrDiffType = SignedInt; // for http://llvm.org/bugs/show_bug.cgi?id=15726
-    LongLongAlign = 32;
-    resetDataLayout("E-m:o-p:32:32-f64:32:64-n32", "_");
-  }
-
-  BuiltinVaListKind getBuiltinVaListKind() const override {
-    return TargetInfo::CharPtrBuiltinVaList;
-  }
-};
-
-class LLVM_LIBRARY_VISIBILITY DarwinPPC64TargetInfo
-    : public DarwinTargetInfo<PPC64TargetInfo> {
-public:
-  DarwinPPC64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
-      : DarwinTargetInfo<PPC64TargetInfo>(Triple, Opts) {
-    HasAlignMac68kSupport = true;
-    resetDataLayout("E-m:o-i64:64-n32:64", "_");
+  std::pair<unsigned, unsigned> hardwareInterferenceSizes() const override {
+    return std::make_pair(128, 128);
   }
 };
 

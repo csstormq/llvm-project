@@ -130,6 +130,7 @@ bool r35 = requires { requires true };
 
 bool r36 = requires (bool b) { requires sizeof(b) == 1; };
 
+template<typename T>
 void r37(bool b) requires requires { 1 } {}
 // expected-error@-1 {{expected ';' at end of requirement}}
 
@@ -159,3 +160,11 @@ template <int N>
 requires requires {
  typename BitInt<N>; // ok
 } using r44 = void;
+
+namespace GH73112 {
+void f() {
+    requires { requires(int; } // expected-error {{expected ')'}} \
+                               // expected-error {{expected expression}} \
+                               // expected-note {{to match this '('}}
+}
+}

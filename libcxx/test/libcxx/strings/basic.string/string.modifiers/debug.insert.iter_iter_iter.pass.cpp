@@ -11,20 +11,25 @@
 // template<class InputIterator>
 //   iterator insert(const_iterator p, InputIterator first, InputIterator last);
 
-// UNSUPPORTED: libcxx-no-debug-mode, c++03, windows
-// ADDITIONAL_COMPILE_FLAGS: -D_LIBCPP_DEBUG=1
+// REQUIRES: has-unix-headers
+// UNSUPPORTED: !libcpp-has-legacy-debug-mode, c++03
 
 #include <string>
 
 #include "check_assertion.h"
 
-int main(int, char**) {
-    std::string v;
-    std::string v2;
-    char a[] = "123";
-    const int N = sizeof(a)/sizeof(a[0]);
-    TEST_LIBCPP_ASSERT_FAILURE(v.insert(v2.cbegin() + 10, a, a + N),
-                               "Attempted to add/subtract an iterator outside its valid range");
+template <class S>
+void test() {
+  S v;
+  S v2;
+  char a[]    = "123";
+  const int N = sizeof(a) / sizeof(a[0]);
+  TEST_LIBCPP_ASSERT_FAILURE(
+      v.insert(v2.cbegin() + 10, a, a + N), "Attempted to add/subtract an iterator outside its valid range");
+}
 
-    return 0;
+int main(int, char**) {
+  test<std::string>();
+
+  return 0;
 }

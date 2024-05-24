@@ -15,17 +15,15 @@
 #include "InterferenceCache.h"
 #include "RegAllocBase.h"
 #include "RegAllocEvictionAdvisor.h"
+#include "RegAllocPriorityAdvisor.h"
 #include "SpillPlacement.h"
 #include "SplitKit.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IndexedMap.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/CodeGen/CalcSpillWeights.h"
 #include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/LiveRangeEdit.h"
@@ -54,7 +52,6 @@ class MachineLoop;
 class MachineLoopInfo;
 class MachineOptimizationRemarkEmitter;
 class MachineOptimizationRemarkMissed;
-class SlotIndex;
 class SlotIndexes;
 class TargetInstrInfo;
 class VirtRegMap;
@@ -81,7 +78,7 @@ public:
     unsigned NextCascade = 1;
 
   public:
-    ExtraRegInfo() = default;
+    ExtraRegInfo() {}
     ExtraRegInfo(const ExtraRegInfo &) = delete;
 
     LiveRangeStage getStage(Register Reg) const { return Info[Reg].Stage; }
@@ -149,36 +146,47 @@ public:
   size_t getQueueSize() const { return Queue.size(); }
   // end (interface to eviction advisers)
 
+  // Interface to priority advisers
+  bool getRegClassPriorityTrumpsGlobalness() const {
+    return RegClassPriorityTrumpsGlobalness;
+  }
+  bool getReverseLocalAssignment() const { return ReverseLocalAssignment; }
+  // end (interface to priority advisers)
+
 private:
   // Convenient shortcuts.
   using PQueue = std::priority_queue<std::pair<unsigned, unsigned>>;
-  using SmallLISet = SmallPtrSet<const LiveInterval *, 4>;
+  using SmallLISet = SmallSetVector<const LiveInterval *, 4>;
+
+  // We need to track all tentative recolorings so we can roll back any
+  // successful and unsuccessful recoloring attempts.
+  using RecoloringStack =
+      SmallVector<std::pair<const LiveInterval *, MCRegister>, 8>;
 
   // context
-  MachineFunction *MF;
+  MachineFunction *MF = nullptr;
 
   // Shortcuts to some useful interface.
-  const TargetInstrInfo *TII;
-  const TargetRegisterInfo *TRI;
-  RegisterClassInfo RCI;
+  const TargetInstrInfo *TII = nullptr;
 
   // analyses
-  SlotIndexes *Indexes;
-  MachineBlockFrequencyInfo *MBFI;
-  MachineDominatorTree *DomTree;
-  MachineLoopInfo *Loops;
-  MachineOptimizationRemarkEmitter *ORE;
-  EdgeBundles *Bundles;
-  SpillPlacement *SpillPlacer;
-  LiveDebugVariables *DebugVars;
-  AliasAnalysis *AA;
+  SlotIndexes *Indexes = nullptr;
+  MachineBlockFrequencyInfo *MBFI = nullptr;
+  MachineDominatorTree *DomTree = nullptr;
+  MachineLoopInfo *Loops = nullptr;
+  MachineOptimizationRemarkEmitter *ORE = nullptr;
+  EdgeBundles *Bundles = nullptr;
+  SpillPlacement *SpillPlacer = nullptr;
+  LiveDebugVariables *DebugVars = nullptr;
 
   // state
   std::unique_ptr<Spiller> SpillerInstance;
   PQueue Queue;
   std::unique_ptr<VirtRegAuxInfo> VRAI;
-  Optional<ExtraRegInfo> ExtraInfo;
+  std::optional<ExtraRegInfo> ExtraInfo;
   std::unique_ptr<RegAllocEvictionAdvisor> EvictAdvisor;
+
+  std::unique_ptr<RegAllocPriorityAdvisor> PriorityAdvisor;
 
   // Enum CutOffStage to keep a track whether the register allocation failed
   // because of the cutoffs encountered in last chance recoloring.
@@ -194,62 +202,11 @@ private:
     CO_Interf = 2
   };
 
-  uint8_t CutOffInfo;
+  uint8_t CutOffInfo = CutOffStage::CO_None;
 
 #ifndef NDEBUG
   static const char *const StageName[];
 #endif
-
-  /// EvictionTrack - Keeps track of past evictions in order to optimize region
-  /// split decision.
-  class EvictionTrack {
-
-  public:
-    using EvictorInfo =
-        std::pair<Register /* evictor */, MCRegister /* physreg */>;
-    using EvicteeInfo = llvm::DenseMap<Register /* evictee */, EvictorInfo>;
-
-  private:
-    /// Each Vreg that has been evicted in the last stage of selectOrSplit will
-    /// be mapped to the evictor Vreg and the PhysReg it was evicted from.
-    EvicteeInfo Evictees;
-
-  public:
-    /// Clear all eviction information.
-    void clear() { Evictees.clear(); }
-
-    ///  Clear eviction information for the given evictee Vreg.
-    /// E.g. when Vreg get's a new allocation, the old eviction info is no
-    /// longer relevant.
-    /// \param Evictee The evictee Vreg for whom we want to clear collected
-    /// eviction info.
-    void clearEvicteeInfo(Register Evictee) { Evictees.erase(Evictee); }
-
-    /// Track new eviction.
-    /// The Evictor vreg has evicted the Evictee vreg from Physreg.
-    /// \param PhysReg The physical register Evictee was evicted from.
-    /// \param Evictor The evictor Vreg that evicted Evictee.
-    /// \param Evictee The evictee Vreg.
-    void addEviction(MCRegister PhysReg, Register Evictor, Register Evictee) {
-      Evictees[Evictee].first = Evictor;
-      Evictees[Evictee].second = PhysReg;
-    }
-
-    /// Return the Evictor Vreg which evicted Evictee Vreg from PhysReg.
-    /// \param Evictee The evictee vreg.
-    /// \return The Evictor vreg which evicted Evictee vreg from PhysReg. 0 if
-    /// nobody has evicted Evictee from PhysReg.
-    EvictorInfo getEvictor(Register Evictee) {
-      if (Evictees.count(Evictee)) {
-        return Evictees[Evictee];
-      }
-
-      return EvictorInfo(0, 0);
-    }
-  };
-
-  // Keeps track of past evictions in order to optimize region split decision.
-  EvictionTrack LastEvicted;
 
   // splitting state.
   std::unique_ptr<SplitAnalysis> SA;
@@ -317,6 +274,12 @@ private:
   /// Function
   ArrayRef<uint8_t> RegCosts;
 
+  /// Flags for the live range priority calculation, determined once per
+  /// machine function.
+  bool RegClassPriorityTrumpsGlobalness = false;
+
+  bool ReverseLocalAssignment = false;
+
 public:
   RAGreedy(const RegClassFilterFunc F = allocateAllRegClasses);
 
@@ -351,7 +314,7 @@ public:
 private:
   MCRegister selectOrSplitImpl(const LiveInterval &,
                                SmallVectorImpl<Register> &, SmallVirtRegSet &,
-                               unsigned = 0);
+                               RecoloringStack &, unsigned = 0);
 
   bool LRE_CanEraseVirtReg(Register) override;
   void LRE_WillShrinkVirtReg(Register) override;
@@ -359,25 +322,16 @@ private:
   void enqueue(PQueue &CurQueue, const LiveInterval *LI);
   const LiveInterval *dequeue(PQueue &CurQueue);
 
+  bool hasVirtRegAlloc();
   BlockFrequency calcSpillCost();
   bool addSplitConstraints(InterferenceCache::Cursor, BlockFrequency &);
   bool addThroughConstraints(InterferenceCache::Cursor, ArrayRef<unsigned>);
   bool growRegion(GlobalSplitCandidate &Cand);
-  bool splitCanCauseEvictionChain(Register Evictee, GlobalSplitCandidate &Cand,
-                                  unsigned BBNumber,
-                                  const AllocationOrder &Order);
   BlockFrequency calcGlobalSplitCost(GlobalSplitCandidate &,
                                      const AllocationOrder &Order);
   bool calcCompactRegion(GlobalSplitCandidate &);
   void splitAroundRegion(LiveRangeEdit &, ArrayRef<unsigned>);
   void calcGapWeights(MCRegister, SmallVectorImpl<float> &);
-  bool canEvictInterferenceInRange(const LiveInterval &VirtReg,
-                                   MCRegister PhysReg, SlotIndex Start,
-                                   SlotIndex End, EvictionCost &MaxCost) const;
-  MCRegister getCheapestEvicteeWeight(const AllocationOrder &Order,
-                                      const LiveInterval &VirtReg,
-                                      SlotIndex Start, SlotIndex End,
-                                      float *BestEvictWeight) const;
   void evictInterference(const LiveInterval &, MCRegister,
                          SmallVectorImpl<Register> &);
   bool mayRecolorAllInterferences(MCRegister PhysReg,
@@ -392,6 +346,12 @@ private:
                       const SmallVirtRegSet &);
   MCRegister tryRegionSplit(const LiveInterval &, AllocationOrder &,
                             SmallVectorImpl<Register> &);
+  /// Calculate cost of region splitting around the specified register.
+  unsigned calculateRegionSplitCostAroundReg(MCPhysReg PhysReg,
+                                             AllocationOrder &Order,
+                                             BlockFrequency &BestCost,
+                                             unsigned &NumCands,
+                                             unsigned &BestCand);
   /// Calculate cost of region splitting.
   unsigned calculateRegionSplitCost(const LiveInterval &VirtReg,
                                     AllocationOrder &Order,
@@ -400,6 +360,10 @@ private:
   /// Perform region splitting.
   unsigned doRegionSplit(const LiveInterval &VirtReg, unsigned BestCand,
                          bool HasCompact, SmallVectorImpl<Register> &NewVRegs);
+  /// Try to split VirtReg around physical Hint register.
+  bool trySplitAroundHintReg(MCPhysReg Hint, const LiveInterval &VirtReg,
+                             SmallVectorImpl<Register> &NewVRegs,
+                             AllocationOrder &Order);
   /// Check other options before using a callee-saved register for the first
   /// time.
   MCRegister tryAssignCSRFirstTime(const LiveInterval &VirtReg,
@@ -417,9 +381,10 @@ private:
                     SmallVectorImpl<Register> &, const SmallVirtRegSet &);
   unsigned tryLastChanceRecoloring(const LiveInterval &, AllocationOrder &,
                                    SmallVectorImpl<Register> &,
-                                   SmallVirtRegSet &, unsigned);
+                                   SmallVirtRegSet &, RecoloringStack &,
+                                   unsigned);
   bool tryRecoloringCandidates(PQueue &, SmallVectorImpl<Register> &,
-                               SmallVirtRegSet &, unsigned);
+                               SmallVirtRegSet &, RecoloringStack &, unsigned);
   void tryHintRecoloring(const LiveInterval &);
   void tryHintsRecoloring();
 

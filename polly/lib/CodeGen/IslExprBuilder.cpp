@@ -34,7 +34,7 @@ static cl::opt<OverflowTrackingChoice> OTMode(
                           "Track the overflow bit if requested."),
                clEnumValN(OT_ALWAYS, "always",
                           "Always track the overflow bit.")),
-    cl::Hidden, cl::init(OT_REQUEST), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::Hidden, cl::init(OT_REQUEST), cl::cat(PollyCategory));
 
 IslExprBuilder::IslExprBuilder(Scop &S, PollyIRBuilder &Builder,
                                IDToValueTy &IDToValue, ValueMapT &GlobalMap,
@@ -270,13 +270,6 @@ IslExprBuilder::createAccessAddress(__isl_take isl_ast_expr *Expr) {
 
   assert(Base->getType()->isPointerTy() && "Access base should be a pointer");
   StringRef BaseName = Base->getName();
-
-  auto PointerTy = PointerType::get(SAI->getElementType(),
-                                    Base->getType()->getPointerAddressSpace());
-  if (Base->getType() != PointerTy) {
-    Base =
-        Builder.CreateBitCast(Base, PointerTy, "polly.access.cast." + BaseName);
-  }
 
   if (isl_ast_expr_get_op_n_arg(Expr) == 1) {
     isl_ast_expr_free(Expr);
@@ -765,7 +758,7 @@ Value *IslExprBuilder::createInt(__isl_take isl_ast_expr *Expr) {
   else
     T = Builder.getIntNTy(BitWidth);
 
-  APValue = APValue.sextOrSelf(T->getBitWidth());
+  APValue = APValue.sext(T->getBitWidth());
   V = ConstantInt::get(T, APValue);
 
   isl_ast_expr_free(Expr);

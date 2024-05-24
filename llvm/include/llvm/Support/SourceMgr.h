@@ -59,7 +59,7 @@ private:
     /// dynamically based on the size of Buffer.
     mutable void *OffsetCache = nullptr;
 
-    /// Look up a given \p Ptr in in the buffer, determining which line it came
+    /// Look up a given \p Ptr in the buffer, determining which line it came
     /// from.
     unsigned getLineNumber(const char *Ptr) const;
     template <typename T>
@@ -151,11 +151,19 @@ public:
   }
 
   /// Takes the source buffers from the given source manager and append them to
+  /// the current manager. `MainBufferIncludeLoc` is an optional include
+  /// location to attach to the main buffer of `SrcMgr` after it gets moved to
   /// the current manager.
-  void takeSourceBuffersFrom(SourceMgr &SrcMgr) {
+  void takeSourceBuffersFrom(SourceMgr &SrcMgr,
+                             SMLoc MainBufferIncludeLoc = SMLoc()) {
+    if (SrcMgr.Buffers.empty())
+      return;
+
+    size_t OldNumBuffers = getNumBuffers();
     std::move(SrcMgr.Buffers.begin(), SrcMgr.Buffers.end(),
               std::back_inserter(Buffers));
     SrcMgr.Buffers.clear();
+    Buffers[OldNumBuffers].IncludeLoc = MainBufferIncludeLoc;
   }
 
   /// Search for a file with the specified name in the current directory or in
@@ -309,7 +317,7 @@ public:
   ArrayRef<SMFixIt> getFixIts() const { return FixIts; }
 
   void print(const char *ProgName, raw_ostream &S, bool ShowColors = true,
-             bool ShowKindLabel = true) const;
+             bool ShowKindLabel = true, bool ShowLocation = true) const;
 };
 
 } // end namespace llvm

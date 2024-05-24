@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "TestDialect.h"
+#include "TestOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
@@ -26,7 +27,7 @@ struct TestModulePass
   }
 };
 struct TestFunctionPass
-    : public PassWrapper<TestFunctionPass, OperationPass<FuncOp>> {
+    : public PassWrapper<TestFunctionPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestFunctionPass)
 
   void runOnOperation() final {}
@@ -50,8 +51,10 @@ struct TestInterfacePass
   }
 };
 struct TestOptionsPass
-    : public PassWrapper<TestOptionsPass, OperationPass<FuncOp>> {
+    : public PassWrapper<TestOptionsPass, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestOptionsPass)
+
+  enum Enum { One, Two };
 
   struct Options : public PassPipelineOptions<Options> {
     ListOption<int> listOption{*this, "list",
@@ -60,13 +63,18 @@ struct TestOptionsPass
         *this, "string-list", llvm::cl::desc("Example string list option")};
     Option<std::string> stringOption{*this, "string",
                                      llvm::cl::desc("Example string option")};
+    Option<Enum> enumOption{
+        *this, "enum", llvm::cl::desc("Example enum option"),
+        llvm::cl::values(clEnumValN(0, "zero", "Example zero value"),
+                         clEnumValN(1, "one", "Example one value"))};
   };
   TestOptionsPass() = default;
-  TestOptionsPass(const TestOptionsPass &) {}
+  TestOptionsPass(const TestOptionsPass &) : PassWrapper() {}
   TestOptionsPass(const Options &options) {
     listOption = options.listOption;
     stringOption = options.stringOption;
     stringListOption = options.stringListOption;
+    enumOption = options.enumOption;
   }
 
   void runOnOperation() final {}
@@ -81,6 +89,10 @@ struct TestOptionsPass
       *this, "string-list", llvm::cl::desc("Example string list option")};
   Option<std::string> stringOption{*this, "string",
                                    llvm::cl::desc("Example string option")};
+  Option<Enum> enumOption{
+      *this, "enum", llvm::cl::desc("Example enum option"),
+      llvm::cl::values(clEnumValN(0, "zero", "Example zero value"),
+                       clEnumValN(1, "one", "Example one value"))};
 };
 
 /// A test pass that always aborts to enable testing the crash recovery
@@ -108,6 +120,37 @@ struct TestFailurePass : public PassWrapper<TestFailurePass, OperationPass<>> {
   }
 };
 
+/// A test pass that creates an invalid operation in a function body.
+struct TestInvalidIRPass
+    : public PassWrapper<TestInvalidIRPass,
+                         InterfacePass<FunctionOpInterface>> {
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestInvalidIRPass)
+
+  TestInvalidIRPass() = default;
+  TestInvalidIRPass(const TestInvalidIRPass &other) : PassWrapper(other) {}
+
+  StringRef getArgument() const final { return "test-pass-create-invalid-ir"; }
+  StringRef getDescription() const final {
+    return "Test pass that adds an invalid operation in a function body";
+  }
+  void getDependentDialects(DialectRegistry &registry) const final {
+    registry.insert<test::TestDialect>();
+  }
+  void runOnOperation() final {
+    if (signalFailure)
+      signalPassFailure();
+    if (!emitInvalidIR)
+      return;
+    OpBuilder b(getOperation().getFunctionBody());
+    OperationState state(b.getUnknownLoc(), "test.any_attr_of_i32_str");
+    b.create(state);
+  }
+  Option<bool> signalFailure{*this, "signal-pass-failure",
+                             llvm::cl::desc("Trigger a pass failure")};
+  Option<bool> emitInvalidIR{*this, "emit-invalid-ir", llvm::cl::init(true),
+                             llvm::cl::desc("Emit invalid IR")};
+};
+
 /// A test pass that always fails to enable testing the failure recovery
 /// mechanisms of the pass manager.
 struct TestInvalidParentPass
@@ -125,7 +168,7 @@ struct TestInvalidParentPass
   }
   void runOnOperation() final {
     FunctionOpInterface op = getOperation();
-    OpBuilder b(getOperation().getBody());
+    OpBuilder b(op.getFunctionBody());
     b.create<test::TestCallOp>(op.getLoc(), TypeRange(), "some_unknown_func",
                                ValueRange());
   }
@@ -137,14 +180,21 @@ struct TestStatisticPass
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestStatisticPass)
 
   TestStatisticPass() = default;
-  TestStatisticPass(const TestStatisticPass &) {}
+  TestStatisticPass(const TestStatisticPass &) : PassWrapper() {}
   StringRef getArgument() const final { return "test-stats-pass"; }
   StringRef getDescription() const final { return "Test pass statistics"; }
 
+  // Use a couple of statistics to verify their ordering
+  // in the print out. The statistics are registered in the order
+  // of construction, so put "num-ops2" before "num-ops" and
+  // make sure that the order is reversed.
+  Statistic opCountDuplicate{this, "num-ops2",
+                             "Number of operations counted one more time"};
   Statistic opCount{this, "num-ops", "Number of operations counted"};
 
   void runOnOperation() final {
     getOperation()->walk([&](Operation *) { ++opCount; });
+    getOperation()->walk([&](Operation *) { ++opCountDuplicate; });
   }
 };
 } // namespace
@@ -155,11 +205,11 @@ static void testNestedPipeline(OpPassManager &pm) {
   auto &modulePM = pm.nest<ModuleOp>();
   modulePM.addPass(std::make_unique<TestModulePass>());
   /// A nested function pass.
-  auto &nestedFunctionPM = modulePM.nest<FuncOp>();
+  auto &nestedFunctionPM = modulePM.nest<func::FuncOp>();
   nestedFunctionPM.addPass(std::make_unique<TestFunctionPass>());
 
   // Nest a function pipeline that contains a single pass.
-  auto &functionPM = pm.nest<FuncOp>();
+  auto &functionPM = pm.nest<func::FuncOp>();
   functionPM.addPass(std::make_unique<TestFunctionPass>());
 }
 
@@ -179,6 +229,7 @@ void registerPassManagerTestPass() {
 
   PassRegistration<TestCrashRecoveryPass>();
   PassRegistration<TestFailurePass>();
+  PassRegistration<TestInvalidIRPass>();
   PassRegistration<TestInvalidParentPass>();
 
   PassRegistration<TestStatisticPass>();
@@ -189,13 +240,6 @@ void registerPassManagerTestPass() {
   PassPipelineRegistration<>("test-textual-pm-nested-pipeline",
                              "Test a nested pipeline in the pass manager",
                              testNestedPipelineTextual);
-  PassPipelineRegistration<>(
-      "test-dump-pipeline",
-      "Dumps the pipeline build so far for debugging purposes",
-      [](OpPassManager &pm) {
-        pm.printAsTextualPipeline(llvm::errs());
-        llvm::errs() << "\n";
-      });
 
   PassPipelineRegistration<TestOptionsPass::Options>
       registerOptionsPassPipeline(

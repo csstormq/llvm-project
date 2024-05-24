@@ -1,7 +1,7 @@
 // RUN: %clang_analyze_cc1 -triple i386-apple-darwin10 -verify %s \
-// RUN:   -analyzer-checker=core.builtin \
 // RUN:   -analyzer-checker=debug.ExprInspection \
 // RUN:   -analyzer-checker=unix.cstring \
+// RUN:   -analyzer-checker=unix.Malloc \
 // RUN:   -analyzer-config display-checker-name=false
 
 typedef unsigned long size_t;
@@ -72,6 +72,7 @@ void test_3(S s) {
 void test_4(int x, int y) {
   int z;
   static int stat;
+  clang_analyzer_explain(-x);    // expected-warning-re{{{{^\- \(argument 'x'\)$}}}}
   clang_analyzer_explain(x + 1); // expected-warning-re{{{{^\(argument 'x'\) \+ 1$}}}}
   clang_analyzer_explain(1 + y); // expected-warning-re{{{{^\(argument 'y'\) \+ 1$}}}}
   clang_analyzer_explain(x + y); // expected-warning-re{{{{^\(argument 'x'\) \+ \(argument 'y'\)$}}}}

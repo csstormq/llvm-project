@@ -1,4 +1,4 @@
-add_mlir_dialect_library(MLIRAsync
+add_mlir_dialect_library(MLIRAsyncDialect
   Async.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -9,6 +9,7 @@ add_mlir_dialect_library(MLIRAsync
 
   LINK_LIBS PUBLIC
   MLIRControlFlowInterfaces
+  MLIRFunctionInterfaces
   MLIRDialect
   MLIRInferTypeOpInterface
   MLIRIR

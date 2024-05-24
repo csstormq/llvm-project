@@ -15,7 +15,7 @@
 #include "TestTU.h"
 #include "TestWorkspace.h"
 #include "URI.h"
-#include "index/CanonicalIncludes.h"
+#include "clang-include-cleaner/Record.h"
 #include "index/FileIndex.h"
 #include "index/Index.h"
 #include "index/Ref.h"
@@ -25,12 +25,12 @@
 #include "index/SymbolID.h"
 #include "support/Threading.h"
 #include "clang/Frontend/CompilerInvocation.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/Tooling/CompilationDatabase.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Allocator.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -59,6 +59,11 @@ MATCHER_P(defURI, U, "") {
 MATCHER_P(qName, N, "") { return (arg.Scope + arg.Name).str() == N; }
 MATCHER_P(numReferences, N, "") { return arg.References == N; }
 MATCHER_P(hasOrign, O, "") { return bool(arg.Origin & O); }
+
+MATCHER_P(includeHeader, P, "") {
+  return (arg.IncludeHeaders.size() == 1) &&
+         (arg.IncludeHeaders.begin()->IncludeHeader == P);
+}
 
 namespace clang {
 namespace clangd {
@@ -171,7 +176,7 @@ void update(FileIndex &M, llvm::StringRef Basename, llvm::StringRef Code) {
   auto AST = File.build();
   M.updatePreamble(testPath(File.Filename), /*Version=*/"null",
                    AST.getASTContext(), AST.getPreprocessor(),
-                   AST.getCanonicalIncludes());
+                   AST.getPragmaIncludes());
 }
 
 TEST(FileIndexTest, CustomizedURIScheme) {
@@ -232,6 +237,32 @@ TEST(FileIndexTest, IncludeCollected) {
   EXPECT_THAT(Symbols, ElementsAre(_));
   EXPECT_THAT(Symbols.begin()->IncludeHeaders.front().IncludeHeader,
               "<the/good/header.h>");
+}
+
+TEST(FileIndexTest, IWYUPragmaExport) {
+  FileIndex M;
+
+  TestTU File;
+  File.Code = R"cpp(#pragma once
+    #include "exporter.h"
+  )cpp";
+  File.HeaderFilename = "exporter.h";
+  File.HeaderCode = R"cpp(#pragma once
+    #include "private.h" // IWYU pragma: export
+  )cpp";
+  File.AdditionalFiles["private.h"] = "class Foo{};";
+  auto AST = File.build();
+  M.updatePreamble(testPath(File.Filename), /*Version=*/"null",
+                   AST.getASTContext(), AST.getPreprocessor(),
+                   AST.getPragmaIncludes());
+
+  auto Symbols = runFuzzyFind(M, "");
+  EXPECT_THAT(
+      Symbols,
+      UnorderedElementsAre(AllOf(
+          qName("Foo"),
+          includeHeader(URI::create(testPath(File.HeaderFilename)).toString()),
+          declURI(URI::create(testPath("private.h")).toString()))));
 }
 
 TEST(FileIndexTest, HasSystemHeaderMappingsInPreamble) {
@@ -305,16 +336,17 @@ TEST(FileIndexTest, RebuildWithPreamble) {
 
   FileIndex Index;
   bool IndexUpdated = false;
-  buildPreamble(FooCpp, *CI, PI,
-                /*StoreInMemory=*/true,
-                [&](ASTContext &Ctx, Preprocessor &PP,
-                    const CanonicalIncludes &CanonIncludes) {
-                  EXPECT_FALSE(IndexUpdated)
-                      << "Expected only a single index update";
-                  IndexUpdated = true;
-                  Index.updatePreamble(FooCpp, /*Version=*/"null", Ctx, PP,
-                                       CanonIncludes);
-                });
+  buildPreamble(
+      FooCpp, *CI, PI,
+      /*StoreInMemory=*/true,
+      [&](CapturedASTCtx ASTCtx,
+          std::shared_ptr<const include_cleaner::PragmaIncludes> PI) {
+        auto &Ctx = ASTCtx.getASTContext();
+        auto &PP = ASTCtx.getPreprocessor();
+        EXPECT_FALSE(IndexUpdated) << "Expected only a single index update";
+        IndexUpdated = true;
+        Index.updatePreamble(FooCpp, /*Version=*/"null", Ctx, PP, *PI);
+      });
   ASSERT_TRUE(IndexUpdated);
 
   // Check the index contains symbols from the preamble, but not from the main
@@ -414,7 +446,7 @@ TEST(FileIndexTest, Relations) {
   FileIndex Index;
   Index.updatePreamble(testPath(TU.Filename), /*Version=*/"null",
                        AST.getASTContext(), AST.getPreprocessor(),
-                       AST.getCanonicalIncludes());
+                       AST.getPragmaIncludes());
   SymbolID A = findSymbol(TU.headerSymbols(), "A").ID;
   uint32_t Results = 0;
   RelationsRequest Req;
@@ -535,7 +567,7 @@ TEST(FileIndexTest, StalePreambleSymbolsDeleted) {
   auto AST = File.build();
   M.updatePreamble(testPath(File.Filename), /*Version=*/"null",
                    AST.getASTContext(), AST.getPreprocessor(),
-                   AST.getCanonicalIncludes());
+                   AST.getPragmaIncludes());
   EXPECT_THAT(runFuzzyFind(M, ""), UnorderedElementsAre(qName("a")));
 
   File.Filename = "f2.cpp";
@@ -543,7 +575,7 @@ TEST(FileIndexTest, StalePreambleSymbolsDeleted) {
   AST = File.build();
   M.updatePreamble(testPath(File.Filename), /*Version=*/"null",
                    AST.getASTContext(), AST.getPreprocessor(),
-                   AST.getCanonicalIncludes());
+                   AST.getPragmaIncludes());
   EXPECT_THAT(runFuzzyFind(M, ""), UnorderedElementsAre(qName("b")));
 }
 
@@ -650,7 +682,7 @@ TEST(FileShardedIndexTest, Sharding) {
                              Relation{Sym3.ID, RelationKind::BaseOf, Sym1.ID}));
     ASSERT_THAT(Shard->Sources->keys(), UnorderedElementsAre(AHeaderUri));
     EXPECT_THAT(Shard->Sources->lookup(AHeaderUri).DirectIncludes, IsEmpty());
-    EXPECT_TRUE(Shard->Cmd.hasValue());
+    EXPECT_TRUE(Shard->Cmd);
   }
   {
     auto Shard = ShardedIndex.getShard(BHeaderUri);
@@ -665,7 +697,7 @@ TEST(FileShardedIndexTest, Sharding) {
                 UnorderedElementsAre(BHeaderUri, AHeaderUri));
     EXPECT_THAT(Shard->Sources->lookup(BHeaderUri).DirectIncludes,
                 UnorderedElementsAre(AHeaderUri));
-    EXPECT_TRUE(Shard->Cmd.hasValue());
+    EXPECT_TRUE(Shard->Cmd);
   }
   {
     auto Shard = ShardedIndex.getShard(BSourceUri);
@@ -677,7 +709,7 @@ TEST(FileShardedIndexTest, Sharding) {
                 UnorderedElementsAre(BSourceUri, BHeaderUri));
     EXPECT_THAT(Shard->Sources->lookup(BSourceUri).DirectIncludes,
                 UnorderedElementsAre(BHeaderUri));
-    EXPECT_TRUE(Shard->Cmd.hasValue());
+    EXPECT_TRUE(Shard->Cmd);
   }
 }
 
@@ -688,7 +720,7 @@ TEST(FileIndexTest, Profile) {
   auto AST = TestTU::withHeaderCode("int a;").build();
   FI.updateMain(FileName, AST);
   FI.updatePreamble(FileName, "v1", AST.getASTContext(), AST.getPreprocessor(),
-                    AST.getCanonicalIncludes());
+                    AST.getPragmaIncludes());
 
   llvm::BumpPtrAllocator Alloc;
   MemoryTree MT(&Alloc);

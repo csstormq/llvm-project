@@ -27,7 +27,6 @@
 #include "lldb/Interpreter/OptionGroupString.h"
 #include "lldb/Interpreter/OptionGroupUInt64.h"
 #include "lldb/Interpreter/OptionValueProperties.h"
-#include "lldb/Symbol/LocateSymbolFile.h"
 #include "lldb/Symbol/ObjectFile.h"
 #include "lldb/Target/RegisterContext.h"
 #include "lldb/Target/Target.h"
@@ -65,8 +64,8 @@ enum {
 
 class PluginProperties : public Properties {
 public:
-  static ConstString GetSettingName() {
-    return ConstString(ProcessKDP::GetPluginNameStatic());
+  static llvm::StringRef GetSettingName() {
+    return ProcessKDP::GetPluginNameStatic();
   }
 
   PluginProperties() : Properties() {
@@ -74,21 +73,21 @@ public:
     m_collection_sp->Initialize(g_processkdp_properties);
   }
 
-  virtual ~PluginProperties() = default;
+  ~PluginProperties() override = default;
 
   uint64_t GetPacketTimeout() {
     const uint32_t idx = ePropertyKDPPacketTimeout;
-    return m_collection_sp->GetPropertyAtIndexAsUInt64(
-        NULL, idx, g_processkdp_properties[idx].default_uint_value);
+    return GetPropertyAtIndexAs<uint64_t>(
+        idx, g_processkdp_properties[idx].default_uint_value);
   }
 };
+
+} // namespace
 
 static PluginProperties &GetGlobalPluginProperties() {
   static PluginProperties g_settings;
   return g_settings;
 }
-
-} // anonymous namespace end
 
 static const lldb::tid_t g_kernel_tid = 1;
 
@@ -126,6 +125,7 @@ bool ProcessKDP::CanDebug(TargetSP target_sp, bool plugin_specified_by_name) {
     case llvm::Triple::IOS:    // For arm targets
     case llvm::Triple::TvOS:
     case llvm::Triple::WatchOS:
+    case llvm::Triple::XROS:
       if (triple_ref.getVendor() == llvm::Triple::Apple) {
         ObjectFile *exe_objfile = exe_module->GetObjectFile();
         if (exe_objfile->GetType() == ObjectFile::eTypeExecutable &&
@@ -165,24 +165,24 @@ ProcessKDP::~ProcessKDP() {
   // make sure all of the broadcaster cleanup goes as planned. If we destruct
   // this class, then Process::~Process() might have problems trying to fully
   // destroy the broadcaster.
-  Finalize();
+  Finalize(true /* destructing */);
 }
 
-Status ProcessKDP::WillLaunch(Module *module) {
+Status ProcessKDP::DoWillLaunch(Module *module) {
   Status error;
   error.SetErrorString("launching not supported in kdp-remote plug-in");
   return error;
 }
 
-Status ProcessKDP::WillAttachToProcessWithID(lldb::pid_t pid) {
+Status ProcessKDP::DoWillAttachToProcessWithID(lldb::pid_t pid) {
   Status error;
   error.SetErrorString(
       "attaching to a by process ID not supported in kdp-remote plug-in");
   return error;
 }
 
-Status ProcessKDP::WillAttachToProcessWithName(const char *process_name,
-                                               bool wait_for_launch) {
+Status ProcessKDP::DoWillAttachToProcessWithName(const char *process_name,
+                                                 bool wait_for_launch) {
   Status error;
   error.SetErrorString(
       "attaching to a by process name not supported in kdp-remote plug-in");
@@ -278,11 +278,11 @@ Status ProcessKDP::DoConnectRemote(llvm::StringRef remote_url) {
               FileSpecList search_paths =
                   Target::GetDefaultDebugFileSearchPaths();
               module_spec.GetSymbolFileSpec() =
-                  Symbols::LocateExecutableSymbolFile(module_spec,
-                                                      search_paths);
+                  PluginManager::LocateExecutableSymbolFile(module_spec,
+                                                            search_paths);
               if (module_spec.GetSymbolFileSpec()) {
                 ModuleSpec executable_module_spec =
-                    Symbols::LocateExecutableObjectFile(module_spec);
+                    PluginManager::LocateExecutableObjectFile(module_spec);
                 if (FileSystem::Instance().Exists(
                         executable_module_spec.GetFileSpec())) {
                   module_spec.GetFileSpec() =
@@ -290,8 +290,11 @@ Status ProcessKDP::DoConnectRemote(llvm::StringRef remote_url) {
                 }
               }
               if (!module_spec.GetSymbolFileSpec() ||
-                  !module_spec.GetSymbolFileSpec())
-                Symbols::DownloadObjectAndSymbolFile(module_spec, true);
+                  !module_spec.GetSymbolFileSpec()) {
+                Status symbl_error;
+                PluginManager::DownloadObjectAndSymbolFile(module_spec,
+                                                           symbl_error, true);
+              }
 
               if (FileSystem::Instance().Exists(module_spec.GetFileSpec())) {
                 ModuleSP module_sp(new Module(module_spec));
@@ -669,20 +672,6 @@ Status ProcessKDP::DisableBreakpointSite(BreakpointSite *bp_site) {
   return DisableSoftwareBreakpoint(bp_site);
 }
 
-Status ProcessKDP::EnableWatchpoint(Watchpoint *wp, bool notify) {
-  Status error;
-  error.SetErrorString(
-      "watchpoints are not supported in kdp remote debugging");
-  return error;
-}
-
-Status ProcessKDP::DisableWatchpoint(Watchpoint *wp, bool notify) {
-  Status error;
-  error.SetErrorString(
-      "watchpoints are not supported in kdp remote debugging");
-  return error;
-}
-
 void ProcessKDP::Clear() { m_thread_list.Clear(); }
 
 Status ProcessKDP::DoSignal(int signo) {
@@ -710,8 +699,7 @@ void ProcessKDP::DebuggerInitialize(lldb_private::Debugger &debugger) {
     const bool is_global_setting = true;
     PluginManager::CreateSettingForProcessPlugin(
         debugger, GetGlobalPluginProperties().GetValueProperties(),
-        ConstString("Properties for the kdp-remote process plug-in."),
-        is_global_setting);
+        "Properties for the kdp-remote process plug-in.", is_global_setting);
   }
 }
 
@@ -727,7 +715,7 @@ bool ProcessKDP::StartAsyncThread() {
       "<lldb.process.kdp-remote.async>", [this] { return AsyncThread(); });
   if (!async_thread) {
     LLDB_LOG_ERROR(GetLog(LLDBLog::Host), async_thread.takeError(),
-                   "failed to launch host thread: {}");
+                   "failed to launch host thread: {0}");
     return false;
   }
   m_async_thread = *async_thread;
@@ -767,7 +755,7 @@ void *ProcessKDP::AsyncThread() {
                 "ProcessKDP::AsyncThread (pid = %" PRIu64
                 ") listener.WaitForEvent (NULL, event_sp)...",
                 pid);
-      if (listener_sp->GetEvent(event_sp, llvm::None)) {
+      if (listener_sp->GetEvent(event_sp, std::nullopt)) {
         uint32_t event_type = event_sp->GetType();
         LLDB_LOGF(log,
                   "ProcessKDP::AsyncThread (pid = %" PRIu64
@@ -877,92 +865,85 @@ public:
     m_option_group.Finalize();
   }
 
-  ~CommandObjectProcessKDPPacketSend() = default;
+  ~CommandObjectProcessKDPPacketSend() override = default;
 
-  bool DoExecute(Args &command, CommandReturnObject &result) override {
-    const size_t argc = command.GetArgumentCount();
-    if (argc == 0) {
-      if (!m_command_byte.GetOptionValue().OptionWasSet()) {
-        result.AppendError(
-            "the --command option must be set to a valid command byte");
-      } else {
-        const uint64_t command_byte =
-            m_command_byte.GetOptionValue().GetUInt64Value(0);
-        if (command_byte > 0 && command_byte <= UINT8_MAX) {
-          ProcessKDP *process =
-              (ProcessKDP *)m_interpreter.GetExecutionContext().GetProcessPtr();
-          if (process) {
-            const StateType state = process->GetState();
+  void DoExecute(Args &command, CommandReturnObject &result) override {
+    if (!m_command_byte.GetOptionValue().OptionWasSet()) {
+      result.AppendError(
+          "the --command option must be set to a valid command byte");
+    } else {
+      const uint64_t command_byte =
+          m_command_byte.GetOptionValue().GetValueAs<uint64_t>().value_or(0);
+      if (command_byte > 0 && command_byte <= UINT8_MAX) {
+        ProcessKDP *process =
+            (ProcessKDP *)m_interpreter.GetExecutionContext().GetProcessPtr();
+        if (process) {
+          const StateType state = process->GetState();
 
-            if (StateIsStoppedState(state, true)) {
-              std::vector<uint8_t> payload_bytes;
-              const char *ascii_hex_bytes_cstr =
-                  m_packet_data.GetOptionValue().GetCurrentValue();
-              if (ascii_hex_bytes_cstr && ascii_hex_bytes_cstr[0]) {
-                StringExtractor extractor(ascii_hex_bytes_cstr);
-                const size_t ascii_hex_bytes_cstr_len =
-                    extractor.GetStringRef().size();
-                if (ascii_hex_bytes_cstr_len & 1) {
-                  result.AppendErrorWithFormat("payload data must contain an "
-                                               "even number of ASCII hex "
-                                               "characters: '%s'",
-                                               ascii_hex_bytes_cstr);
-                  return false;
-                }
-                payload_bytes.resize(ascii_hex_bytes_cstr_len / 2);
-                if (extractor.GetHexBytes(payload_bytes, '\xdd') !=
-                    payload_bytes.size()) {
-                  result.AppendErrorWithFormat("payload data must only contain "
-                                               "ASCII hex characters (no "
-                                               "spaces or hex prefixes): '%s'",
-                                               ascii_hex_bytes_cstr);
-                  return false;
-                }
+          if (StateIsStoppedState(state, true)) {
+            std::vector<uint8_t> payload_bytes;
+            const char *ascii_hex_bytes_cstr =
+                m_packet_data.GetOptionValue().GetCurrentValue();
+            if (ascii_hex_bytes_cstr && ascii_hex_bytes_cstr[0]) {
+              StringExtractor extractor(ascii_hex_bytes_cstr);
+              const size_t ascii_hex_bytes_cstr_len =
+                  extractor.GetStringRef().size();
+              if (ascii_hex_bytes_cstr_len & 1) {
+                result.AppendErrorWithFormat("payload data must contain an "
+                                             "even number of ASCII hex "
+                                             "characters: '%s'",
+                                             ascii_hex_bytes_cstr);
+                return;
               }
-              Status error;
-              DataExtractor reply;
-              process->GetCommunication().SendRawRequest(
-                  command_byte,
-                  payload_bytes.empty() ? NULL : payload_bytes.data(),
-                  payload_bytes.size(), reply, error);
-
-              if (error.Success()) {
-                // Copy the binary bytes into a hex ASCII string for the result
-                StreamString packet;
-                packet.PutBytesAsRawHex8(
-                    reply.GetDataStart(), reply.GetByteSize(),
-                    endian::InlHostByteOrder(), endian::InlHostByteOrder());
-                result.AppendMessage(packet.GetString());
-                result.SetStatus(eReturnStatusSuccessFinishResult);
-                return true;
-              } else {
-                const char *error_cstr = error.AsCString();
-                if (error_cstr && error_cstr[0])
-                  result.AppendError(error_cstr);
-                else
-                  result.AppendErrorWithFormat("unknown error 0x%8.8x",
-                                               error.GetError());
-                return false;
+              payload_bytes.resize(ascii_hex_bytes_cstr_len / 2);
+              if (extractor.GetHexBytes(payload_bytes, '\xdd') !=
+                  payload_bytes.size()) {
+                result.AppendErrorWithFormat("payload data must only contain "
+                                             "ASCII hex characters (no "
+                                             "spaces or hex prefixes): '%s'",
+                                             ascii_hex_bytes_cstr);
+                return;
               }
+            }
+            Status error;
+            DataExtractor reply;
+            process->GetCommunication().SendRawRequest(
+                command_byte,
+                payload_bytes.empty() ? NULL : payload_bytes.data(),
+                payload_bytes.size(), reply, error);
+
+            if (error.Success()) {
+              // Copy the binary bytes into a hex ASCII string for the result
+              StreamString packet;
+              packet.PutBytesAsRawHex8(
+                  reply.GetDataStart(), reply.GetByteSize(),
+                  endian::InlHostByteOrder(), endian::InlHostByteOrder());
+              result.AppendMessage(packet.GetString());
+              result.SetStatus(eReturnStatusSuccessFinishResult);
+              return;
             } else {
-              result.AppendErrorWithFormat("process must be stopped in order "
-                                           "to send KDP packets, state is %s",
-                                           StateAsCString(state));
+              const char *error_cstr = error.AsCString();
+              if (error_cstr && error_cstr[0])
+                result.AppendError(error_cstr);
+              else
+                result.AppendErrorWithFormat("unknown error 0x%8.8x",
+                                             error.GetError());
+              return;
             }
           } else {
-            result.AppendError("invalid process");
+            result.AppendErrorWithFormat("process must be stopped in order "
+                                         "to send KDP packets, state is %s",
+                                         StateAsCString(state));
           }
         } else {
-          result.AppendErrorWithFormat("invalid command byte 0x%" PRIx64
-                                       ", valid values are 1 - 255",
-                                       command_byte);
+          result.AppendError("invalid process");
         }
+      } else {
+        result.AppendErrorWithFormat("invalid command byte 0x%" PRIx64
+                                     ", valid values are 1 - 255",
+                                     command_byte);
       }
-    } else {
-      result.AppendErrorWithFormat("'%s' takes no arguments, only options.",
-                                   m_cmd_name.c_str());
     }
-    return false;
   }
 };
 
@@ -978,7 +959,7 @@ public:
         CommandObjectSP(new CommandObjectProcessKDPPacketSend(interpreter)));
   }
 
-  ~CommandObjectProcessKDPPacket() = default;
+  ~CommandObjectProcessKDPPacket() override = default;
 };
 
 class CommandObjectMultiwordProcessKDP : public CommandObjectMultiword {
@@ -992,7 +973,7 @@ public:
                                  interpreter)));
   }
 
-  ~CommandObjectMultiwordProcessKDP() = default;
+  ~CommandObjectMultiwordProcessKDP() override = default;
 };
 
 CommandObject *ProcessKDP::GetPluginCommandObject() {

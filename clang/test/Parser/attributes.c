@@ -7,7 +7,7 @@ foo(void) {
 }
 
 
-__attribute__(()) y;   // expected-warning {{defaults to 'int'}}
+__attribute__(()) y;   // expected-error {{type specifier missing, defaults to 'int'}}
 
 // PR2796
 int (__attribute__(()) *z)(long y);
@@ -19,8 +19,8 @@ int f2(y, __attribute__(()) x);     // expected-error {{expected identifier}}
 
 // This is parsed as a normal argument list (with two args that are implicit
 // int) because the __attribute__ is a declspec.
-void f3(__attribute__(()) x,  // expected-warning {{defaults to 'int'}}
-        y);               // expected-warning {{defaults to 'int'}}
+void f3(__attribute__(()) x,  // expected-error {{type specifier missing, defaults to 'int'}}
+        y);               // expected-error {{type specifier missing, defaults to 'int'}}
 
 void f4(__attribute__(()));   // expected-error {{expected parameter declarator}}
 
@@ -30,25 +30,21 @@ int baz(int (__attribute__(()) *x)(long y));
 
 void g1(void (*f1)(__attribute__(()) int x));
 void g2(int (*f2)(y, __attribute__(()) x));    // expected-error {{expected identifier}}
-void g3(void (*f3)(__attribute__(()) x, int y));  // expected-warning {{defaults to 'int'}}
+void g3(void (*f3)(__attribute__(()) x, int y));  // expected-error {{type specifier missing, defaults to 'int'}}
 void g4(void (*f4)(__attribute__(())));  // expected-error {{expected parameter declarator}}
 
 
 void (*h1)(void (*f1)(__attribute__(()) int x));
 void (*h2)(int (*f2)(y, __attribute__(()) x));    // expected-error {{expected identifier}}
 
-void (*h3)(void (*f3)(__attribute__(()) x));   // expected-warning {{defaults to 'int'}}
+void (*h3)(void (*f3)(__attribute__(()) x));   // expected-error {{type specifier missing, defaults to 'int'}}
 void (*h4)(void (*f4)(__attribute__(())));  // expected-error {{expected parameter declarator}}
 
-
-
-// rdar://6131260
 int foo42(void) {
   int x, __attribute__((unused)) y, z;
   return 0;
 }
 
-// rdar://6096491
 void __attribute__((noreturn)) d0(void), __attribute__((noreturn)) d1(void);
 
 void d2(void) __attribute__((noreturn)), d3(void) __attribute__((noreturn));
@@ -113,3 +109,10 @@ __attribute__((,,,const)) int PR38352_1(void);
 __attribute__((const,,,)) int PR38352_2(void);
 __attribute__((const,,,const)) int PR38352_3(void);
 __attribute__((,,,const,,,const,,,)) int PR38352_4(void);
+
+// Test that we allow attributes on free-standing decl-specifier-seqs.
+// GCC appears to allow this.
+__attribute__(()) struct t;
+void f5() {
+  __attribute__(()) struct t;
+}

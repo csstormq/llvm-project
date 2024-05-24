@@ -11,11 +11,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "bolt/Passes/BinaryPasses.h"
+#include "bolt/Core/FunctionLayout.h"
 #include "bolt/Core/ParallelUtilities.h"
 #include "bolt/Passes/ReorderAlgorithm.h"
 #include "bolt/Passes/ReorderFunctions.h"
 #include "llvm/Support/CommandLine.h"
-
+#include <atomic>
+#include <mutex>
 #include <numeric>
 #include <vector>
 
@@ -24,13 +26,9 @@
 using namespace llvm;
 using namespace bolt;
 
-namespace {
-
-const char *dynoStatsOptName(const bolt::DynoStats::Category C) {
-  if (C == bolt::DynoStats::FIRST_DYNO_STAT)
-    return "none";
-  else if (C == bolt::DynoStats::LAST_DYNO_STAT)
-    return "all";
+static const char *dynoStatsOptName(const bolt::DynoStats::Category C) {
+  assert(C > bolt::DynoStats::FIRST_DYNO_STAT &&
+         C < DynoStats::LAST_DYNO_STAT && "Unexpected dyno stat category.");
 
   static std::string OptNames[bolt::DynoStats::LAST_DYNO_STAT + 1];
 
@@ -39,17 +37,6 @@ const char *dynoStatsOptName(const bolt::DynoStats::Category C) {
   std::replace(OptNames[C].begin(), OptNames[C].end(), ' ', '-');
 
   return OptNames[C].c_str();
-}
-
-const char *dynoStatsOptDesc(const bolt::DynoStats::Category C) {
-  if (C == bolt::DynoStats::FIRST_DYNO_STAT)
-    return "unsorted";
-  else if (C == bolt::DynoStats::LAST_DYNO_STAT)
-    return "sorted by all stats";
-
-  return bolt::DynoStats::Description(C);
-}
-
 }
 
 namespace opts {
@@ -69,13 +56,11 @@ enum DynoStatsSortOrder : char {
   Descending
 };
 
-static cl::opt<DynoStatsSortOrder>
-DynoStatsSortOrderOpt("print-sorted-by-order",
-  cl::desc("use ascending or descending order when printing functions "
-           "ordered by dyno stats"),
-  cl::ZeroOrMore,
-  cl::init(DynoStatsSortOrder::Descending),
-  cl::cat(BoltOptCategory));
+static cl::opt<DynoStatsSortOrder> DynoStatsSortOrderOpt(
+    "print-sorted-by-order",
+    cl::desc("use ascending or descending order when printing functions "
+             "ordered by dyno stats"),
+    cl::init(DynoStatsSortOrder::Descending), cl::cat(BoltOptCategory));
 
 cl::list<std::string>
 HotTextMoveSections("hot-text-move-sections",
@@ -97,13 +82,11 @@ bool isHotTextMover(const BinaryFunction &Function) {
   return false;
 }
 
-static cl::opt<bool>
-MinBranchClusters("min-branch-clusters",
-  cl::desc("use a modified clustering algorithm geared towards minimizing "
-           "branches"),
-  cl::ZeroOrMore,
-  cl::Hidden,
-  cl::cat(BoltOptCategory));
+static cl::opt<bool> MinBranchClusters(
+    "min-branch-clusters",
+    cl::desc("use a modified clustering algorithm geared towards minimizing "
+             "branches"),
+    cl::Hidden, cl::cat(BoltOptCategory));
 
 static cl::list<Peepholes::PeepholeOpts> Peepholes(
     "peepholes", cl::CommaSeparated, cl::desc("enable peephole optimizations"),
@@ -120,45 +103,43 @@ static cl::list<Peepholes::PeepholeOpts> Peepholes(
     cl::ZeroOrMore, cl::cat(BoltOptCategory));
 
 static cl::opt<unsigned>
-PrintFuncStat("print-function-statistics",
-  cl::desc("print statistics about basic block ordering"),
-  cl::init(0),
-  cl::ZeroOrMore,
-  cl::cat(BoltOptCategory));
+    PrintFuncStat("print-function-statistics",
+                  cl::desc("print statistics about basic block ordering"),
+                  cl::init(0), cl::cat(BoltOptCategory));
+
+static cl::opt<bool> PrintLargeFunctions(
+    "print-large-functions",
+    cl::desc("print functions that could not be overwritten due to excessive "
+             "size"),
+    cl::init(false), cl::cat(BoltOptCategory));
 
 static cl::list<bolt::DynoStats::Category>
-PrintSortedBy("print-sorted-by",
-  cl::CommaSeparated,
-  cl::desc("print functions sorted by order of dyno stats"),
-  cl::value_desc("key1,key2,key3,..."),
-  cl::values(
-#define D(name, ...)                                        \
-    clEnumValN(bolt::DynoStats::name,                     \
-               dynoStatsOptName(bolt::DynoStats::name),   \
-               dynoStatsOptDesc(bolt::DynoStats::name)),
-    DYNO_STATS
+    PrintSortedBy("print-sorted-by", cl::CommaSeparated,
+                  cl::desc("print functions sorted by order of dyno stats"),
+                  cl::value_desc("key1,key2,key3,..."),
+                  cl::values(
+#define D(name, description, ...)                                              \
+  clEnumValN(bolt::DynoStats::name, dynoStatsOptName(bolt::DynoStats::name),   \
+             description),
+                      REAL_DYNO_STATS
 #undef D
-    clEnumValN(0xffff, ".", ".")
-    ),
-  cl::ZeroOrMore,
-  cl::cat(BoltOptCategory));
+                          clEnumValN(bolt::DynoStats::LAST_DYNO_STAT, "all",
+                                     "sorted by all names")),
+                  cl::ZeroOrMore, cl::cat(BoltOptCategory));
 
 static cl::opt<bool>
-PrintUnknown("print-unknown",
-  cl::desc("print names of functions with unknown control flow"),
-  cl::init(false),
-  cl::ZeroOrMore,
-  cl::cat(BoltCategory),
-  cl::Hidden);
+    PrintUnknown("print-unknown",
+                 cl::desc("print names of functions with unknown control flow"),
+                 cl::cat(BoltCategory), cl::Hidden);
 
 static cl::opt<bool>
-PrintUnknownCFG("print-unknown-cfg",
-  cl::desc("dump CFG of functions with unknown control flow"),
-  cl::init(false),
-  cl::ZeroOrMore,
-  cl::cat(BoltCategory),
-  cl::ReallyHidden);
+    PrintUnknownCFG("print-unknown-cfg",
+                    cl::desc("dump CFG of functions with unknown control flow"),
+                    cl::cat(BoltCategory), cl::ReallyHidden);
 
+// Please MSVC19 with a forward declaration: otherwise it reports an error about
+// an undeclared variable inside a callback.
+extern cl::opt<bolt::ReorderBasicBlocks::LayoutType> ReorderBlocks;
 cl::opt<bolt::ReorderBasicBlocks::LayoutType> ReorderBlocks(
     "reorder-blocks", cl::desc("change layout of basic blocks in a function"),
     cl::init(bolt::ReorderBasicBlocks::LT_NONE),
@@ -176,29 +157,30 @@ cl::opt<bolt::ReorderBasicBlocks::LayoutType> ReorderBlocks(
         clEnumValN(bolt::ReorderBasicBlocks::LT_OPTIMIZE_CACHE, "cache",
                    "perform optimal layout prioritizing I-cache "
                    "behavior"),
-        clEnumValN(bolt::ReorderBasicBlocks::LT_OPTIMIZE_EXT_TSP, "cache+",
+        clEnumValN(bolt::ReorderBasicBlocks::LT_OPTIMIZE_CACHE_PLUS, "cache+",
                    "perform layout optimizing I-cache behavior"),
         clEnumValN(bolt::ReorderBasicBlocks::LT_OPTIMIZE_EXT_TSP, "ext-tsp",
                    "perform layout optimizing I-cache behavior"),
         clEnumValN(bolt::ReorderBasicBlocks::LT_OPTIMIZE_SHUFFLE,
                    "cluster-shuffle", "perform random layout of clusters")),
-    cl::ZeroOrMore, cl::cat(BoltOptCategory));
+    cl::ZeroOrMore, cl::cat(BoltOptCategory),
+    cl::callback([](const bolt::ReorderBasicBlocks::LayoutType &option) {
+      if (option == bolt::ReorderBasicBlocks::LT_OPTIMIZE_CACHE_PLUS) {
+        errs() << "BOLT-WARNING: '-reorder-blocks=cache+' is deprecated, please"
+               << " use '-reorder-blocks=ext-tsp' instead\n";
+        ReorderBlocks = bolt::ReorderBasicBlocks::LT_OPTIMIZE_EXT_TSP;
+      }
+    }));
 
-static cl::opt<unsigned>
-ReportBadLayout("report-bad-layout",
-  cl::desc("print top <uint> functions with suboptimal code layout on input"),
-  cl::init(0),
-  cl::ZeroOrMore,
-  cl::Hidden,
-  cl::cat(BoltOptCategory));
+static cl::opt<unsigned> ReportBadLayout(
+    "report-bad-layout",
+    cl::desc("print top <uint> functions with suboptimal code layout on input"),
+    cl::init(0), cl::Hidden, cl::cat(BoltOptCategory));
 
 static cl::opt<bool>
-ReportStaleFuncs("report-stale",
-  cl::desc("print the list of functions with stale profile"),
-  cl::init(false),
-  cl::ZeroOrMore,
-  cl::Hidden,
-  cl::cat(BoltOptCategory));
+    ReportStaleFuncs("report-stale",
+                     cl::desc("print the list of functions with stale profile"),
+                     cl::Hidden, cl::cat(BoltOptCategory));
 
 enum SctcModes : char {
   SctcAlways,
@@ -229,23 +211,18 @@ StaleThreshold("stale-threshold",
     cl::Hidden,
     cl::cat(BoltOptCategory));
 
-static cl::opt<unsigned>
-TSPThreshold("tsp-threshold",
-  cl::desc("maximum number of hot basic blocks in a function for which to use "
-           "a precise TSP solution while re-ordering basic blocks"),
-  cl::init(10),
-  cl::ZeroOrMore,
-  cl::Hidden,
-  cl::cat(BoltOptCategory));
+static cl::opt<unsigned> TSPThreshold(
+    "tsp-threshold",
+    cl::desc(
+        "maximum number of hot basic blocks in a function for which to use "
+        "a precise TSP solution while re-ordering basic blocks"),
+    cl::init(10), cl::Hidden, cl::cat(BoltOptCategory));
 
-static cl::opt<unsigned>
-TopCalledLimit("top-called-limit",
-  cl::desc("maximum number of functions to print in top called "
-           "functions section"),
-  cl::init(100),
-  cl::ZeroOrMore,
-  cl::Hidden,
-  cl::cat(BoltCategory));
+static cl::opt<unsigned> TopCalledLimit(
+    "top-called-limit",
+    cl::desc("maximum number of functions to print in top called "
+             "functions section"),
+    cl::init(100), cl::Hidden, cl::cat(BoltCategory));
 
 } // namespace opts
 
@@ -330,57 +307,68 @@ void NormalizeCFG::runOnFunction(BinaryFunction &BF) {
   NumBlocksRemoved += NumRemoved;
 }
 
-void NormalizeCFG::runOnFunctions(BinaryContext &BC) {
+Error NormalizeCFG::runOnFunctions(BinaryContext &BC) {
   ParallelUtilities::runOnEachFunction(
       BC, ParallelUtilities::SchedulingPolicy::SP_BB_LINEAR,
       [&](BinaryFunction &BF) { runOnFunction(BF); },
       [&](const BinaryFunction &BF) { return !shouldOptimize(BF); },
       "NormalizeCFG");
   if (NumBlocksRemoved)
-    outs() << "BOLT-INFO: removed " << NumBlocksRemoved << " empty block"
-           << (NumBlocksRemoved == 1 ? "" : "s") << '\n';
+    BC.outs() << "BOLT-INFO: removed " << NumBlocksRemoved << " empty block"
+              << (NumBlocksRemoved == 1 ? "" : "s") << '\n';
   if (NumDuplicateEdgesMerged)
-    outs() << "BOLT-INFO: merged " << NumDuplicateEdgesMerged
-           << " duplicate CFG edge" << (NumDuplicateEdgesMerged == 1 ? "" : "s")
-           << '\n';
+    BC.outs() << "BOLT-INFO: merged " << NumDuplicateEdgesMerged
+              << " duplicate CFG edge"
+              << (NumDuplicateEdgesMerged == 1 ? "" : "s") << '\n';
+  return Error::success();
 }
 
 void EliminateUnreachableBlocks::runOnFunction(BinaryFunction &Function) {
-  if (Function.layout_size() > 0) {
-    unsigned Count;
-    uint64_t Bytes;
-    Function.markUnreachableBlocks();
-    LLVM_DEBUG({
-      for (BinaryBasicBlock *BB : Function.layout()) {
-        if (!BB->isValid()) {
-          dbgs() << "BOLT-INFO: UCE found unreachable block " << BB->getName()
-                 << " in function " << Function << "\n";
-          Function.dump();
-        }
+  BinaryContext &BC = Function.getBinaryContext();
+  unsigned Count;
+  uint64_t Bytes;
+  Function.markUnreachableBlocks();
+  LLVM_DEBUG({
+    for (BinaryBasicBlock &BB : Function) {
+      if (!BB.isValid()) {
+        dbgs() << "BOLT-INFO: UCE found unreachable block " << BB.getName()
+               << " in function " << Function << "\n";
+        Function.dump();
       }
-    });
-    std::tie(Count, Bytes) = Function.eraseInvalidBBs();
-    DeletedBlocks += Count;
-    DeletedBytes += Bytes;
-    if (Count) {
-      Modified.insert(&Function);
-      if (opts::Verbosity > 0)
-        outs() << "BOLT-INFO: Removed " << Count
-               << " dead basic block(s) accounting for " << Bytes
-               << " bytes in function " << Function << '\n';
     }
+  });
+  BinaryContext::IndependentCodeEmitter Emitter =
+      BC.createIndependentMCCodeEmitter();
+  std::tie(Count, Bytes) = Function.eraseInvalidBBs(Emitter.MCE.get());
+  DeletedBlocks += Count;
+  DeletedBytes += Bytes;
+  if (Count) {
+    auto L = BC.scopeLock();
+    Modified.insert(&Function);
+    if (opts::Verbosity > 0)
+      BC.outs() << "BOLT-INFO: removed " << Count
+                << " dead basic block(s) accounting for " << Bytes
+                << " bytes in function " << Function << '\n';
   }
 }
 
-void EliminateUnreachableBlocks::runOnFunctions(BinaryContext &BC) {
-  for (auto &It : BC.getBinaryFunctions()) {
-    BinaryFunction &Function = It.second;
-    if (shouldOptimize(Function))
-      runOnFunction(Function);
-  }
+Error EliminateUnreachableBlocks::runOnFunctions(BinaryContext &BC) {
+  ParallelUtilities::WorkFuncTy WorkFun = [&](BinaryFunction &BF) {
+    runOnFunction(BF);
+  };
 
-  outs() << "BOLT-INFO: UCE removed " << DeletedBlocks << " blocks and "
-         << DeletedBytes << " bytes of code.\n";
+  ParallelUtilities::PredicateTy SkipPredicate = [&](const BinaryFunction &BF) {
+    return !shouldOptimize(BF) || BF.getLayout().block_empty();
+  };
+
+  ParallelUtilities::runOnEachFunction(
+      BC, ParallelUtilities::SchedulingPolicy::SP_CONSTANT, WorkFun,
+      SkipPredicate, "elimininate-unreachable");
+
+  if (DeletedBlocks)
+    BC.outs() << "BOLT-INFO: UCE removed " << DeletedBlocks << " blocks and "
+              << DeletedBytes << " bytes of code\n";
+  return Error::success();
 }
 
 bool ReorderBasicBlocks::shouldPrint(const BinaryFunction &BF) const {
@@ -396,16 +384,29 @@ bool ReorderBasicBlocks::shouldOptimize(const BinaryFunction &BF) const {
   return BinaryFunctionPass::shouldOptimize(BF);
 }
 
-void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
+Error ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
   if (opts::ReorderBlocks == ReorderBasicBlocks::LT_NONE)
-    return;
+    return Error::success();
 
-  std::atomic<uint64_t> ModifiedFuncCount{0};
+  std::atomic_uint64_t ModifiedFuncCount(0);
+  std::mutex FunctionEditDistanceMutex;
+  DenseMap<const BinaryFunction *, uint64_t> FunctionEditDistance;
 
   ParallelUtilities::WorkFuncTy WorkFun = [&](BinaryFunction &BF) {
-    modifyFunctionLayout(BF, opts::ReorderBlocks, opts::MinBranchClusters);
-    if (BF.hasLayoutChanged())
-      ++ModifiedFuncCount;
+    SmallVector<const BinaryBasicBlock *, 0> OldBlockOrder;
+    if (opts::PrintFuncStat > 0)
+      llvm::copy(BF.getLayout().blocks(), std::back_inserter(OldBlockOrder));
+
+    const bool LayoutChanged =
+        modifyFunctionLayout(BF, opts::ReorderBlocks, opts::MinBranchClusters);
+    if (LayoutChanged) {
+      ModifiedFuncCount.fetch_add(1, std::memory_order_relaxed);
+      if (opts::PrintFuncStat > 0) {
+        const uint64_t Distance = BF.getLayout().getEditDistance(OldBlockOrder);
+        std::lock_guard<std::mutex> Lock(FunctionEditDistanceMutex);
+        FunctionEditDistance[&BF] = Distance;
+      }
+    }
   };
 
   ParallelUtilities::PredicateTy SkipFunc = [&](const BinaryFunction &BF) {
@@ -415,14 +416,20 @@ void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
   ParallelUtilities::runOnEachFunction(
       BC, ParallelUtilities::SchedulingPolicy::SP_BB_LINEAR, WorkFun, SkipFunc,
       "ReorderBasicBlocks");
+  const size_t NumAllProfiledFunctions =
+      BC.NumProfiledFuncs + BC.NumStaleProfileFuncs;
 
-  outs() << "BOLT-INFO: basic block reordering modified layout of "
-         << format("%zu (%.2lf%%) functions\n", ModifiedFuncCount.load(),
-                   100.0 * ModifiedFuncCount.load() /
+  BC.outs() << "BOLT-INFO: basic block reordering modified layout of "
+            << format(
+                   "%zu functions (%.2lf%% of profiled, %.2lf%% of total)\n",
+                   ModifiedFuncCount.load(std::memory_order_relaxed),
+                   100.0 * ModifiedFuncCount.load(std::memory_order_relaxed) /
+                       NumAllProfiledFunctions,
+                   100.0 * ModifiedFuncCount.load(std::memory_order_relaxed) /
                        BC.getBinaryFunctions().size());
 
   if (opts::PrintFuncStat > 0) {
-    raw_ostream &OS = outs();
+    raw_ostream &OS = BC.outs();
     // Copy all the values into vector in order to sort them
     std::map<uint64_t, BinaryFunction &> ScoreMap;
     auto &BFs = BC.getBinaryFunctions();
@@ -433,7 +440,7 @@ void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
     OS << "\nBOLT-INFO: Printing Function Statistics:\n\n";
     OS << "           There are " << BFs.size() << " functions in total. \n";
     OS << "           Number of functions being modified: "
-       << ModifiedFuncCount.load() << "\n";
+       << ModifiedFuncCount.load(std::memory_order_relaxed) << "\n";
     OS << "           User asks for detailed information on top "
        << opts::PrintFuncStat << " functions. (Ranked by function score)"
        << "\n\n";
@@ -451,23 +458,24 @@ void ReorderBasicBlocks::runOnFunctions(BinaryContext &BC) {
       OS << "             There are " << Function.getInstructionCount()
          << " number of instructions in this function.\n";
       OS << "             The edit distance for this function is: "
-         << Function.getEditDistance() << "\n\n";
+         << FunctionEditDistance.lookup(&Function) << "\n\n";
     }
   }
+  return Error::success();
 }
 
-void ReorderBasicBlocks::modifyFunctionLayout(BinaryFunction &BF,
+bool ReorderBasicBlocks::modifyFunctionLayout(BinaryFunction &BF,
                                               LayoutType Type,
                                               bool MinBranchClusters) const {
   if (BF.size() == 0 || Type == LT_NONE)
-    return;
+    return false;
 
   BinaryFunction::BasicBlockOrderType NewLayout;
   std::unique_ptr<ReorderAlgorithm> Algo;
 
   // Cannot do optimal layout without profile.
   if (Type != LT_REVERSE && !BF.hasValidProfile())
-    return;
+    return false;
 
   if (Type == LT_REVERSE) {
     Algo.reset(new ReverseReorderAlgorithm());
@@ -512,10 +520,10 @@ void ReorderBasicBlocks::modifyFunctionLayout(BinaryFunction &BF,
 
   Algo->reorderBasicBlocks(BF, NewLayout);
 
-  BF.updateBasicBlockLayout(NewLayout);
+  return BF.getLayout().update(NewLayout);
 }
 
-void FixupBranches::runOnFunctions(BinaryContext &BC) {
+Error FixupBranches::runOnFunctions(BinaryContext &BC) {
   for (auto &It : BC.getBinaryFunctions()) {
     BinaryFunction &Function = It.second;
     if (!BC.shouldEmit(Function) || !Function.isSimple())
@@ -523,15 +531,18 @@ void FixupBranches::runOnFunctions(BinaryContext &BC) {
 
     Function.fixBranches();
   }
+  return Error::success();
 }
 
-void FinalizeFunctions::runOnFunctions(BinaryContext &BC) {
+Error FinalizeFunctions::runOnFunctions(BinaryContext &BC) {
+  std::atomic<bool> HasFatal{false};
   ParallelUtilities::WorkFuncTy WorkFun = [&](BinaryFunction &BF) {
     if (!BF.finalizeCFIState()) {
       if (BC.HasRelocations) {
-        errs() << "BOLT-ERROR: unable to fix CFI state for function " << BF
-               << ". Exiting.\n";
-        exit(1);
+        BC.errs() << "BOLT-ERROR: unable to fix CFI state for function " << BF
+                  << ". Exiting.\n";
+        HasFatal = true;
+        return;
       }
       BF.setSimple(false);
       return;
@@ -550,23 +561,27 @@ void FinalizeFunctions::runOnFunctions(BinaryContext &BC) {
   ParallelUtilities::runOnEachFunction(
       BC, ParallelUtilities::SchedulingPolicy::SP_CONSTANT, WorkFun,
       SkipPredicate, "FinalizeFunctions");
+  if (HasFatal)
+    return createFatalBOLTError("finalize CFI state failure");
+  return Error::success();
 }
 
-void CheckLargeFunctions::runOnFunctions(BinaryContext &BC) {
+Error CheckLargeFunctions::runOnFunctions(BinaryContext &BC) {
   if (BC.HasRelocations)
-    return;
-
-  if (!opts::UpdateDebugSections)
-    return;
+    return Error::success();
 
   // If the function wouldn't fit, mark it as non-simple. Otherwise, we may emit
-  // incorrect debug info.
+  // incorrect meta data.
   ParallelUtilities::WorkFuncTy WorkFun = [&](BinaryFunction &BF) {
     uint64_t HotSize, ColdSize;
     std::tie(HotSize, ColdSize) =
         BC.calculateEmittedSize(BF, /*FixBranches=*/false);
-    if (HotSize > BF.getMaxSize())
+    if (HotSize > BF.getMaxSize()) {
+      if (opts::PrintLargeFunctions)
+        BC.outs() << "BOLT-INFO: " << BF << " size exceeds allocated space by "
+                  << (HotSize - BF.getMaxSize()) << " bytes\n";
       BF.setSimple(false);
+    }
   };
 
   ParallelUtilities::PredicateTy SkipFunc = [&](const BinaryFunction &BF) {
@@ -576,6 +591,8 @@ void CheckLargeFunctions::runOnFunctions(BinaryContext &BC) {
   ParallelUtilities::runOnEachFunction(
       BC, ParallelUtilities::SchedulingPolicy::SP_INST_LINEAR, WorkFun,
       SkipFunc, "CheckLargeFunctions");
+
+  return Error::success();
 }
 
 bool CheckLargeFunctions::shouldOptimize(const BinaryFunction &BF) const {
@@ -583,63 +600,59 @@ bool CheckLargeFunctions::shouldOptimize(const BinaryFunction &BF) const {
   return BF.isSimple() && !BF.isIgnored();
 }
 
-void LowerAnnotations::runOnFunctions(BinaryContext &BC) {
-  std::vector<std::pair<MCInst *, uint32_t>> PreservedOffsetAnnotations;
+Error LowerAnnotations::runOnFunctions(BinaryContext &BC) {
+  // Convert GnuArgsSize annotations into CFIs.
+  for (BinaryFunction *BF : BC.getAllBinaryFunctions()) {
+    for (FunctionFragment &FF : BF->getLayout().fragments()) {
+      // Reset at the start of the new fragment.
+      int64_t CurrentGnuArgsSize = 0;
 
-  for (auto &It : BC.getBinaryFunctions()) {
-    BinaryFunction &BF = It.second;
-    int64_t CurrentGnuArgsSize = 0;
-
-    // Have we crossed hot/cold border for split functions?
-    bool SeenCold = false;
-
-    for (BinaryBasicBlock *BB : BF.layout()) {
-      if (BB->isCold() && !SeenCold) {
-        SeenCold = true;
-        CurrentGnuArgsSize = 0;
-      }
-
-      // First convert GnuArgsSize annotations into CFIs. This may change instr
-      // pointers, so do it before recording ptrs for preserved annotations
-      if (BF.usesGnuArgsSize()) {
+      for (BinaryBasicBlock *const BB : FF) {
         for (auto II = BB->begin(); II != BB->end(); ++II) {
-          if (!BC.MIB->isInvoke(*II))
+          if (!BF->usesGnuArgsSize() || !BC.MIB->isInvoke(*II))
             continue;
-          const int64_t NewGnuArgsSize = BC.MIB->getGnuArgsSize(*II);
-          assert(NewGnuArgsSize >= 0 && "expected non-negative GNU_args_size");
-          if (NewGnuArgsSize != CurrentGnuArgsSize) {
-            auto InsertII = BF.addCFIInstruction(
-                BB, II,
-                MCCFIInstruction::createGnuArgsSize(nullptr, NewGnuArgsSize));
-            CurrentGnuArgsSize = NewGnuArgsSize;
-            II = std::next(InsertII);
-          }
-        }
-      }
 
-      // Now record preserved annotations separately and then strip annotations.
-      for (auto II = BB->begin(); II != BB->end(); ++II) {
-        if (BF.requiresAddressTranslation() && BC.MIB->getOffset(*II))
-          PreservedOffsetAnnotations.emplace_back(&(*II),
-                                                  *BC.MIB->getOffset(*II));
-        BC.MIB->stripAnnotations(*II);
+          const int64_t NewGnuArgsSize = BC.MIB->getGnuArgsSize(*II);
+          assert(NewGnuArgsSize >= 0 && "Expected non-negative GNU_args_size.");
+          if (NewGnuArgsSize == CurrentGnuArgsSize)
+            continue;
+
+          auto InsertII = BF->addCFIInstruction(
+              BB, II,
+              MCCFIInstruction::createGnuArgsSize(nullptr, NewGnuArgsSize));
+          CurrentGnuArgsSize = NewGnuArgsSize;
+          II = std::next(InsertII);
+        }
       }
     }
   }
-  for (BinaryFunction *BF : BC.getInjectedBinaryFunctions())
-    for (BinaryBasicBlock &BB : *BF)
-      for (MCInst &Instruction : BB)
-        BC.MIB->stripAnnotations(Instruction);
-
-  // Release all memory taken by annotations
-  BC.MIB->freeAnnotations();
-
-  // Reinsert preserved annotations we need during code emission.
-  for (const std::pair<MCInst *, uint32_t> &Item : PreservedOffsetAnnotations)
-    BC.MIB->setOffset(*Item.first, Item.second);
+  return Error::success();
 }
 
-namespace {
+// Check for dirty state in MCSymbol objects that might be a consequence
+// of running calculateEmittedSize() in parallel, during split functions
+// pass. If an inconsistent state is found (symbol already registered or
+// already defined), clean it.
+Error CleanMCState::runOnFunctions(BinaryContext &BC) {
+  MCContext &Ctx = *BC.Ctx;
+  for (const auto &SymMapEntry : Ctx.getSymbols()) {
+    const MCSymbol *S = SymMapEntry.second;
+    if (S->isDefined()) {
+      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: Symbol \"" << S->getName()
+                        << "\" is already defined\n");
+      const_cast<MCSymbol *>(S)->setUndefined();
+    }
+    if (S->isRegistered()) {
+      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: Symbol \"" << S->getName()
+                        << "\" is already registered\n");
+      const_cast<MCSymbol *>(S)->setIsRegistered(false);
+    }
+    LLVM_DEBUG(if (S->isVariable()) {
+      dbgs() << "BOLT-DEBUG: Symbol \"" << S->getName() << "\" is variable\n";
+    });
+  }
+  return Error::success();
+}
 
 // This peephole fixes jump instructions that jump to another basic
 // block with a single jump instruction, e.g.
@@ -654,14 +667,15 @@ namespace {
 // B0: ...
 //     jmp  B2   (or jcc B2)
 //
-uint64_t fixDoubleJumps(BinaryFunction &Function, bool MarkInvalid) {
+static uint64_t fixDoubleJumps(BinaryFunction &Function, bool MarkInvalid) {
   uint64_t NumDoubleJumps = 0;
 
   MCContext *Ctx = Function.getBinaryContext().Ctx.get();
   MCPlusBuilder *MIB = Function.getBinaryContext().MIB.get();
   for (BinaryBasicBlock &BB : Function) {
     auto checkAndPatch = [&](BinaryBasicBlock *Pred, BinaryBasicBlock *Succ,
-                             const MCSymbol *SuccSym) {
+                             const MCSymbol *SuccSym,
+                             std::optional<uint32_t> Offset) {
       // Ignore infinite loop jumps or fallthrough tail jumps.
       if (Pred == Succ || Succ == &BB)
         return false;
@@ -689,7 +703,7 @@ uint64_t fixDoubleJumps(BinaryFunction &Function, bool MarkInvalid) {
                    MIB->getTargetSymbol(*UncondBranch) == BB.getLabel()) {
           MIB->replaceBranchTarget(*UncondBranch, Succ->getLabel(), Ctx);
         } else if (!UncondBranch) {
-          assert(Function.getBasicBlockAfter(Pred, false) != Succ &&
+          assert(Function.getLayout().getBasicBlockAfter(Pred, false) != Succ &&
                  "Don't add an explicit jump to a fallthrough block.");
           Pred->addBranchInstruction(Succ);
         }
@@ -702,6 +716,11 @@ uint64_t fixDoubleJumps(BinaryFunction &Function, bool MarkInvalid) {
           Pred->removeSuccessor(&BB);
           Pred->eraseInstruction(Pred->findInstruction(Branch));
           Pred->addTailCallInstruction(SuccSym);
+          if (Offset) {
+            MCInst *TailCall = Pred->getLastNonPseudoInstr();
+            assert(TailCall);
+            MIB->setOffset(*TailCall, *Offset);
+          }
         } else {
           return false;
         }
@@ -744,7 +763,8 @@ uint64_t fixDoubleJumps(BinaryFunction &Function, bool MarkInvalid) {
       if (Pred->getSuccessor() == &BB ||
           (Pred->getConditionalSuccessor(true) == &BB && !IsTailCall) ||
           Pred->getConditionalSuccessor(false) == &BB)
-        if (checkAndPatch(Pred, Succ, SuccSym) && MarkInvalid)
+        if (checkAndPatch(Pred, Succ, SuccSym, MIB->getOffset(*Inst)) &&
+            MarkInvalid)
           BB.markValid(BB.pred_size() != 0 || BB.isLandingPad() ||
                        BB.isEntryPoint());
     }
@@ -752,7 +772,6 @@ uint64_t fixDoubleJumps(BinaryFunction &Function, bool MarkInvalid) {
 
   return NumDoubleJumps;
 }
-} // namespace
 
 bool SimplifyConditionalTailCalls::shouldRewriteBranch(
     const BinaryBasicBlock *PredBB, const MCInst &CondBranch,
@@ -793,7 +812,7 @@ bool SimplifyConditionalTailCalls::shouldRewriteBranch(
 
 uint64_t SimplifyConditionalTailCalls::fixTailCalls(BinaryFunction &BF) {
   // Need updated indices to correctly detect branch' direction.
-  BF.updateLayoutIndices();
+  BF.getLayout().updateLayoutIndices();
   BF.markUnreachableBlocks();
 
   MCPlusBuilder *MIB = BF.getBinaryContext().MIB.get();
@@ -810,7 +829,7 @@ uint64_t SimplifyConditionalTailCalls::fixTailCalls(BinaryFunction &BF) {
     return (BB->pred_size() != 0 || BB->isLandingPad() || BB->isEntryPoint());
   };
 
-  for (BinaryBasicBlock *BB : BF.layout()) {
+  for (BinaryBasicBlock *BB : BF.getLayout().blocks()) {
     // Locate BB with a single direct tail-call instruction.
     if (BB->getNumNonPseudos() != 1)
       continue;
@@ -849,6 +868,10 @@ uint64_t SimplifyConditionalTailCalls::fixTailCalls(BinaryFunction &BF) {
 
       assert(Result && "internal error analyzing conditional branch");
       assert(CondBranch && "conditional branch expected");
+
+      // Skip dynamic branches for now.
+      if (BF.getBinaryContext().MIB->isDynamicBranch(*CondBranch))
+        continue;
 
       // It's possible that PredBB is also a successor to BB that may have
       // been processed by a previous iteration of the SCTC loop, in which
@@ -889,11 +912,16 @@ uint64_t SimplifyConditionalTailCalls::fixTailCalls(BinaryFunction &BF) {
 
       // Annotate it, so "isCall" returns true for this jcc
       MIB->setConditionalTailCall(*CondBranch);
-      // Add info abount the conditional tail call frequency, otherwise this
+      // Add info about the conditional tail call frequency, otherwise this
       // info will be lost when we delete the associated BranchInfo entry
       auto &CTCAnnotation =
           MIB->getOrCreateAnnotationAs<uint64_t>(*CondBranch, "CTCTakenCount");
       CTCAnnotation = CTCTakenFreq;
+      // Preserve Offset annotation, used in BAT.
+      // Instr is a direct tail call instruction that was created when CTCs are
+      // first expanded, and has the original CTC offset set.
+      if (std::optional<uint32_t> Offset = MIB->getOffset(*Instr))
+        MIB->setOffset(*CondBranch, *Offset);
 
       // Remove the unused successor which may be eliminated later
       // if there are no other users.
@@ -927,9 +955,10 @@ uint64_t SimplifyConditionalTailCalls::fixTailCalls(BinaryFunction &BF) {
 
     // Find the next valid block.  Invalid blocks will be deleted
     // so they shouldn't be considered fallthrough targets.
-    const BinaryBasicBlock *NextBlock = BF.getBasicBlockAfter(PredBB, false);
+    const BinaryBasicBlock *NextBlock =
+        BF.getLayout().getBasicBlockAfter(PredBB, false);
     while (NextBlock && !isValid(NextBlock))
-      NextBlock = BF.getBasicBlockAfter(NextBlock, false);
+      NextBlock = BF.getLayout().getBasicBlockAfter(NextBlock, false);
 
     // Get the unconditional successor to this block.
     const BinaryBasicBlock *PredSucc = PredBB->getSuccessor();
@@ -974,9 +1003,9 @@ uint64_t SimplifyConditionalTailCalls::fixTailCalls(BinaryFunction &BF) {
   return NumLocalCTCs > 0;
 }
 
-void SimplifyConditionalTailCalls::runOnFunctions(BinaryContext &BC) {
+Error SimplifyConditionalTailCalls::runOnFunctions(BinaryContext &BC) {
   if (!BC.isX86())
-    return;
+    return Error::success();
 
   for (auto &It : BC.getBinaryFunctions()) {
     BinaryFunction &Function = It.second;
@@ -990,16 +1019,18 @@ void SimplifyConditionalTailCalls::runOnFunctions(BinaryContext &BC) {
     }
   }
 
-  outs() << "BOLT-INFO: SCTC: patched " << NumTailCallsPatched
-         << " tail calls (" << NumOrigForwardBranches << " forward)"
-         << " tail calls (" << NumOrigBackwardBranches << " backward)"
-         << " from a total of " << NumCandidateTailCalls << " while removing "
-         << NumDoubleJumps << " double jumps"
-         << " and removing " << DeletedBlocks << " basic blocks"
-         << " totalling " << DeletedBytes
-         << " bytes of code. CTCs total execution count is " << CTCExecCount
-         << " and the number of times CTCs are taken is " << CTCTakenCount
-         << ".\n";
+  if (NumTailCallsPatched)
+    BC.outs() << "BOLT-INFO: SCTC: patched " << NumTailCallsPatched
+              << " tail calls (" << NumOrigForwardBranches << " forward)"
+              << " tail calls (" << NumOrigBackwardBranches << " backward)"
+              << " from a total of " << NumCandidateTailCalls
+              << " while removing " << NumDoubleJumps << " double jumps"
+              << " and removing " << DeletedBlocks << " basic blocks"
+              << " totalling " << DeletedBytes
+              << " bytes of code. CTCs total execution count is "
+              << CTCExecCount << " and the number of times CTCs are taken is "
+              << CTCTakenCount << "\n";
+  return Error::success();
 }
 
 uint64_t ShortenInstructions::shortenInstructions(BinaryFunction &Function) {
@@ -1007,6 +1038,10 @@ uint64_t ShortenInstructions::shortenInstructions(BinaryFunction &Function) {
   const BinaryContext &BC = Function.getBinaryContext();
   for (BinaryBasicBlock &BB : Function) {
     for (MCInst &Inst : BB) {
+      // Skip shortening instructions with Size annotation.
+      if (BC.MIB->getSize(Inst))
+        continue;
+
       MCInst OriginalInst;
       if (opts::Verbosity > 2)
         OriginalInst = Inst;
@@ -1015,10 +1050,11 @@ uint64_t ShortenInstructions::shortenInstructions(BinaryFunction &Function) {
         continue;
 
       if (opts::Verbosity > 2) {
-        outs() << "BOLT-INFO: shortening:\nBOLT-INFO:    ";
-        BC.printInstruction(outs(), OriginalInst, 0, &Function);
-        outs() << "BOLT-INFO: to:";
-        BC.printInstruction(outs(), Inst, 0, &Function);
+        BC.scopeLock();
+        BC.outs() << "BOLT-INFO: shortening:\nBOLT-INFO:    ";
+        BC.printInstruction(BC.outs(), OriginalInst, 0, &Function);
+        BC.outs() << "BOLT-INFO: to:";
+        BC.printInstruction(BC.outs(), Inst, 0, &Function);
       }
 
       ++Count;
@@ -1028,17 +1064,20 @@ uint64_t ShortenInstructions::shortenInstructions(BinaryFunction &Function) {
   return Count;
 }
 
-void ShortenInstructions::runOnFunctions(BinaryContext &BC) {
+Error ShortenInstructions::runOnFunctions(BinaryContext &BC) {
   std::atomic<uint64_t> NumShortened{0};
   if (!BC.isX86())
-    return;
+    return Error::success();
 
   ParallelUtilities::runOnEachFunction(
       BC, ParallelUtilities::SchedulingPolicy::SP_INST_LINEAR,
       [&](BinaryFunction &BF) { NumShortened += shortenInstructions(BF); },
       nullptr, "ShortenInstructions");
 
-  outs() << "BOLT-INFO: " << NumShortened << " instructions were shortened\n";
+  if (NumShortened)
+    BC.outs() << "BOLT-INFO: " << NumShortened
+              << " instructions were shortened\n";
+  return Error::success();
 }
 
 void Peepholes::addTailcallTraps(BinaryFunction &Function) {
@@ -1047,10 +1086,9 @@ void Peepholes::addTailcallTraps(BinaryFunction &Function) {
     MCInst *Inst = BB.getLastNonPseudoInstr();
     if (Inst && MIB->isTailCall(*Inst) && MIB->isIndirectBranch(*Inst)) {
       MCInst Trap;
-      if (MIB->createTrap(Trap)) {
-        BB.addInstruction(Trap);
-        ++TailCallTraps;
-      }
+      MIB->createTrap(Trap);
+      BB.addInstruction(Trap);
+      ++TailCallTraps;
     }
   }
 }
@@ -1081,12 +1119,12 @@ void Peepholes::removeUselessCondBranches(BinaryFunction &Function) {
   }
 }
 
-void Peepholes::runOnFunctions(BinaryContext &BC) {
+Error Peepholes::runOnFunctions(BinaryContext &BC) {
   const char Opts =
       std::accumulate(opts::Peepholes.begin(), opts::Peepholes.end(), 0,
                       [](const char A, const PeepholeOpts B) { return A | B; });
   if (Opts == PEEP_NONE)
-    return;
+    return Error::success();
 
   for (auto &It : BC.getBinaryFunctions()) {
     BinaryFunction &Function = It.second;
@@ -1100,12 +1138,13 @@ void Peepholes::runOnFunctions(BinaryContext &BC) {
       assert(Function.validateCFG());
     }
   }
-  outs() << "BOLT-INFO: Peephole: " << NumDoubleJumps
-         << " double jumps patched.\n"
-         << "BOLT-INFO: Peephole: " << TailCallTraps
-         << " tail call traps inserted.\n"
-         << "BOLT-INFO: Peephole: " << NumUselessCondBranches
-         << " useless conditional branches removed.\n";
+  BC.outs() << "BOLT-INFO: Peephole: " << NumDoubleJumps
+            << " double jumps patched.\n"
+            << "BOLT-INFO: Peephole: " << TailCallTraps
+            << " tail call traps inserted.\n"
+            << "BOLT-INFO: Peephole: " << NumUselessCondBranches
+            << " useless conditional branches removed.\n";
+  return Error::success();
 }
 
 bool SimplifyRODataLoads::simplifyRODataLoads(BinaryFunction &BF) {
@@ -1117,7 +1156,7 @@ bool SimplifyRODataLoads::simplifyRODataLoads(BinaryFunction &BF) {
   uint64_t NumLocalLoadsFound = 0;
   uint64_t NumDynamicLocalLoadsFound = 0;
 
-  for (BinaryBasicBlock *BB : BF.layout()) {
+  for (BinaryBasicBlock *BB : BF.getLayout().blocks()) {
     for (MCInst &Inst : *BB) {
       unsigned Opcode = Inst.getOpcode();
       const MCInstrDesc &Desc = BC.MII->get(Opcode);
@@ -1160,7 +1199,7 @@ bool SimplifyRODataLoads::simplifyRODataLoads(BinaryFunction &BF) {
       // memory operand. We are only interested in read-only sections.
       ErrorOr<BinarySection &> DataSection =
           BC.getSectionForAddress(TargetAddress);
-      if (!DataSection || !DataSection->isReadOnly())
+      if (!DataSection || DataSection->isWritable())
         continue;
 
       if (BC.getRelocationAt(TargetAddress) ||
@@ -1190,21 +1229,23 @@ bool SimplifyRODataLoads::simplifyRODataLoads(BinaryFunction &BF) {
   return NumLocalLoadsSimplified > 0;
 }
 
-void SimplifyRODataLoads::runOnFunctions(BinaryContext &BC) {
+Error SimplifyRODataLoads::runOnFunctions(BinaryContext &BC) {
   for (auto &It : BC.getBinaryFunctions()) {
     BinaryFunction &Function = It.second;
     if (shouldOptimize(Function) && simplifyRODataLoads(Function))
       Modified.insert(&Function);
   }
 
-  outs() << "BOLT-INFO: simplified " << NumLoadsSimplified << " out of "
-         << NumLoadsFound << " loads from a statically computed address.\n"
-         << "BOLT-INFO: dynamic loads simplified: " << NumDynamicLoadsSimplified
-         << "\n"
-         << "BOLT-INFO: dynamic loads found: " << NumDynamicLoadsFound << "\n";
+  BC.outs() << "BOLT-INFO: simplified " << NumLoadsSimplified << " out of "
+            << NumLoadsFound << " loads from a statically computed address.\n"
+            << "BOLT-INFO: dynamic loads simplified: "
+            << NumDynamicLoadsSimplified << "\n"
+            << "BOLT-INFO: dynamic loads found: " << NumDynamicLoadsFound
+            << "\n";
+  return Error::success();
 }
 
-void AssignSections::runOnFunctions(BinaryContext &BC) {
+Error AssignSections::runOnFunctions(BinaryContext &BC) {
   for (BinaryFunction *Function : BC.getInjectedBinaryFunctions()) {
     Function->setCodeSectionName(BC.getInjectedCodeSectionName());
     Function->setColdCodeSectionName(BC.getInjectedColdCodeSectionName());
@@ -1212,7 +1253,7 @@ void AssignSections::runOnFunctions(BinaryContext &BC) {
 
   // In non-relocation mode functions have pre-assigned section names.
   if (!BC.HasRelocations)
-    return;
+    return Error::success();
 
   const bool UseColdSection =
       BC.NumProfiledFuncs > 0 ||
@@ -1225,8 +1266,7 @@ void AssignSections::runOnFunctions(BinaryContext &BC) {
       continue;
     }
 
-    if (!UseColdSection || Function.hasValidIndex() ||
-        Function.hasValidProfile())
+    if (!UseColdSection || Function.hasValidIndex())
       Function.setCodeSectionName(BC.getMainCodeSectionName());
     else
       Function.setCodeSectionName(BC.getColdCodeSectionName());
@@ -1234,9 +1274,10 @@ void AssignSections::runOnFunctions(BinaryContext &BC) {
     if (Function.isSplit())
       Function.setColdCodeSectionName(BC.getColdCodeSectionName());
   }
+  return Error::success();
 }
 
-void PrintProfileStats::runOnFunctions(BinaryContext &BC) {
+Error PrintProfileStats::runOnFunctions(BinaryContext &BC) {
   double FlowImbalanceMean = 0.0;
   size_t NumBlocksConsidered = 0;
   double WorstBias = 0.0;
@@ -1320,22 +1361,26 @@ void PrintProfileStats::runOnFunctions(BinaryContext &BC) {
   }
 
   // Report to user
-  outs() << format("BOLT-INFO: Profile bias score: %.4lf%% StDev: %.4lf%%\n",
-                   (100.0 * FlowImbalanceMean), (100.0 * FlowImbalanceVar));
+  BC.outs() << format("BOLT-INFO: Profile bias score: %.4lf%% StDev: %.4lf%%\n",
+                      (100.0 * FlowImbalanceMean), (100.0 * FlowImbalanceVar));
   if (WorstBiasFunc && opts::Verbosity >= 1) {
-    outs() << "Worst average bias observed in " << WorstBiasFunc->getPrintName()
-           << "\n";
+    BC.outs() << "Worst average bias observed in "
+              << WorstBiasFunc->getPrintName() << "\n";
     LLVM_DEBUG(WorstBiasFunc->dump());
   }
+  return Error::success();
 }
 
-void PrintProgramStats::runOnFunctions(BinaryContext &BC) {
+Error PrintProgramStats::runOnFunctions(BinaryContext &BC) {
   uint64_t NumRegularFunctions = 0;
   uint64_t NumStaleProfileFunctions = 0;
+  uint64_t NumAllStaleFunctions = 0;
+  uint64_t NumInferredFunctions = 0;
   uint64_t NumNonSimpleProfiledFunctions = 0;
   uint64_t NumUnknownControlFlowFunctions = 0;
   uint64_t TotalSampleCount = 0;
   uint64_t StaleSampleCount = 0;
+  uint64_t InferredSampleCount = 0;
   std::vector<const BinaryFunction *> ProfiledFunctions;
   const char *StaleFuncsHeader = "BOLT-INFO: Functions with stale profile:\n";
   for (auto &BFI : BC.getBinaryFunctions()) {
@@ -1345,9 +1390,19 @@ void PrintProgramStats::runOnFunctions(BinaryContext &BC) {
     if (Function.isPLTFunction())
       continue;
 
+    // Adjustment for BAT mode: the profile for BOLT split fragments is combined
+    // so only count the hot fragment.
+    const uint64_t Address = Function.getAddress();
+    bool IsHotParentOfBOLTSplitFunction = !Function.getFragments().empty() &&
+                                          BAT && BAT->isBATFunction(Address) &&
+                                          !BAT->fetchParentAddress(Address);
+
     ++NumRegularFunctions;
 
-    if (!Function.isSimple()) {
+    // In BOLTed binaries split functions are non-simple (due to non-relocation
+    // mode), but the original function is known to be simple and we have a
+    // valid profile for it.
+    if (!Function.isSimple() && !IsHotParentOfBOLTSplitFunction) {
       if (Function.hasProfile())
         ++NumNonSimpleProfiledFunctions;
       continue;
@@ -1357,7 +1412,7 @@ void PrintProgramStats::runOnFunctions(BinaryContext &BC) {
       if (opts::PrintUnknownCFG)
         Function.dump();
       else if (opts::PrintUnknown)
-        errs() << "function with unknown control flow: " << Function << '\n';
+        BC.errs() << "function with unknown control flow: " << Function << '\n';
 
       ++NumUnknownControlFlowFunctions;
     }
@@ -1370,89 +1425,132 @@ void PrintProgramStats::runOnFunctions(BinaryContext &BC) {
 
     if (Function.hasValidProfile()) {
       ProfiledFunctions.push_back(&Function);
+      if (Function.hasInferredProfile()) {
+        ++NumInferredFunctions;
+        InferredSampleCount += SampleCount;
+        ++NumAllStaleFunctions;
+      }
     } else {
       if (opts::ReportStaleFuncs) {
-        outs() << StaleFuncsHeader;
+        BC.outs() << StaleFuncsHeader;
         StaleFuncsHeader = "";
-        outs() << "  " << Function << '\n';
+        BC.outs() << "  " << Function << '\n';
       }
       ++NumStaleProfileFunctions;
       StaleSampleCount += SampleCount;
+      ++NumAllStaleFunctions;
     }
   }
   BC.NumProfiledFuncs = ProfiledFunctions.size();
+  BC.NumStaleProfileFuncs = NumStaleProfileFunctions;
 
   const size_t NumAllProfiledFunctions =
       ProfiledFunctions.size() + NumStaleProfileFunctions;
-  outs() << "BOLT-INFO: " << NumAllProfiledFunctions << " out of "
-         << NumRegularFunctions << " functions in the binary ("
-         << format("%.1f", NumAllProfiledFunctions /
-                               (float)NumRegularFunctions * 100.0f)
-         << "%) have non-empty execution profile\n";
+  BC.outs() << "BOLT-INFO: " << NumAllProfiledFunctions << " out of "
+            << NumRegularFunctions << " functions in the binary ("
+            << format("%.1f", NumAllProfiledFunctions /
+                                  (float)NumRegularFunctions * 100.0f)
+            << "%) have non-empty execution profile\n";
   if (NumNonSimpleProfiledFunctions) {
-    outs() << "BOLT-INFO: " << NumNonSimpleProfiledFunctions << " function"
-           << (NumNonSimpleProfiledFunctions == 1 ? "" : "s")
-           << " with profile could not be optimized\n";
+    BC.outs() << "BOLT-INFO: " << NumNonSimpleProfiledFunctions << " function"
+              << (NumNonSimpleProfiledFunctions == 1 ? "" : "s")
+              << " with profile could not be optimized\n";
   }
-  if (NumStaleProfileFunctions) {
+  if (NumAllStaleFunctions) {
     const float PctStale =
-        NumStaleProfileFunctions / (float)NumAllProfiledFunctions * 100.0f;
+        NumAllStaleFunctions / (float)NumAllProfiledFunctions * 100.0f;
+    const float PctStaleFuncsWithEqualBlockCount =
+        (float)BC.Stats.NumStaleFuncsWithEqualBlockCount /
+        NumAllStaleFunctions * 100.0f;
+    const float PctStaleBlocksWithEqualIcount =
+        (float)BC.Stats.NumStaleBlocksWithEqualIcount /
+        BC.Stats.NumStaleBlocks * 100.0f;
     auto printErrorOrWarning = [&]() {
       if (PctStale > opts::StaleThreshold)
-        errs() << "BOLT-ERROR: ";
+        BC.errs() << "BOLT-ERROR: ";
       else
-        errs() << "BOLT-WARNING: ";
+        BC.errs() << "BOLT-WARNING: ";
     };
     printErrorOrWarning();
-    errs() << NumStaleProfileFunctions
-           << format(" (%.1f%% of all profiled)", PctStale) << " function"
-           << (NumStaleProfileFunctions == 1 ? "" : "s")
-           << " have invalid (possibly stale) profile."
-              " Use -report-stale to see the list.\n";
+    BC.errs() << NumAllStaleFunctions
+              << format(" (%.1f%% of all profiled)", PctStale) << " function"
+              << (NumAllStaleFunctions == 1 ? "" : "s")
+              << " have invalid (possibly stale) profile."
+                 " Use -report-stale to see the list.\n";
     if (TotalSampleCount > 0) {
       printErrorOrWarning();
-      errs() << StaleSampleCount << " out of " << TotalSampleCount
-             << " samples in the binary ("
-             << format("%.1f", ((100.0f * StaleSampleCount) / TotalSampleCount))
-             << "%) belong to functions with invalid"
-                " (possibly stale) profile.\n";
+      BC.errs() << (StaleSampleCount + InferredSampleCount) << " out of "
+                << TotalSampleCount << " samples in the binary ("
+                << format("%.1f",
+                          ((100.0f * (StaleSampleCount + InferredSampleCount)) /
+                           TotalSampleCount))
+                << "%) belong to functions with invalid"
+                   " (possibly stale) profile.\n";
     }
+    BC.outs() << "BOLT-INFO: " << BC.Stats.NumStaleFuncsWithEqualBlockCount
+              << " stale function"
+              << (BC.Stats.NumStaleFuncsWithEqualBlockCount == 1 ? "" : "s")
+              << format(" (%.1f%% of all stale)",
+                        PctStaleFuncsWithEqualBlockCount)
+              << " have matching block count.\n";
+    BC.outs() << "BOLT-INFO: " << BC.Stats.NumStaleBlocksWithEqualIcount
+              << " stale block"
+              << (BC.Stats.NumStaleBlocksWithEqualIcount == 1 ? "" : "s")
+              << format(" (%.1f%% of all stale)", PctStaleBlocksWithEqualIcount)
+              << " have matching icount.\n";
     if (PctStale > opts::StaleThreshold) {
-      errs() << "BOLT-ERROR: stale functions exceed specified threshold of "
-             << opts::StaleThreshold << "%. Exiting.\n";
-      exit(1);
+      return createFatalBOLTError(
+          Twine("BOLT-ERROR: stale functions exceed specified threshold of ") +
+          Twine(opts::StaleThreshold.getValue()) + Twine("%. Exiting.\n"));
     }
+  }
+  if (NumInferredFunctions) {
+    BC.outs() << format(
+        "BOLT-INFO: inferred profile for %d (%.2f%% of profiled, "
+        "%.2f%% of stale) functions responsible for %.2f%% samples"
+        " (%zu out of %zu)\n",
+        NumInferredFunctions,
+        100.0 * NumInferredFunctions / NumAllProfiledFunctions,
+        100.0 * NumInferredFunctions / NumAllStaleFunctions,
+        100.0 * InferredSampleCount / TotalSampleCount, InferredSampleCount,
+        TotalSampleCount);
+    BC.outs() << format(
+        "BOLT-INFO: inference found an exact match for %.2f%% of basic blocks"
+        " (%zu out of %zu stale) responsible for %.2f%% samples"
+        " (%zu out of %zu stale)\n",
+        100.0 * BC.Stats.NumMatchedBlocks / BC.Stats.NumStaleBlocks,
+        BC.Stats.NumMatchedBlocks, BC.Stats.NumStaleBlocks,
+        100.0 * BC.Stats.MatchedSampleCount / BC.Stats.StaleSampleCount,
+        BC.Stats.MatchedSampleCount, BC.Stats.StaleSampleCount);
   }
 
   if (const uint64_t NumUnusedObjects = BC.getNumUnusedProfiledObjects()) {
-    outs() << "BOLT-INFO: profile for " << NumUnusedObjects
-           << " objects was ignored\n";
+    BC.outs() << "BOLT-INFO: profile for " << NumUnusedObjects
+              << " objects was ignored\n";
   }
 
   if (ProfiledFunctions.size() > 10) {
     if (opts::Verbosity >= 1) {
-      outs() << "BOLT-INFO: top called functions are:\n";
-      std::sort(ProfiledFunctions.begin(), ProfiledFunctions.end(),
-                [](const BinaryFunction *A, const BinaryFunction *B) {
-                  return B->getExecutionCount() < A->getExecutionCount();
-                });
+      BC.outs() << "BOLT-INFO: top called functions are:\n";
+      llvm::sort(ProfiledFunctions,
+                 [](const BinaryFunction *A, const BinaryFunction *B) {
+                   return B->getExecutionCount() < A->getExecutionCount();
+                 });
       auto SFI = ProfiledFunctions.begin();
       auto SFIend = ProfiledFunctions.end();
       for (unsigned I = 0u; I < opts::TopCalledLimit && SFI != SFIend;
            ++SFI, ++I)
-        outs() << "  " << **SFI << " : " << (*SFI)->getExecutionCount() << '\n';
+        BC.outs() << "  " << **SFI << " : " << (*SFI)->getExecutionCount()
+                  << '\n';
     }
   }
 
-  if (!opts::PrintSortedBy.empty() &&
-      std::find(opts::PrintSortedBy.begin(), opts::PrintSortedBy.end(),
-                DynoStats::FIRST_DYNO_STAT) == opts::PrintSortedBy.end()) {
-
-    std::vector<const BinaryFunction *> Functions;
+  if (!opts::PrintSortedBy.empty()) {
+    std::vector<BinaryFunction *> Functions;
     std::map<const BinaryFunction *, DynoStats> Stats;
 
-    for (const auto &BFI : BC.getBinaryFunctions()) {
-      const BinaryFunction &BF = BFI.second;
+    for (auto &BFI : BC.getBinaryFunctions()) {
+      BinaryFunction &BF = BFI.second;
       if (shouldOptimize(BF) && BF.hasValidProfile()) {
         Functions.push_back(&BF);
         Stats.emplace(&BF, getDynoStats(BF));
@@ -1460,110 +1558,114 @@ void PrintProgramStats::runOnFunctions(BinaryContext &BC) {
     }
 
     const bool SortAll =
-        std::find(opts::PrintSortedBy.begin(), opts::PrintSortedBy.end(),
-                  DynoStats::LAST_DYNO_STAT) != opts::PrintSortedBy.end();
+        llvm::is_contained(opts::PrintSortedBy, DynoStats::LAST_DYNO_STAT);
 
     const bool Ascending =
         opts::DynoStatsSortOrderOpt == opts::DynoStatsSortOrder::Ascending;
 
-    if (SortAll) {
-      std::stable_sort(Functions.begin(), Functions.end(),
-                       [Ascending, &Stats](const BinaryFunction *A,
-                                           const BinaryFunction *B) {
-                         return Ascending ? Stats.at(A) < Stats.at(B)
-                                          : Stats.at(B) < Stats.at(A);
-                       });
-    } else {
-      std::stable_sort(
-          Functions.begin(), Functions.end(),
-          [Ascending, &Stats](const BinaryFunction *A,
-                              const BinaryFunction *B) {
-            const DynoStats &StatsA = Stats.at(A);
-            const DynoStats &StatsB = Stats.at(B);
-            return Ascending ? StatsA.lessThan(StatsB, opts::PrintSortedBy)
-                             : StatsB.lessThan(StatsA, opts::PrintSortedBy);
-          });
-    }
+    std::function<bool(const DynoStats &, const DynoStats &)>
+        DynoStatsComparator =
+            SortAll ? [](const DynoStats &StatsA,
+                         const DynoStats &StatsB) { return StatsA < StatsB; }
+                    : [](const DynoStats &StatsA, const DynoStats &StatsB) {
+                        return StatsA.lessThan(StatsB, opts::PrintSortedBy);
+                      };
 
-    outs() << "BOLT-INFO: top functions sorted by ";
+    llvm::stable_sort(Functions,
+                      [Ascending, &Stats, DynoStatsComparator](
+                          const BinaryFunction *A, const BinaryFunction *B) {
+                        auto StatsItr = Stats.find(A);
+                        assert(StatsItr != Stats.end());
+                        const DynoStats &StatsA = StatsItr->second;
+
+                        StatsItr = Stats.find(B);
+                        assert(StatsItr != Stats.end());
+                        const DynoStats &StatsB = StatsItr->second;
+
+                        return Ascending ? DynoStatsComparator(StatsA, StatsB)
+                                         : DynoStatsComparator(StatsB, StatsA);
+                      });
+
+    BC.outs() << "BOLT-INFO: top functions sorted by ";
     if (SortAll) {
-      outs() << "dyno stats";
+      BC.outs() << "dyno stats";
     } else {
-      outs() << "(";
+      BC.outs() << "(";
       bool PrintComma = false;
       for (const DynoStats::Category Category : opts::PrintSortedBy) {
         if (PrintComma)
-          outs() << ", ";
-        outs() << DynoStats::Description(Category);
+          BC.outs() << ", ";
+        BC.outs() << DynoStats::Description(Category);
         PrintComma = true;
       }
-      outs() << ")";
+      BC.outs() << ")";
     }
 
-    outs() << " are:\n";
+    BC.outs() << " are:\n";
     auto SFI = Functions.begin();
     for (unsigned I = 0; I < 100 && SFI != Functions.end(); ++SFI, ++I) {
       const DynoStats Stats = getDynoStats(**SFI);
-      outs() << "  " << **SFI;
+      BC.outs() << "  " << **SFI;
       if (!SortAll) {
-        outs() << " (";
+        BC.outs() << " (";
         bool PrintComma = false;
         for (const DynoStats::Category Category : opts::PrintSortedBy) {
           if (PrintComma)
-            outs() << ", ";
-          outs() << dynoStatsOptName(Category) << "=" << Stats[Category];
+            BC.outs() << ", ";
+          BC.outs() << dynoStatsOptName(Category) << "=" << Stats[Category];
           PrintComma = true;
         }
-        outs() << ")";
+        BC.outs() << ")";
       }
-      outs() << "\n";
+      BC.outs() << "\n";
     }
   }
 
   if (!BC.TrappedFunctions.empty()) {
-    errs() << "BOLT-WARNING: " << BC.TrappedFunctions.size() << " function"
-           << (BC.TrappedFunctions.size() > 1 ? "s" : "")
-           << " will trap on entry. Use -trap-avx512=0 to disable"
-              " traps.";
+    BC.errs() << "BOLT-WARNING: " << BC.TrappedFunctions.size() << " function"
+              << (BC.TrappedFunctions.size() > 1 ? "s" : "")
+              << " will trap on entry. Use -trap-avx512=0 to disable"
+                 " traps.";
     if (opts::Verbosity >= 1 || BC.TrappedFunctions.size() <= 5) {
-      errs() << '\n';
+      BC.errs() << '\n';
       for (const BinaryFunction *Function : BC.TrappedFunctions)
-        errs() << "  " << *Function << '\n';
+        BC.errs() << "  " << *Function << '\n';
     } else {
-      errs() << " Use -v=1 to see the list.\n";
+      BC.errs() << " Use -v=1 to see the list.\n";
     }
   }
 
   // Print information on missed macro-fusion opportunities seen on input.
-  if (BC.MissedMacroFusionPairs) {
-    outs() << "BOLT-INFO: the input contains " << BC.MissedMacroFusionPairs
-           << " (dynamic count : " << BC.MissedMacroFusionExecCount
-           << ") opportunities for macro-fusion optimization";
+  if (BC.Stats.MissedMacroFusionPairs) {
+    BC.outs() << format(
+        "BOLT-INFO: the input contains %zu (dynamic count : %zu)"
+        " opportunities for macro-fusion optimization",
+        BC.Stats.MissedMacroFusionPairs, BC.Stats.MissedMacroFusionExecCount);
     switch (opts::AlignMacroOpFusion) {
     case MFT_NONE:
-      outs() << ". Use -align-macro-fusion to fix.\n";
+      BC.outs() << ". Use -align-macro-fusion to fix.\n";
       break;
     case MFT_HOT:
-      outs() << ". Will fix instances on a hot path.\n";
+      BC.outs() << ". Will fix instances on a hot path.\n";
       break;
     case MFT_ALL:
-      outs() << " that are going to be fixed\n";
+      BC.outs() << " that are going to be fixed\n";
       break;
     }
   }
 
   // Collect and print information about suboptimal code layout on input.
   if (opts::ReportBadLayout) {
-    std::vector<const BinaryFunction *> SuboptimalFuncs;
+    std::vector<BinaryFunction *> SuboptimalFuncs;
     for (auto &BFI : BC.getBinaryFunctions()) {
-      const BinaryFunction &BF = BFI.second;
+      BinaryFunction &BF = BFI.second;
       if (!BF.hasValidProfile())
         continue;
 
       const uint64_t HotThreshold =
           std::max<uint64_t>(BF.getKnownExecutionCount(), 1);
       bool HotSeen = false;
-      for (const BinaryBasicBlock *BB : BF.rlayout()) {
+      for (const BinaryBasicBlock *BB : BF.getLayout().rblocks()) {
         if (!HotSeen && BB->getKnownExecutionCount() > HotThreshold) {
           HotSeen = true;
           continue;
@@ -1576,40 +1678,45 @@ void PrintProgramStats::runOnFunctions(BinaryContext &BC) {
     }
 
     if (!SuboptimalFuncs.empty()) {
-      std::sort(SuboptimalFuncs.begin(), SuboptimalFuncs.end(),
-                [](const BinaryFunction *A, const BinaryFunction *B) {
-                  return A->getKnownExecutionCount() / A->getSize() >
-                         B->getKnownExecutionCount() / B->getSize();
-                });
+      llvm::sort(SuboptimalFuncs,
+                 [](const BinaryFunction *A, const BinaryFunction *B) {
+                   return A->getKnownExecutionCount() / A->getSize() >
+                          B->getKnownExecutionCount() / B->getSize();
+                 });
 
-      outs() << "BOLT-INFO: " << SuboptimalFuncs.size()
-             << " functions have "
-                "cold code in the middle of hot code. Top functions are:\n";
+      BC.outs() << "BOLT-INFO: " << SuboptimalFuncs.size()
+                << " functions have "
+                   "cold code in the middle of hot code. Top functions are:\n";
       for (unsigned I = 0;
            I < std::min(static_cast<size_t>(opts::ReportBadLayout),
                         SuboptimalFuncs.size());
            ++I)
-        SuboptimalFuncs[I]->print(outs());
+        SuboptimalFuncs[I]->print(BC.outs());
     }
   }
 
   if (NumUnknownControlFlowFunctions) {
-    outs() << "BOLT-INFO: " << NumUnknownControlFlowFunctions
-           << " functions have instructions with unknown control flow";
+    BC.outs() << "BOLT-INFO: " << NumUnknownControlFlowFunctions
+              << " functions have instructions with unknown control flow";
     if (!opts::PrintUnknown)
-      outs() << ". Use -print-unknown to see the list.";
-    outs() << '\n';
+      BC.outs() << ". Use -print-unknown to see the list.";
+    BC.outs() << '\n';
   }
+  return Error::success();
 }
 
-void InstructionLowering::runOnFunctions(BinaryContext &BC) {
+Error InstructionLowering::runOnFunctions(BinaryContext &BC) {
   for (auto &BFI : BC.getBinaryFunctions())
     for (BinaryBasicBlock &BB : BFI.second)
       for (MCInst &Instruction : BB)
         BC.MIB->lowerTailCall(Instruction);
+  return Error::success();
 }
 
-void StripRepRet::runOnFunctions(BinaryContext &BC) {
+Error StripRepRet::runOnFunctions(BinaryContext &BC) {
+  if (!BC.isX86())
+    return Error::success();
+
   uint64_t NumPrefixesRemoved = 0;
   uint64_t NumBytesSaved = 0;
   for (auto &BFI : BC.getBinaryFunctions()) {
@@ -1625,15 +1732,16 @@ void StripRepRet::runOnFunctions(BinaryContext &BC) {
   }
 
   if (NumBytesSaved)
-    outs() << "BOLT-INFO: removed " << NumBytesSaved
-           << " 'repz' prefixes"
-              " with estimated execution count of "
-           << NumPrefixesRemoved << " times.\n";
+    BC.outs() << "BOLT-INFO: removed " << NumBytesSaved
+              << " 'repz' prefixes"
+                 " with estimated execution count of "
+              << NumPrefixesRemoved << " times.\n";
+  return Error::success();
 }
 
-void InlineMemcpy::runOnFunctions(BinaryContext &BC) {
+Error InlineMemcpy::runOnFunctions(BinaryContext &BC) {
   if (!BC.isX86())
-    return;
+    return Error::success();
 
   uint64_t NumInlined = 0;
   uint64_t NumInlinedDyno = 0;
@@ -1672,12 +1780,13 @@ void InlineMemcpy::runOnFunctions(BinaryContext &BC) {
   }
 
   if (NumInlined) {
-    outs() << "BOLT-INFO: inlined " << NumInlined << " memcpy() calls";
+    BC.outs() << "BOLT-INFO: inlined " << NumInlined << " memcpy() calls";
     if (NumInlinedDyno)
-      outs() << ". The calls were executed " << NumInlinedDyno
-             << " times based on profile.";
-    outs() << '\n';
+      BC.outs() << ". The calls were executed " << NumInlinedDyno
+                << " times based on profile.";
+    BC.outs() << '\n';
   }
+  return Error::success();
 }
 
 bool SpecializeMemcpy1::shouldOptimize(const BinaryFunction &Function) const {
@@ -1718,9 +1827,9 @@ std::set<size_t> SpecializeMemcpy1::getCallSitesToOptimize(
   return Sites;
 }
 
-void SpecializeMemcpy1::runOnFunctions(BinaryContext &BC) {
+Error SpecializeMemcpy1::runOnFunctions(BinaryContext &BC) {
   if (!BC.isX86())
-    return;
+    return Error::success();
 
   uint64_t NumSpecialized = 0;
   uint64_t NumSpecializedDyno = 0;
@@ -1772,8 +1881,8 @@ void SpecializeMemcpy1::runOnFunctions(BinaryContext &BC) {
           assert(NextBB && "unexpected call to memcpy() with no return");
         }
 
-        BinaryBasicBlock *MemcpyBB =
-            Function.addBasicBlock(CurBB->getInputOffset());
+        BinaryBasicBlock *MemcpyBB = Function.addBasicBlock();
+        MemcpyBB->setOffset(CurBB->getInputOffset());
         InstructionListType CmpJCC =
             BC.MIB->createCmpJE(BC.MIB->getIntArgRegister(2), 1,
                                 OneByteMemcpyBB->getLabel(), BC.Ctx.get());
@@ -1805,13 +1914,14 @@ void SpecializeMemcpy1::runOnFunctions(BinaryContext &BC) {
   }
 
   if (NumSpecialized) {
-    outs() << "BOLT-INFO: specialized " << NumSpecialized
-           << " memcpy() call sites for size 1";
+    BC.outs() << "BOLT-INFO: specialized " << NumSpecialized
+              << " memcpy() call sites for size 1";
     if (NumSpecializedDyno)
-      outs() << ". The calls were executed " << NumSpecializedDyno
-             << " times based on profile.";
-    outs() << '\n';
+      BC.outs() << ". The calls were executed " << NumSpecializedDyno
+                << " times based on profile.";
+    BC.outs() << '\n';
   }
+  return Error::success();
 }
 
 void RemoveNops::runOnFunction(BinaryFunction &BF) {
@@ -1825,7 +1935,7 @@ void RemoveNops::runOnFunction(BinaryFunction &BF) {
   }
 }
 
-void RemoveNops::runOnFunctions(BinaryContext &BC) {
+Error RemoveNops::runOnFunctions(BinaryContext &BC) {
   ParallelUtilities::WorkFuncTy WorkFun = [&](BinaryFunction &BF) {
     runOnFunction(BF);
   };
@@ -1837,6 +1947,7 @@ void RemoveNops::runOnFunctions(BinaryContext &BC) {
   ParallelUtilities::runOnEachFunction(
       BC, ParallelUtilities::SchedulingPolicy::SP_INST_LINEAR, WorkFun,
       SkipFunc, "RemoveNops");
+  return Error::success();
 }
 
 } // namespace bolt

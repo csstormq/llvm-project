@@ -53,7 +53,7 @@ static void CollectThreadLeaks(ThreadContextBase *tctx_base, void *arg) {
 
 // Disabled on Mac because lldb test TestTsanBasic fails:
 // https://reviews.llvm.org/D112603#3163158
-#if !SANITIZER_GO && !SANITIZER_MAC
+#if !SANITIZER_GO && !SANITIZER_APPLE
 static void ReportIgnoresEnabled(ThreadContext *tctx, IgnoreSet *set) {
   if (tctx->tid == kMainTid) {
     Printf("ThreadSanitizer: main thread finished with ignores enabled\n");
@@ -160,6 +160,10 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
   }
   Free(thr->tctx->sync);
 
+#if !SANITIZER_GO
+  thr->is_inited = true;
+#endif
+
   uptr stk_addr = 0;
   uptr stk_size = 0;
   uptr tls_addr = 0;
@@ -200,15 +204,11 @@ void ThreadStart(ThreadState *thr, Tid tid, tid_t os_id,
 }
 
 void ThreadContext::OnStarted(void *arg) {
-  thr = static_cast<ThreadState *>(arg);
   DPrintf("#%d: ThreadStart\n", tid);
-  new (thr) ThreadState(tid);
+  thr = new (arg) ThreadState(tid);
   if (common_flags()->detect_deadlocks)
     thr->dd_lt = ctx->dd->CreateLogicalThread(tid);
   thr->tctx = this;
-#if !SANITIZER_GO
-  thr->is_inited = true;
-#endif
 }
 
 void ThreadFinish(ThreadState *thr) {

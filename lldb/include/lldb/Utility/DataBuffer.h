@@ -8,7 +8,6 @@
 
 #ifndef LLDB_UTILITY_DATABUFFER_H
 #define LLDB_UTILITY_DATABUFFER_H
-#if defined(__cplusplus)
 
 #include <cstdint>
 #include <cstring>
@@ -96,7 +95,7 @@ public:
   /// and be downcast to the DataBuffer pure virtual interface. The virtual
   /// destructor ensures that destructing the base class will destruct the
   /// class that inherited from it correctly.
-  virtual ~WritableDataBuffer() = default;
+  ~WritableDataBuffer() override = default;
 
   using DataBuffer::GetBytes;
   using DataBuffer::GetData;
@@ -149,5 +148,4 @@ private:
 
 } // namespace lldb_private
 
-#endif /// #if defined(__cplusplus)
 #endif // LLDB_UTILITY_DATABUFFER_H

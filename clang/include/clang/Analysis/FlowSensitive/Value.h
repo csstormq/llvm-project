@@ -15,6 +15,7 @@
 #define LLVM_CLANG_ANALYSIS_FLOWSENSITIVE_VALUE_H
 
 #include "clang/AST/Decl.h"
+#include "clang/Analysis/FlowSensitive/Formula.h"
 #include "clang/Analysis/FlowSensitive/StorageLocation.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringMap.h"
@@ -26,117 +27,133 @@ namespace clang {
 namespace dataflow {
 
 /// Base class for all values computed by abstract interpretation.
+///
+/// Don't use `Value` instances by value. All `Value` instances are allocated
+/// and owned by `DataflowAnalysisContext`.
 class Value {
 public:
   enum class Kind {
     Integer,
-    Reference,
     Pointer,
-    Struct,
 
-    // Synthetic boolean values are either atomic values or composites that
-    // represent conjunctions, disjunctions, and negations.
+    // TODO: Top values should not be need to be type-specific.
+    TopBool,
     AtomicBool,
-    Conjunction,
-    Disjunction,
-    Negation
+    FormulaBool,
   };
 
   explicit Value(Kind ValKind) : ValKind(ValKind) {}
+
+  // Non-copyable because addresses of values are used as their identities
+  // throughout framework and user code. The framework is responsible for
+  // construction and destruction of values.
+  Value(const Value &) = delete;
+  Value &operator=(const Value &) = delete;
 
   virtual ~Value() = default;
 
   Kind getKind() const { return ValKind; }
 
+  /// Returns the value of the synthetic property with the given `Name` or null
+  /// if the property isn't assigned a value.
+  Value *getProperty(llvm::StringRef Name) const {
+    return Properties.lookup(Name);
+  }
+
+  /// Assigns `Val` as the value of the synthetic property with the given
+  /// `Name`.
+  ///
+  /// Properties may not be set on `RecordValue`s; use synthetic fields instead
+  /// (for details, see documentation for `RecordStorageLocation`).
+  void setProperty(llvm::StringRef Name, Value &Val) {
+    Properties.insert_or_assign(Name, &Val);
+  }
+
+  llvm::iterator_range<llvm::StringMap<Value *>::const_iterator>
+  properties() const {
+    return {Properties.begin(), Properties.end()};
+  }
+
 private:
   Kind ValKind;
+  llvm::StringMap<Value *> Properties;
 };
+
+/// An equivalence relation for values. It obeys reflexivity, symmetry and
+/// transitivity. It does *not* include comparison of `Properties`.
+///
+/// Computes equivalence for these subclasses:
+/// * PointerValue -- pointee locations are equal. Does not compute deep
+///   equality of `Value` at said location.
+/// * TopBoolValue -- both are `TopBoolValue`s.
+///
+/// Otherwise, falls back to pointer equality.
+bool areEquivalentValues(const Value &Val1, const Value &Val2);
 
 /// Models a boolean.
 class BoolValue : public Value {
+  const Formula *F;
+
 public:
-  explicit BoolValue(Kind ValueKind) : Value(ValueKind) {}
+  explicit BoolValue(Kind ValueKind, const Formula &F)
+      : Value(ValueKind), F(&F) {}
 
   static bool classof(const Value *Val) {
-    return Val->getKind() == Kind::AtomicBool ||
-           Val->getKind() == Kind::Conjunction ||
-           Val->getKind() == Kind::Disjunction ||
-           Val->getKind() == Kind::Negation;
+    return Val->getKind() == Kind::TopBool ||
+           Val->getKind() == Kind::AtomicBool ||
+           Val->getKind() == Kind::FormulaBool;
   }
+
+  const Formula &formula() const { return *F; }
+};
+
+/// A TopBoolValue represents a boolean that is explicitly unconstrained.
+///
+/// This is equivalent to an AtomicBoolValue that does not appear anywhere
+/// else in a system of formula.
+/// Knowing the value is unconstrained is useful when e.g. reasoning about
+/// convergence.
+class TopBoolValue final : public BoolValue {
+public:
+  TopBoolValue(const Formula &F) : BoolValue(Kind::TopBool, F) {
+    assert(F.kind() == Formula::AtomRef);
+  }
+
+  static bool classof(const Value *Val) {
+    return Val->getKind() == Kind::TopBool;
+  }
+
+  Atom getAtom() const { return formula().getAtom(); }
 };
 
 /// Models an atomic boolean.
-class AtomicBoolValue : public BoolValue {
+///
+/// FIXME: Merge this class into FormulaBoolValue.
+///        When we want to specify atom identity, use Atom.
+class AtomicBoolValue final : public BoolValue {
 public:
-  explicit AtomicBoolValue() : BoolValue(Kind::AtomicBool) {}
+  explicit AtomicBoolValue(const Formula &F) : BoolValue(Kind::AtomicBool, F) {
+    assert(F.kind() == Formula::AtomRef);
+  }
 
   static bool classof(const Value *Val) {
     return Val->getKind() == Kind::AtomicBool;
   }
+
+  Atom getAtom() const { return formula().getAtom(); }
 };
 
-/// Models a boolean conjunction.
-// FIXME: Consider representing binary and unary boolean operations similar
-// to how they are represented in the AST. This might become more pressing
-// when such operations need to be added for other data types.
-class ConjunctionValue : public BoolValue {
+/// Models a compound boolean formula.
+class FormulaBoolValue final : public BoolValue {
 public:
-  explicit ConjunctionValue(BoolValue &LeftSubVal, BoolValue &RightSubVal)
-      : BoolValue(Kind::Conjunction), LeftSubVal(LeftSubVal),
-        RightSubVal(RightSubVal) {}
-
-  static bool classof(const Value *Val) {
-    return Val->getKind() == Kind::Conjunction;
+  explicit FormulaBoolValue(const Formula &F)
+      : BoolValue(Kind::FormulaBool, F) {
+    assert(F.kind() != Formula::AtomRef && "For now, use AtomicBoolValue");
   }
 
-  /// Returns the left sub-value of the conjunction.
-  BoolValue &getLeftSubValue() const { return LeftSubVal; }
-
-  /// Returns the right sub-value of the conjunction.
-  BoolValue &getRightSubValue() const { return RightSubVal; }
-
-private:
-  BoolValue &LeftSubVal;
-  BoolValue &RightSubVal;
-};
-
-/// Models a boolean disjunction.
-class DisjunctionValue : public BoolValue {
-public:
-  explicit DisjunctionValue(BoolValue &LeftSubVal, BoolValue &RightSubVal)
-      : BoolValue(Kind::Disjunction), LeftSubVal(LeftSubVal),
-        RightSubVal(RightSubVal) {}
-
   static bool classof(const Value *Val) {
-    return Val->getKind() == Kind::Disjunction;
+    return Val->getKind() == Kind::FormulaBool;
   }
-
-  /// Returns the left sub-value of the disjunction.
-  BoolValue &getLeftSubValue() const { return LeftSubVal; }
-
-  /// Returns the right sub-value of the disjunction.
-  BoolValue &getRightSubValue() const { return RightSubVal; }
-
-private:
-  BoolValue &LeftSubVal;
-  BoolValue &RightSubVal;
-};
-
-/// Models a boolean negation.
-class NegationValue : public BoolValue {
-public:
-  explicit NegationValue(BoolValue &SubVal)
-      : BoolValue(Kind::Negation), SubVal(SubVal) {}
-
-  static bool classof(const Value *Val) {
-    return Val->getKind() == Kind::Negation;
-  }
-
-  /// Returns the sub-value of the negation.
-  BoolValue &getSubVal() const { return SubVal; }
-
-private:
-  BoolValue &SubVal;
 };
 
 /// Models an integer.
@@ -149,15 +166,14 @@ public:
   }
 };
 
-/// Base class for values that refer to storage locations.
-class IndirectionValue : public Value {
+/// Models a symbolic pointer. Specifically, any value of type `T*`.
+class PointerValue final : public Value {
 public:
-  /// Constructs a value that refers to `PointeeLoc`.
-  explicit IndirectionValue(Kind ValueKind, StorageLocation &PointeeLoc)
-      : Value(ValueKind), PointeeLoc(PointeeLoc) {}
+  explicit PointerValue(StorageLocation &PointeeLoc)
+      : Value(Kind::Pointer), PointeeLoc(PointeeLoc) {}
 
   static bool classof(const Value *Val) {
-    return Val->getKind() == Kind::Reference || Val->getKind() == Kind::Pointer;
+    return Val->getKind() == Kind::Pointer;
   }
 
   StorageLocation &getPointeeLoc() const { return PointeeLoc; }
@@ -166,72 +182,7 @@ private:
   StorageLocation &PointeeLoc;
 };
 
-/// Models a dereferenced pointer. For example, a reference in C++ or an lvalue
-/// in C.
-class ReferenceValue final : public IndirectionValue {
-public:
-  explicit ReferenceValue(StorageLocation &PointeeLoc)
-      : IndirectionValue(Kind::Reference, PointeeLoc) {}
-
-  static bool classof(const Value *Val) {
-    return Val->getKind() == Kind::Reference;
-  }
-};
-
-/// Models a symbolic pointer. Specifically, any value of type `T*`.
-class PointerValue final : public IndirectionValue {
-public:
-  explicit PointerValue(StorageLocation &PointeeLoc)
-      : IndirectionValue(Kind::Pointer, PointeeLoc) {}
-
-  static bool classof(const Value *Val) {
-    return Val->getKind() == Kind::Pointer;
-  }
-};
-
-/// Models a value of `struct` or `class` type, with a flat map of fields to
-/// child storage locations, containing all accessible members of base struct
-/// and class types.
-class StructValue final : public Value {
-public:
-  StructValue() : StructValue(llvm::DenseMap<const ValueDecl *, Value *>()) {}
-
-  explicit StructValue(llvm::DenseMap<const ValueDecl *, Value *> Children)
-      : Value(Kind::Struct), Children(std::move(Children)) {}
-
-  static bool classof(const Value *Val) {
-    return Val->getKind() == Kind::Struct;
-  }
-
-  /// Returns the child value that is assigned for `D` or null if the child is
-  /// not initialized.
-  Value *getChild(const ValueDecl &D) const {
-    auto It = Children.find(&D);
-    if (It == Children.end())
-      return nullptr;
-    return It->second;
-  }
-
-  /// Assigns `Val` as the child value for `D`.
-  void setChild(const ValueDecl &D, Value &Val) { Children[&D] = &Val; }
-
-  /// Returns the value of the synthetic property with the given `Name` or null
-  /// if the property isn't assigned a value.
-  Value *getProperty(llvm::StringRef Name) const {
-    auto It = Properties.find(Name);
-    return It == Properties.end() ? nullptr : It->second;
-  }
-
-  /// Assigns `Val` as the value of the synthetic property with the given
-  /// `Name`.
-  void setProperty(llvm::StringRef Name, Value &Val) {
-    Properties.insert_or_assign(Name, &Val);
-  }
-
-private:
-  llvm::DenseMap<const ValueDecl *, Value *> Children;
-  llvm::StringMap<Value *> Properties;
-};
+raw_ostream &operator<<(raw_ostream &OS, const Value &Val);
 
 } // namespace dataflow
 } // namespace clang

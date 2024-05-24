@@ -26,6 +26,7 @@
 namespace Fortran::semantics {
 
 class Scope;
+class SemanticsContext;
 
 class ProgramTree {
 public:
@@ -34,15 +35,25 @@ public:
       std::list<common::Reference<const parser::GenericSpec>>;
 
   // Build the ProgramTree rooted at one of these program units.
-  static ProgramTree Build(const parser::ProgramUnit &);
-  static ProgramTree Build(const parser::MainProgram &);
-  static ProgramTree Build(const parser::FunctionSubprogram &);
-  static ProgramTree Build(const parser::SubroutineSubprogram &);
-  static ProgramTree Build(const parser::SeparateModuleSubprogram &);
-  static ProgramTree Build(const parser::Module &);
-  static ProgramTree Build(const parser::Submodule &);
-  static ProgramTree Build(const parser::BlockData &);
-  static ProgramTree Build(const parser::CompilerDirective &);
+  static ProgramTree Build(const parser::ProgramUnit &, SemanticsContext &);
+  static std::optional<ProgramTree> Build(
+      const parser::MainProgram &, SemanticsContext &);
+  static std::optional<ProgramTree> Build(
+      const parser::FunctionSubprogram &, SemanticsContext &);
+  static std::optional<ProgramTree> Build(
+      const parser::SubroutineSubprogram &, SemanticsContext &);
+  static std::optional<ProgramTree> Build(
+      const parser::SeparateModuleSubprogram &, SemanticsContext &);
+  static std::optional<ProgramTree> Build(
+      const parser::Module &, SemanticsContext &);
+  static std::optional<ProgramTree> Build(
+      const parser::Submodule &, SemanticsContext &);
+  static std::optional<ProgramTree> Build(
+      const parser::BlockData &, SemanticsContext &);
+  static std::optional<ProgramTree> Build(
+      const parser::CompilerDirective &, SemanticsContext &);
+  static std::optional<ProgramTree> Build(
+      const parser::OpenACCRoutineConstruct &, SemanticsContext &);
 
   ENUM_CLASS(Kind, // kind of node
       Program, Function, Subroutine, MpSubprogram, Module, Submodule, BlockData)
@@ -81,6 +92,13 @@ public:
   bool HasModulePrefix() const; // in function or subroutine stmt
   Scope *scope() const { return scope_; }
   void set_scope(Scope &);
+  const parser::LanguageBindingSpec *bindingSpec() const {
+    return bindingSpec_;
+  }
+  ProgramTree &set_bindingSpec(const parser::LanguageBindingSpec *spec) {
+    bindingSpec_ = spec;
+    return *this;
+  }
   void AddChild(ProgramTree &&);
   void AddEntry(const parser::EntryStmt &);
   void AddGeneric(const parser::GenericSpec &);
@@ -108,6 +126,7 @@ private:
   Scope *scope_{nullptr};
   const parser::CharBlock *endStmt_{nullptr};
   bool isSpecificationPartResolved_{false};
+  const parser::LanguageBindingSpec *bindingSpec_{nullptr};
 };
 
 } // namespace Fortran::semantics

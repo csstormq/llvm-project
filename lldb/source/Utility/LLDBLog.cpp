@@ -60,6 +60,10 @@ static constexpr Log::Category g_categories[] = {
     {{"types"}, {"log type system related activities"}, LLDBLog::Types},
     {{"unwind"}, {"log stack unwind activities"}, LLDBLog::Unwind},
     {{"watch"}, {"log watchpoint related activities"}, LLDBLog::Watchpoints},
+    {{"on-demand"},
+     {"log symbol on-demand related activities"},
+     LLDBLog::OnDemand},
+    {{"source"}, {"log source related activities"}, LLDBLog::Source},
 };
 
 static Log::Channel g_log_channel(g_categories,

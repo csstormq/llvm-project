@@ -26,6 +26,14 @@ mlir::Value genExponent(fir::FirOpBuilder &builder, mlir::Location loc,
 mlir::Value genFraction(fir::FirOpBuilder &builder, mlir::Location loc,
                         mlir::Value x);
 
+/// Generate call to Mod intrinsic runtime routine.
+mlir::Value genMod(fir::FirOpBuilder &builder, mlir::Location loc,
+                   mlir::Value a, mlir::Value p);
+
+/// Generate call to Modulo intrinsic runtime routine.
+mlir::Value genModulo(fir::FirOpBuilder &builder, mlir::Location loc,
+                      mlir::Value a, mlir::Value p);
+
 /// Generate call to Nearest intrinsic runtime routine.
 mlir::Value genNearest(fir::FirOpBuilder &builder, mlir::Location loc,
                        mlir::Value x, mlir::Value s);
@@ -37,6 +45,23 @@ mlir::Value genRRSpacing(fir::FirOpBuilder &builder, mlir::Location loc,
 /// Generate call to Scale intrinsic runtime routine.
 mlir::Value genScale(fir::FirOpBuilder &builder, mlir::Location loc,
                      mlir::Value x, mlir::Value i);
+
+/// Generate call to Selected_char_kind intrinsic runtime routine.
+mlir::Value genSelectedCharKind(fir::FirOpBuilder &builder, mlir::Location loc,
+                                mlir::Value name, mlir::Value length);
+
+/// Generate call to Selected_int_kind intrinsic runtime routine.
+mlir::Value genSelectedIntKind(fir::FirOpBuilder &builder, mlir::Location loc,
+                               mlir::Value x);
+
+/// Generate call to Selected_logical_kind intrinsic runtime routine.
+mlir::Value genSelectedLogicalKind(fir::FirOpBuilder &builder,
+                                   mlir::Location loc, mlir::Value x);
+
+/// Generate call to Selected_real_kind intrinsic runtime routine.
+mlir::Value genSelectedRealKind(fir::FirOpBuilder &builder, mlir::Location loc,
+                                mlir::Value precision, mlir::Value range,
+                                mlir::Value radix);
 
 /// Generate call to Set_exponent intrinsic runtime routine.
 mlir::Value genSetExponent(fir::FirOpBuilder &builder, mlir::Location loc,

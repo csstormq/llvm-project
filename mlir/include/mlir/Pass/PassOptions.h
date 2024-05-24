@@ -118,11 +118,11 @@ private:
     using llvm::cl::parser<DataType>::parser;
 
     /// Returns an argument name that maps to the specified value.
-    Optional<StringRef> findArgStrForValue(const DataType &value) {
+    std::optional<StringRef> findArgStrForValue(const DataType &value) {
       for (auto &it : this->Values)
         if (it.V.compare(value))
           return it.Name;
-      return llvm::None;
+      return std::nullopt;
     }
   };
 
@@ -130,8 +130,8 @@ private:
   template <typename DataT>
   static void printValue(raw_ostream &os, GenericOptionParser<DataT> &parser,
                          const DataT &value) {
-    if (Optional<StringRef> argStr = parser.findArgStrForValue(value))
-      os << argStr;
+    if (std::optional<StringRef> argStr = parser.findArgStrForValue(value))
+      os << *argStr;
     else
       llvm_unreachable("unknown data value for option");
   }
@@ -229,6 +229,10 @@ public:
 
     bool handleOccurrence(unsigned pos, StringRef argName,
                           StringRef arg) override {
+      if (this->isDefaultAssigned()) {
+        this->clear();
+        this->overwriteDefault();
+      }
       this->optHasValue = true;
       return failed(detail::pass_options::parseCommaSeparatedList(
           *this, argName, arg, elementParser,
@@ -289,7 +293,8 @@ public:
   /// Parse options out as key=value pairs that can then be handed off to the
   /// `llvm::cl` command line passing infrastructure. Everything is space
   /// separated.
-  LogicalResult parseFromString(StringRef options);
+  LogicalResult parseFromString(StringRef options,
+                                raw_ostream &errorStream = llvm::errs());
 
   /// Print the options held by this struct in a form that can be parsed via
   /// 'parseFromString'.
@@ -418,6 +423,7 @@ struct OptionValue<mlir::OpPassManager> final : GenericOptionValue {
   using WrapperType = mlir::OpPassManager;
 
   OptionValue();
+  OptionValue(const OptionValue<mlir::OpPassManager> &rhs);
   OptionValue(const mlir::OpPassManager &value);
   OptionValue<mlir::OpPassManager> &operator=(const mlir::OpPassManager &rhs);
   ~OptionValue();

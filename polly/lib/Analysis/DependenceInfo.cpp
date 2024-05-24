@@ -39,23 +39,24 @@
 using namespace polly;
 using namespace llvm;
 
+#include "polly/Support/PollyDebug.h"
 #define DEBUG_TYPE "polly-dependence"
 
 static cl::opt<int> OptComputeOut(
     "polly-dependences-computeout",
     cl::desc("Bound the dependence analysis by a maximal amount of "
              "computational steps (0 means no bound)"),
-    cl::Hidden, cl::init(500000), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::Hidden, cl::init(500000), cl::cat(PollyCategory));
 
-static cl::opt<bool> LegalityCheckDisabled(
-    "disable-polly-legality", cl::desc("Disable polly legality check"),
-    cl::Hidden, cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+static cl::opt<bool>
+    LegalityCheckDisabled("disable-polly-legality",
+                          cl::desc("Disable polly legality check"), cl::Hidden,
+                          cl::cat(PollyCategory));
 
 static cl::opt<bool>
     UseReductions("polly-dependences-use-reductions",
                   cl::desc("Exploit reductions in dependence analysis"),
-                  cl::Hidden, cl::init(true), cl::ZeroOrMore,
-                  cl::cat(PollyCategory));
+                  cl::Hidden, cl::init(true), cl::cat(PollyCategory));
 
 enum AnalysisType { VALUE_BASED_ANALYSIS, MEMORY_BASED_ANALYSIS };
 
@@ -66,8 +67,7 @@ static cl::opt<enum AnalysisType> OptAnalysisType(
                           "Exact dependences without transitive dependences"),
                clEnumValN(MEMORY_BASED_ANALYSIS, "memory-based",
                           "Overapproximation of dependences")),
-    cl::Hidden, cl::init(VALUE_BASED_ANALYSIS), cl::ZeroOrMore,
-    cl::cat(PollyCategory));
+    cl::Hidden, cl::init(VALUE_BASED_ANALYSIS), cl::cat(PollyCategory));
 
 static cl::opt<Dependences::AnalysisLevel> OptAnalysisLevel(
     "polly-dependences-analysis-level",
@@ -80,8 +80,7 @@ static cl::opt<Dependences::AnalysisLevel> OptAnalysisLevel(
                clEnumValN(Dependences::AL_Access, "access-wise",
                           "Memory reference level analysis that distinguish"
                           " access instructions in the same statement")),
-    cl::Hidden, cl::init(Dependences::AL_Statement), cl::ZeroOrMore,
-    cl::cat(PollyCategory));
+    cl::Hidden, cl::init(Dependences::AL_Statement), cl::cat(PollyCategory));
 
 //===----------------------------------------------------------------------===//
 
@@ -302,10 +301,10 @@ static __isl_give isl_union_flow *buildFlow(__isl_keep isl_union_map *Snk,
     AI = isl_union_access_info_set_kill(AI, isl_union_map_copy(Kill));
   AI = isl_union_access_info_set_schedule(AI, isl_schedule_copy(Schedule));
   auto Flow = isl_union_access_info_compute_flow(AI);
-  LLVM_DEBUG(if (!Flow) dbgs()
-                 << "last error: "
-                 << isl_ctx_last_error(isl_schedule_get_ctx(Schedule))
-                 << '\n';);
+  POLLY_DEBUG(if (!Flow) dbgs()
+                  << "last error: "
+                  << isl_ctx_last_error(isl_schedule_get_ctx(Schedule))
+                  << '\n';);
   return Flow;
 }
 
@@ -314,18 +313,18 @@ void Dependences::calculateDependences(Scop &S) {
   isl_schedule *Schedule;
   isl_union_set *TaggedStmtDomain;
 
-  LLVM_DEBUG(dbgs() << "Scop: \n" << S << "\n");
+  POLLY_DEBUG(dbgs() << "Scop: \n" << S << "\n");
 
   collectInfo(S, Read, MustWrite, MayWrite, ReductionTagMap, TaggedStmtDomain,
               Level);
 
   bool HasReductions = !isl_union_map_is_empty(ReductionTagMap);
 
-  LLVM_DEBUG(dbgs() << "Read: " << Read << '\n';
-             dbgs() << "MustWrite: " << MustWrite << '\n';
-             dbgs() << "MayWrite: " << MayWrite << '\n';
-             dbgs() << "ReductionTagMap: " << ReductionTagMap << '\n';
-             dbgs() << "TaggedStmtDomain: " << TaggedStmtDomain << '\n';);
+  POLLY_DEBUG(dbgs() << "Read: " << Read << '\n';
+              dbgs() << "MustWrite: " << MustWrite << '\n';
+              dbgs() << "MayWrite: " << MayWrite << '\n';
+              dbgs() << "ReductionTagMap: " << ReductionTagMap << '\n';
+              dbgs() << "TaggedStmtDomain: " << TaggedStmtDomain << '\n';);
 
   Schedule = S.getScheduleTree().release();
 
@@ -362,10 +361,10 @@ void Dependences::calculateDependences(Scop &S) {
     Schedule = isl_schedule_pullback_union_pw_multi_aff(Schedule, Tags);
   }
 
-  LLVM_DEBUG(dbgs() << "Read: " << Read << "\n";
-             dbgs() << "MustWrite: " << MustWrite << "\n";
-             dbgs() << "MayWrite: " << MayWrite << "\n";
-             dbgs() << "Schedule: " << Schedule << "\n");
+  POLLY_DEBUG(dbgs() << "Read: " << Read << "\n";
+              dbgs() << "MustWrite: " << MustWrite << "\n";
+              dbgs() << "MayWrite: " << MayWrite << "\n";
+              dbgs() << "Schedule: " << Schedule << "\n");
 
   isl_union_map *StrictWAW = nullptr;
   {
@@ -506,7 +505,7 @@ void Dependences::calculateDependences(Scop &S) {
       isl_union_map_copy(WAW), isl_union_set_copy(TaggedStmtDomain));
   STMT_WAR =
       isl_union_map_intersect_domain(isl_union_map_copy(WAR), TaggedStmtDomain);
-  LLVM_DEBUG({
+  POLLY_DEBUG({
     dbgs() << "Wrapped Dependences:\n";
     dump();
     dbgs() << "\n";
@@ -555,7 +554,7 @@ void Dependences::calculateDependences(Scop &S) {
   } else
     TC_RED = isl_union_map_empty(isl_union_map_get_space(RED));
 
-  LLVM_DEBUG({
+  POLLY_DEBUG({
     dbgs() << "Final Wrapped Dependences:\n";
     dump();
     dbgs() << "\n";
@@ -605,7 +604,7 @@ void Dependences::calculateDependences(Scop &S) {
   RED = isl_union_map_zip(RED);
   TC_RED = isl_union_map_zip(TC_RED);
 
-  LLVM_DEBUG({
+  POLLY_DEBUG({
     dbgs() << "Zipped Dependences:\n";
     dump();
     dbgs() << "\n";
@@ -617,7 +616,7 @@ void Dependences::calculateDependences(Scop &S) {
   RED = isl_union_set_unwrap(isl_union_map_domain(RED));
   TC_RED = isl_union_set_unwrap(isl_union_map_domain(TC_RED));
 
-  LLVM_DEBUG({
+  POLLY_DEBUG({
     dbgs() << "Unwrapped Dependences:\n";
     dump();
     dbgs() << "\n";
@@ -633,7 +632,7 @@ void Dependences::calculateDependences(Scop &S) {
   RED = isl_union_map_coalesce(RED);
   TC_RED = isl_union_map_coalesce(TC_RED);
 
-  LLVM_DEBUG(dump());
+  POLLY_DEBUG(dump());
 }
 
 bool Dependences::isValidSchedule(Scop &S, isl::schedule NewSched) const {
@@ -850,6 +849,11 @@ const Dependences &DependenceAnalysis::Result::recomputeDependences(
   return *D[Level];
 }
 
+void DependenceAnalysis::Result::abandonDependences() {
+  for (std::unique_ptr<Dependences> &Deps : D)
+    Deps.release();
+}
+
 DependenceAnalysis::Result
 DependenceAnalysis::run(Scop &S, ScopAnalysisManager &SAM,
                         ScopStandardAnalysisResults &SAR) {
@@ -892,6 +896,11 @@ DependenceInfo::recomputeDependences(Dependences::AnalysisLevel Level) {
   return *D[Level];
 }
 
+void DependenceInfo::abandonDependences() {
+  for (std::unique_ptr<Dependences> &Deps : D)
+    Deps.release();
+}
+
 bool DependenceInfo::runOnScop(Scop &ScopVar) {
   S = &ScopVar;
   return false;
@@ -930,7 +939,7 @@ INITIALIZE_PASS_END(DependenceInfo, "polly-dependences",
 
 namespace {
 /// Print result from DependenceAnalysis.
-class DependenceInfoPrinterLegacyPass : public ScopPass {
+class DependenceInfoPrinterLegacyPass final : public ScopPass {
 public:
   static char ID;
 
@@ -1037,7 +1046,7 @@ INITIALIZE_PASS_END(
 
 namespace {
 /// Print result from DependenceInfoWrapperPass.
-class DependenceInfoPrinterLegacyFunctionPass : public FunctionPass {
+class DependenceInfoPrinterLegacyFunctionPass final : public FunctionPass {
 public:
   static char ID;
 

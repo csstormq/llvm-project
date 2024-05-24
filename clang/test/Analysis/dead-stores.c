@@ -12,6 +12,8 @@
 // RUN:   -analyzer-config deadcode.DeadStores:ShowFixIts=true \
 // RUN:   -verify=non-nested,nested
 
+extern int printf(const char *, ...);
+
 void f1(void) {
   int k, y; // non-nested-warning {{unused variable 'k'}}
             // non-nested-warning@-1 {{unused variable 'y'}}
@@ -30,8 +32,6 @@ void f2(void *b) {
   // CHECK-FIXES-NEXT: char *d;
 
   printf("%s", c);
-  // non-nested-warning@-1 {{implicitly declaring library function 'printf' with type 'int (const char *, ...)'}}
-  // non-nested-note@-2 {{include the header <stdio.h> or explicitly provide a declaration for 'printf'}}
 }
 
 int f(void);
@@ -156,7 +156,6 @@ int f14(int count) {
   return index;
 }
 
-// Test case for <rdar://problem/6248086>
 void f15(unsigned x, unsigned y) {
   int count = x * y; // no-warning
   int z[count];      // non-nested-warning {{unused variable 'z'}}
@@ -176,7 +175,6 @@ void f17(void) {
   x = x;
 }
 
-// <rdar://problem/6506065>
 // The values of dead stores are only "consumed" in an enclosing expression
 // what that value is actually used.  In other words, don't say "Although the
 // value stored to 'x' is used...".
@@ -520,7 +518,7 @@ void rdar8014335(void) {
   }
 }
 
-// <rdar://problem/8320674> NullStmts followed by do...while() can lead to disconnected CFG
+// NullStmts followed by do...while() can lead to disconnected CFG
 //
 // This previously caused bogus dead-stores warnings because the body of the first do...while was
 // disconnected from the entry of the function.

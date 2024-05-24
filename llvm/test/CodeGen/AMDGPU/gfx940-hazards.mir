@@ -1,4 +1,4 @@
-# RUN: llc -march=amdgcn -mcpu=gfx940 -verify-machineinstrs -run-pass post-RA-hazard-rec %s -o - | FileCheck -check-prefix=GCN %s
+# RUN: llc -mtriple=amdgcn -mcpu=gfx940 -verify-machineinstrs -run-pass post-RA-hazard-rec %s -o - | FileCheck -check-prefix=GCN %s
 
 # GCN-LABEL: name: trans32_write_non_trans32_read
 # GCN:      V_RCP_F32
@@ -214,4 +214,30 @@ body:             |
   bb.0:
     $vgpr1 = V_ADD_CO_U32_e32 $vgpr0, $vgpr0, implicit-def $vcc, implicit $exec
     $sgpr1 = V_READFIRSTLANE_B32 $vgpr1, implicit $exec
+...
+
+# GCN-LABEL: name: global_store_dwordx4_data_hazard
+# GCN:      GLOBAL_STORE_DWORDX4
+# GCN-NEXT: S_NOP 1
+# GCN-NEXT: V_MOV_B32_e32
+name: global_store_dwordx4_data_hazard
+
+body:             |
+  bb.0:
+    liveins: $vgpr0_vgpr1, $vgpr2_vgpr3_vgpr4_vgpr5
+    GLOBAL_STORE_DWORDX4 $vgpr0_vgpr1, $vgpr2_vgpr3_vgpr4_vgpr5, 0, 0, implicit $exec
+    $vgpr2 = V_MOV_B32_e32 0, implicit $exec
+...
+
+# GCN-LABEL: name: global_store_dwordx3_data_hazard
+# GCN:      GLOBAL_STORE_DWORDX3
+# GCN-NEXT: S_NOP 1
+# GCN-NEXT: V_MOV_B32_e32
+name: global_store_dwordx3_data_hazard
+
+body:             |
+  bb.0:
+    liveins: $vgpr0_vgpr1, $vgpr2_vgpr3_vgpr4
+    GLOBAL_STORE_DWORDX3 $vgpr0_vgpr1, $vgpr2_vgpr3_vgpr4, 0, 0, implicit $exec
+    $vgpr2 = V_MOV_B32_e32 0, implicit $exec
 ...

@@ -53,18 +53,22 @@ using namespace llvm;
 
 #define DEBUG_TYPE "uselistorder"
 
+static cl::OptionCategory Cat("verify-uselistorder Options");
+
 static cl::opt<std::string> InputFilename(cl::Positional,
                                           cl::desc("<input bitcode file>"),
                                           cl::init("-"),
                                           cl::value_desc("filename"));
 
 static cl::opt<bool> SaveTemps("save-temps", cl::desc("Save temp files"),
-                               cl::init(false));
+                               cl::cat(Cat));
 
 static cl::opt<unsigned>
     NumShuffles("num-shuffles",
                 cl::desc("Number of times to shuffle and verify use-lists"),
-                cl::init(1));
+                cl::init(1), cl::cat(Cat));
+
+extern cl::opt<cl::boolOrDefault> PreserveInputDbgFormat;
 
 namespace {
 
@@ -164,6 +168,7 @@ std::unique_ptr<Module> TempFile::readBitcode(LLVMContext &Context) const {
                           "verify-uselistorder: error: ");
     return nullptr;
   }
+
   return std::move(ModuleOr.get());
 }
 
@@ -217,8 +222,15 @@ ValueMapping::ValueMapping(const Module &M) {
         map(&I);
 
     // Constants used by instructions.
-    for (const BasicBlock &BB : F)
-      for (const Instruction &I : BB)
+    for (const BasicBlock &BB : F) {
+      for (const Instruction &I : BB) {
+        for (const DbgVariableRecord &DVR :
+             filterDbgVars(I.getDbgRecordRange())) {
+          for (Value *Op : DVR.location_ops())
+            map(Op);
+          if (DVR.isDbgAssign())
+            map(DVR.getAddress());
+        }
         for (const Value *Op : I.operands()) {
           // Look through a metadata wrapper.
           if (const auto *MAV = dyn_cast<MetadataAsValue>(Op))
@@ -229,6 +241,8 @@ ValueMapping::ValueMapping(const Module &M) {
               isa<InlineAsm>(Op))
             map(Op);
         }
+      }
+    }
   }
 }
 
@@ -396,7 +410,7 @@ static void shuffleValueUseLists(Value *V, std::minstd_rand0 &Gen,
     return;
 
   // Generate random numbers between 10 and 99, which will line up nicely in
-  // debug output.  We're not worried about collisons here.
+  // debug output.  We're not worried about collisions here.
   LLVM_DEBUG(dbgs() << "V = "; V->dump());
   std::uniform_int_distribution<short> Dist(10, 99);
   SmallDenseMap<const Use *, short, 16> Order;
@@ -525,11 +539,13 @@ static void reverseUseLists(Module &M) {
 }
 
 int main(int argc, char **argv) {
+  PreserveInputDbgFormat = cl::boolOrDefault::BOU_TRUE;
   InitLLVM X(argc, argv);
 
   // Enable debug stream buffering.
   EnableDebugBuffering = true;
 
+  cl::HideUnrelatedOptions(Cat);
   cl::ParseCommandLineOptions(argc, argv,
                               "llvm tool to verify use-list order\n");
 

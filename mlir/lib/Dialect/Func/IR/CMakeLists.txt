@@ -1,4 +1,4 @@
-add_mlir_dialect_library(MLIRFunc
+add_mlir_dialect_library(MLIRFuncDialect
   FuncOps.cpp
 
   ADDITIONAL_HEADER_DIRS
@@ -9,8 +9,8 @@ add_mlir_dialect_library(MLIRFunc
 
   LINK_LIBS PUBLIC
   MLIRCallInterfaces
-  MLIRControlFlow
   MLIRControlFlowInterfaces
+  MLIRFunctionInterfaces
   MLIRInferTypeOpInterface
   MLIRIR
   MLIRSideEffectInterfaces

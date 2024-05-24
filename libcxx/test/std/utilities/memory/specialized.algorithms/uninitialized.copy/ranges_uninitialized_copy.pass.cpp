@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
-// UNSUPPORTED: libcpp-has-no-incomplete-ranges
 
 // <memory>
 //
@@ -28,6 +27,7 @@
 
 #include "../buffer.h"
 #include "../counted.h"
+#include "../overload_compare_iterator.h"
 #include "test_macros.h"
 #include "test_iterators.h"
 
@@ -368,6 +368,64 @@ int main(int, char**) {
     assert(std::equal(in, in + M, out.begin(), out.end()));
     assert(result.in == in + M);
     assert(result.out == out.end());
+  }
+
+  // Move-only iterators are supported.
+  {
+    using MoveOnlyIter = cpp20_input_iterator<const int*>;
+    static_assert(!std::is_copy_constructible_v<MoveOnlyIter>);
+
+    constexpr int N = 3;
+    struct MoveOnlyRange {
+      int buffer[N] = {1, 2, 3};
+      auto begin() const { return MoveOnlyIter(buffer); }
+      auto end() const { return sentinel_wrapper<MoveOnlyIter>(MoveOnlyIter(buffer)); }
+    };
+    static_assert(std::ranges::input_range<MoveOnlyRange>);
+    MoveOnlyRange in;
+
+    // (iter, sentinel) overload.
+    {
+      Buffer<int, N> out;
+      std::ranges::uninitialized_copy(in.begin(), in.end(), out.begin(), out.end());
+    }
+
+    // (range) overload.
+    {
+      Buffer<int, N> out;
+      std::ranges::uninitialized_copy(in, out);
+    }
+  }
+
+  // Test with an iterator that overloads operator== and operator!= as the input and output iterators
+  {
+    using T        = int;
+    using Iterator = overload_compare_iterator<T*>;
+    const int N    = 5;
+
+    // input
+    {
+      char pool[sizeof(T) * N] = {0};
+      T* p                     = reinterpret_cast<T*>(pool);
+      T* p_end                 = reinterpret_cast<T*>(pool) + N;
+      T array[N]               = {1, 2, 3, 4, 5};
+      std::ranges::uninitialized_copy(Iterator(array), Iterator(array + N), p, p_end);
+      for (int i = 0; i != N; ++i) {
+        assert(array[i] == p[i]);
+      }
+    }
+
+    // output
+    {
+      char pool[sizeof(T) * N] = {0};
+      T* p                     = reinterpret_cast<T*>(pool);
+      T* p_end                 = reinterpret_cast<T*>(pool) + N;
+      T array[N]               = {1, 2, 3, 4, 5};
+      std::ranges::uninitialized_copy(array, array + N, Iterator(p), Iterator(p_end));
+      for (int i = 0; i != N; ++i) {
+        assert(array[i] == p[i]);
+      }
+    }
   }
 
   return 0;

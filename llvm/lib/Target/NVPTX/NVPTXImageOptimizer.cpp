@@ -35,6 +35,8 @@ public:
 
   bool runOnFunction(Function &F) override;
 
+  StringRef getPassName() const override { return "NVPTX Image Optimizer"; }
+
 private:
   bool replaceIsTypePSampler(Instruction &I);
   bool replaceIsTypePSurface(Instruction &I);
@@ -155,7 +157,7 @@ void NVPTXImageOptimizer::replaceWith(Instruction *From, ConstantInt *To) {
       else
         // Get true block
         Dest = BI->getSuccessor(0);
-      BranchInst::Create(Dest, BI);
+      BranchInst::Create(Dest, BI->getIterator());
       InstrToDelete.push_back(BI);
     }
   }

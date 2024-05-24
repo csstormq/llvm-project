@@ -11,9 +11,13 @@
 /// is the class for all preprocessor options.
 ///
 //===----------------------------------------------------------------------===//
+//
+// Coding style: https://mlir.llvm.org/getting_started/DeveloperGuide/
+//
+//===----------------------------------------------------------------------===//
 
-#ifndef LLVM_FLANG_PREPROCESSOROPTIONS_H
-#define LLVM_FLANG_PREPROCESSOROPTIONS_H
+#ifndef FORTRAN_FRONTEND_PREPROCESSOROPTIONS_H
+#define FORTRAN_FRONTEND_PREPROCESSOROPTIONS_H
 
 #include "llvm/ADT/StringRef.h"
 
@@ -52,6 +56,9 @@ struct PreprocessorOptions {
   // -fno-reformat: Emit cooked character stream as -E output
   bool noReformat{false};
 
+  // -dM: Show macro definitions with -dM -E
+  bool showMacros{false};
+
   void addMacroDef(llvm::StringRef name) {
     macros.emplace_back(std::string(name), false);
   }
@@ -63,4 +70,4 @@ struct PreprocessorOptions {
 
 } // namespace Fortran::frontend
 
-#endif // LLVM_FLANG_PREPROCESSOROPTIONS_H
+#endif // FORTRAN_FRONTEND_PREPROCESSOROPTIONS_H

@@ -1,12 +1,11 @@
-// RUN: mlir-opt %s -lower-affine -convert-scf-to-cf -convert-vector-to-llvm="enable-arm-sve" -convert-memref-to-llvm -convert-func-to-llvm -convert-arith-to-llvm -canonicalize | \
-// RUN: mlir-translate -mlir-to-llvmir | \
-// RUN: %lli --entry-function=entry --march=aarch64 --mattr="+sve" --dlopen=%mlir_native_utils_lib_dir/libmlir_c_runner_utils%shlibext | \
+// RUN: mlir-opt %s -lower-affine -convert-vector-to-scf -convert-scf-to-cf -convert-vector-to-llvm="enable-arm-sve" -finalize-memref-to-llvm -convert-func-to-llvm -convert-arith-to-llvm -canonicalize | \
+// RUN: %mcr_aarch64_cmd -e=entry -entry-point-result=void --march=aarch64 --mattr="+sve" -shared-libs=%mlir_lib_dir/libmlir_c_runner_utils%shlibext | \
 // RUN: FileCheck %s
 
 // Note: To run this test, your CPU must support SVE
 
 // VLA memcopy
-func @kernel_copy(%src : memref<?xi64>, %dst : memref<?xi64>, %size : index) {
+func.func @kernel_copy(%src : memref<?xi64>, %dst : memref<?xi64>, %size : index) {
   %c0 = arith.constant 0 : index
   %c2 = arith.constant 2 : index
   %vs = vector.vscale
@@ -20,7 +19,7 @@ func @kernel_copy(%src : memref<?xi64>, %dst : memref<?xi64>, %size : index) {
 }
 
 // VLA multiply and add
-func @kernel_muladd(%a : memref<?xi64>,
+func.func @kernel_muladd(%a : memref<?xi64>,
                     %b : memref<?xi64>,
                     %c : memref<?xi64>,
                     %size : index) {
@@ -40,7 +39,7 @@ func @kernel_muladd(%a : memref<?xi64>,
 }
 
 // SVE-based absolute difference
-func @kernel_absdiff(%a : memref<?xi64>,
+func.func @kernel_absdiff(%a : memref<?xi64>,
                      %b : memref<?xi64>,
                      %c : memref<?xi64>,
                      %size : index) {
@@ -68,7 +67,7 @@ func @kernel_absdiff(%a : memref<?xi64>,
 }
 
 // VLA unknown bounds vector addition
-func @kernel_addition(%a : memref<?xf32>,
+func.func @kernel_addition(%a : memref<?xf32>,
                       %b : memref<?xf32>,
                       %c : memref<?xf32>,
                       %N : index) {
@@ -88,10 +87,9 @@ func @kernel_addition(%a : memref<?xf32>,
   return
 }
 
-func @entry() -> i32 {
+func.func @entry() {
   %i0 = arith.constant 0: i64
   %i1 = arith.constant 1: i64
-  %r0 = arith.constant 0: i32
   %f0 = arith.constant 0.0: f32
   %c0 = arith.constant 0: index
   %c1 = arith.constant 1: index
@@ -212,5 +210,5 @@ func @entry() -> i32 {
   memref.dealloc %f      : memref<33xf32>
   memref.dealloc %g      : memref<36xf32>
 
-  return %r0 : i32
+  return
 }

@@ -33,8 +33,10 @@ static void BuildParentMap(MapTy& M, Stmt* S,
 
   switch (S->getStmtClass()) {
   case Stmt::PseudoObjectExprClass: {
-    assert(OVMode == OV_Transparent && "Should not appear alongside OVEs");
     PseudoObjectExpr *POE = cast<PseudoObjectExpr>(S);
+
+    if (OVMode == OV_Opaque && M[POE->getSyntacticForm()])
+      break;
 
     // If we are rebuilding the map, clear out any existing state.
     if (M[POE->getSyntacticForm()])
@@ -93,6 +95,22 @@ static void BuildParentMap(MapTy& M, Stmt* S,
     if (Stmt *SubStmt = cast<CapturedStmt>(S)->getCapturedStmt()) {
       M[SubStmt] = S;
       BuildParentMap(M, SubStmt, OVMode);
+    }
+    break;
+  case Stmt::CXXDefaultArgExprClass:
+    if (auto *Arg = dyn_cast<CXXDefaultArgExpr>(S)) {
+      if (Arg->hasRewrittenInit()) {
+        M[Arg->getExpr()] = S;
+        BuildParentMap(M, Arg->getExpr(), OVMode);
+      }
+    }
+    break;
+  case Stmt::CXXDefaultInitExprClass:
+    if (auto *Init = dyn_cast<CXXDefaultInitExpr>(S)) {
+      if (Init->hasRewrittenInit()) {
+        M[Init->getExpr()] = S;
+        BuildParentMap(M, Init->getExpr(), OVMode);
+      }
     }
     break;
   default:

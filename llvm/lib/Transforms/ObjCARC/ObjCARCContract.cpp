@@ -31,9 +31,9 @@
 #include "ProvenanceAnalysis.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/EHPersonalities.h"
 #include "llvm/Analysis/ObjCARCUtil.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Operator.h"
@@ -70,6 +70,9 @@ class ObjCARCContract {
   ProvenanceAnalysis PA;
   ARCRuntimeEntryPoints EP;
   BundledRetainClaimRVs *BundledInsts = nullptr;
+
+  /// A flag indicating whether this optimization pass should run.
+  bool Run;
 
   /// The inline asm string to insert between calls and RetainRV calls to make
   /// the optimization work on targets which need it.
@@ -382,12 +385,12 @@ void ObjCARCContract::tryToContractReleaseIntoStoreStrong(
 
   Value *Args[] = { Load->getPointerOperand(), New };
   if (Args[0]->getType() != I8XX)
-    Args[0] = new BitCastInst(Args[0], I8XX, "", Store);
+    Args[0] = new BitCastInst(Args[0], I8XX, "", Store->getIterator());
   if (Args[1]->getType() != I8X)
-    Args[1] = new BitCastInst(Args[1], I8X, "", Store);
+    Args[1] = new BitCastInst(Args[1], I8X, "", Store->getIterator());
   Function *Decl = EP.get(ARCRuntimeEntryPointKind::StoreStrong);
-  CallInst *StoreStrong =
-      objcarc::createCallInstWithColors(Decl, Args, "", Store, BlockColors);
+  CallInst *StoreStrong = objcarc::createCallInstWithColors(
+      Decl, Args, "", Store->getIterator(), BlockColors);
   StoreStrong->setDoesNotThrow();
   StoreStrong->setDebugLoc(Store->getDebugLoc());
 
@@ -428,7 +431,7 @@ bool ObjCARCContract::tryToPeepholeInstruction(
     if (!optimizeRetainCall(F, Inst))
       return false;
     // If we succeed in our optimization, fall through.
-    LLVM_FALLTHROUGH;
+    [[fallthrough]];
   case ARCInstKind::RetainRV:
   case ARCInstKind::UnsafeClaimRV: {
     // Return true if this is a bundled retainRV/claimRV call, which is always
@@ -472,7 +475,8 @@ bool ObjCARCContract::tryToPeepholeInstruction(
                          RVInstMarker->getString(),
                          /*Constraints=*/"", /*hasSideEffects=*/true);
 
-      objcarc::createCallInstWithColors(IA, None, "", Inst, BlockColors);
+      objcarc::createCallInstWithColors(IA, std::nullopt, "",
+                                        Inst->getIterator(), BlockColors);
     }
   decline_rv_optimization:
     return false;
@@ -483,7 +487,7 @@ bool ObjCARCContract::tryToPeepholeInstruction(
     if (IsNullOrUndef(CI->getArgOperand(1))) {
       Value *Null = ConstantPointerNull::get(cast<PointerType>(CI->getType()));
       Changed = true;
-      new StoreInst(Null, CI->getArgOperand(0), CI);
+      new StoreInst(Null, CI->getArgOperand(0), CI->getIterator());
 
       LLVM_DEBUG(dbgs() << "OBJCARCContract: Old = " << *CI << "\n"
                         << "                 New = " << *Null << "\n");
@@ -526,6 +530,10 @@ bool ObjCARCContract::tryToPeepholeInstruction(
 //===----------------------------------------------------------------------===//
 
 bool ObjCARCContract::init(Module &M) {
+  Run = ModuleHasARC(M);
+  if (!Run)
+    return false;
+
   EP.init(&M);
 
   // Initialize RVInstMarker.
@@ -536,6 +544,9 @@ bool ObjCARCContract::init(Module &M) {
 
 bool ObjCARCContract::run(Function &F, AAResults *A, DominatorTree *D) {
   if (!EnableARCOpts)
+    return false;
+
+  if (!Run)
     return false;
 
   Changed = CFGChanged = false;
@@ -574,7 +585,7 @@ bool ObjCARCContract::run(Function &F, AAResults *A, DominatorTree *D) {
 
     if (auto *CI = dyn_cast<CallInst>(Inst))
       if (objcarc::hasAttachedCallOpBundle(CI)) {
-        BundledInsts->insertRVCallWithColors(&*I, CI, BlockColors);
+        BundledInsts->insertRVCallWithColors(I->getIterator(), CI, BlockColors);
         --I;
         Changed = true;
       }
@@ -630,8 +641,8 @@ bool ObjCARCContract::run(Function &F, AAResults *A, DominatorTree *D) {
 
             assert(DT->dominates(Inst, &InsertBB->back()) &&
                    "Invalid insertion point for bitcast");
-            Replacement =
-                new BitCastInst(Replacement, UseTy, "", &InsertBB->back());
+            Replacement = new BitCastInst(Replacement, UseTy, "",
+                                          InsertBB->back().getIterator());
           }
 
           // While we're here, rewrite all edges for this PHI, rather
@@ -648,8 +659,9 @@ bool ObjCARCContract::run(Function &F, AAResults *A, DominatorTree *D) {
             }
         } else {
           if (Replacement->getType() != UseTy)
-            Replacement = new BitCastInst(Replacement, UseTy, "",
-                                          cast<Instruction>(U.getUser()));
+            Replacement =
+                new BitCastInst(Replacement, UseTy, "",
+                                cast<Instruction>(U.getUser())->getIterator());
           U.set(Replacement);
         }
       }

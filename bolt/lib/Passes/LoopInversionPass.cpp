@@ -31,11 +31,11 @@ namespace bolt {
 
 bool LoopInversionPass::runOnFunction(BinaryFunction &BF) {
   bool IsChanged = false;
-  if (BF.layout_size() < 3 || !BF.hasValidProfile())
+  if (BF.getLayout().block_size() < 3 || !BF.hasValidProfile())
     return false;
 
-  BF.updateLayoutIndices();
-  for (BinaryBasicBlock *BB : BF.layout()) {
+  BF.getLayout().updateLayoutIndices();
+  for (BinaryBasicBlock *BB : BF.getLayout().blocks()) {
     if (BB->succ_size() != 1 || BB->pred_size() != 1)
       continue;
 
@@ -44,7 +44,8 @@ bool LoopInversionPass::runOnFunction(BinaryFunction &BF) {
     const unsigned BBIndex = BB->getLayoutIndex();
     const unsigned SuccBBIndex = SuccBB->getLayoutIndex();
     if (SuccBB == PredBB && BB != SuccBB && BBIndex != 0 && SuccBBIndex != 0 &&
-        SuccBB->succ_size() == 2 && BB->isCold() == SuccBB->isCold()) {
+        SuccBB->succ_size() == 2 &&
+        BB->getFragmentNum() == SuccBB->getFragmentNum()) {
       // Get the second successor (after loop BB)
       BinaryBasicBlock *SecondSucc = nullptr;
       for (BinaryBasicBlock *Succ : SuccBB->successors()) {
@@ -72,22 +73,22 @@ bool LoopInversionPass::runOnFunction(BinaryFunction &BF) {
   }
 
   if (IsChanged) {
-    BinaryFunction::BasicBlockOrderType NewOrder = BF.getLayout();
-    std::sort(NewOrder.begin(), NewOrder.end(),
-              [&](BinaryBasicBlock *BB1, BinaryBasicBlock *BB2) {
-                return BB1->getLayoutIndex() < BB2->getLayoutIndex();
-              });
-    BF.updateBasicBlockLayout(NewOrder);
+    BinaryFunction::BasicBlockOrderType NewOrder(BF.getLayout().block_begin(),
+                                                 BF.getLayout().block_end());
+    llvm::sort(NewOrder, [&](BinaryBasicBlock *BB1, BinaryBasicBlock *BB2) {
+      return BB1->getLayoutIndex() < BB2->getLayoutIndex();
+    });
+    BF.getLayout().update(NewOrder);
   }
 
   return IsChanged;
 }
 
-void LoopInversionPass::runOnFunctions(BinaryContext &BC) {
+Error LoopInversionPass::runOnFunctions(BinaryContext &BC) {
   std::atomic<uint64_t> ModifiedFuncCount{0};
   if (opts::ReorderBlocks == ReorderBasicBlocks::LT_NONE ||
       opts::LoopReorder == false)
-    return;
+    return Error::success();
 
   ParallelUtilities::WorkFuncTy WorkFun = [&](BinaryFunction &BF) {
     if (runOnFunction(BF))
@@ -102,8 +103,9 @@ void LoopInversionPass::runOnFunctions(BinaryContext &BC) {
       BC, ParallelUtilities::SchedulingPolicy::SP_TRIVIAL, WorkFun, SkipFunc,
       "LoopInversionPass");
 
-  outs() << "BOLT-INFO: " << ModifiedFuncCount
-         << " Functions were reordered by LoopInversionPass\n";
+  BC.outs() << "BOLT-INFO: " << ModifiedFuncCount
+            << " Functions were reordered by LoopInversionPass\n";
+  return Error::success();
 }
 
 } // end namespace bolt

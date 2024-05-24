@@ -7,11 +7,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "flang/Optimizer/Builder/Runtime/Character.h"
-#include "flang/Lower/Todo.h"
 #include "flang/Optimizer/Builder/BoxValue.h"
 #include "flang/Optimizer/Builder/Character.h"
 #include "flang/Optimizer/Builder/FIRBuilder.h"
 #include "flang/Optimizer/Builder/Runtime/RTBuilder.h"
+#include "flang/Optimizer/Builder/Todo.h"
 #include "flang/Runtime/character.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
@@ -39,15 +39,15 @@ static void genCharacterSearch(FN func, fir::FirOpBuilder &builder,
 
 /// Helper function to recover the KIND from the FIR type.
 static int discoverKind(mlir::Type ty) {
-  if (auto charTy = ty.dyn_cast<fir::CharacterType>())
+  if (auto charTy = mlir::dyn_cast<fir::CharacterType>(ty))
     return charTy.getFKind();
   if (auto eleTy = fir::dyn_cast_ptrEleTy(ty))
     return discoverKind(eleTy);
-  if (auto arrTy = ty.dyn_cast<fir::SequenceType>())
+  if (auto arrTy = mlir::dyn_cast<fir::SequenceType>(ty))
     return discoverKind(arrTy.getEleTy());
-  if (auto boxTy = ty.dyn_cast<fir::BoxCharType>())
+  if (auto boxTy = mlir::dyn_cast<fir::BoxCharType>(ty))
     return discoverKind(boxTy.getEleTy());
-  if (auto boxTy = ty.dyn_cast<fir::BoxType>())
+  if (auto boxTy = mlir::dyn_cast<fir::BoxType>(ty))
     return discoverKind(boxTy.getEleTy());
   llvm_unreachable("unexpected character type");
 }
@@ -60,11 +60,11 @@ static int discoverKind(mlir::Type ty) {
 ///
 /// \p resultBox must be an unallocated allocatable used for the temporary
 /// result.  \p StringBox must be a fir.box describing the adjustr string
-/// argument.  The \p adjustFunc should be a mlir::FuncOp for the appropriate
-/// runtime entry function.
+/// argument.  The \p adjustFunc should be a mlir::func::FuncOp for the
+/// appropriate runtime entry function.
 static void genAdjust(fir::FirOpBuilder &builder, mlir::Location loc,
                       mlir::Value resultBox, mlir::Value stringBox,
-                      mlir::FuncOp &adjustFunc) {
+                      mlir::func::FuncOp &adjustFunc) {
 
   auto fTy = adjustFunc.getFunctionType();
   auto sourceLine =
@@ -94,7 +94,7 @@ fir::runtime::genCharCompare(fir::FirOpBuilder &builder, mlir::Location loc,
                              mlir::arith::CmpIPredicate cmp,
                              mlir::Value lhsBuff, mlir::Value lhsLen,
                              mlir::Value rhsBuff, mlir::Value rhsLen) {
-  mlir::FuncOp beginFunc;
+  mlir::func::FuncOp beginFunc;
   switch (discoverKind(lhsBuff.getType())) {
   case 1:
     beginFunc = fir::runtime::getRuntimeFunc<mkRTKey(CharacterCompareScalar1)>(
@@ -146,7 +146,7 @@ mlir::Value fir::runtime::genIndex(fir::FirOpBuilder &builder,
                                    mlir::Value stringLen,
                                    mlir::Value substringBase,
                                    mlir::Value substringLen, mlir::Value back) {
-  mlir::FuncOp indexFunc;
+  mlir::func::FuncOp indexFunc;
   switch (kind) {
   case 1:
     indexFunc = fir::runtime::getRuntimeFunc<mkRTKey(Index1)>(loc, builder);
@@ -219,7 +219,7 @@ mlir::Value fir::runtime::genScan(fir::FirOpBuilder &builder,
                                   mlir::Value stringBase, mlir::Value stringLen,
                                   mlir::Value setBase, mlir::Value setLen,
                                   mlir::Value back) {
-  mlir::FuncOp func;
+  mlir::func::FuncOp func;
   switch (kind) {
   case 1:
     func = fir::runtime::getRuntimeFunc<mkRTKey(Scan1)>(loc, builder);
@@ -256,7 +256,7 @@ mlir::Value fir::runtime::genVerify(fir::FirOpBuilder &builder,
                                     mlir::Value stringBase,
                                     mlir::Value stringLen, mlir::Value setBase,
                                     mlir::Value setLen, mlir::Value back) {
-  mlir::FuncOp func;
+  mlir::func::FuncOp func;
   switch (kind) {
   case 1:
     func = fir::runtime::getRuntimeFunc<mkRTKey(Verify1)>(loc, builder);

@@ -1,9 +1,8 @@
-// REQUIRES: clang-driver
 // REQUIRES: x86-registered-target
 // UNSUPPORTED: system-windows
 
 // RUN: %clang -### -target x86_64-linux-gnu --offload=spirv64 \
-// RUN:   --hip-path=%S/Inputs/hipspv -nohipwrapperinc %s \
+// RUN:   --no-offload-new-driver --hip-path=%S/Inputs/hipspv -nohipwrapperinc %s \
 // RUN: 2>&1 | FileCheck %s
 
 // CHECK: [[CLANG:".*clang.*"]] "-cc1" "-triple" "spirv64"

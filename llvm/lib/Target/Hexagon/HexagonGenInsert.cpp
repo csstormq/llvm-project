@@ -47,34 +47,36 @@
 
 using namespace llvm;
 
-static cl::opt<unsigned> VRegIndexCutoff("insert-vreg-cutoff", cl::init(~0U),
-  cl::Hidden, cl::ZeroOrMore, cl::desc("Vreg# cutoff for insert generation."));
+static cl::opt<unsigned>
+    VRegIndexCutoff("insert-vreg-cutoff", cl::init(~0U), cl::Hidden,
+                    cl::desc("Vreg# cutoff for insert generation."));
 // The distance cutoff is selected based on the precheckin-perf results:
 // cutoffs 20, 25, 35, and 40 are worse than 30.
-static cl::opt<unsigned> VRegDistCutoff("insert-dist-cutoff", cl::init(30U),
-  cl::Hidden, cl::ZeroOrMore, cl::desc("Vreg distance cutoff for insert "
-  "generation."));
+static cl::opt<unsigned>
+    VRegDistCutoff("insert-dist-cutoff", cl::init(30U), cl::Hidden,
+                   cl::desc("Vreg distance cutoff for insert "
+                            "generation."));
 
 // Limit the container sizes for extreme cases where we run out of memory.
-static cl::opt<unsigned> MaxORLSize("insert-max-orl", cl::init(4096),
-  cl::Hidden, cl::ZeroOrMore, cl::desc("Maximum size of OrderedRegisterList"));
+static cl::opt<unsigned>
+    MaxORLSize("insert-max-orl", cl::init(4096), cl::Hidden,
+               cl::desc("Maximum size of OrderedRegisterList"));
 static cl::opt<unsigned> MaxIFMSize("insert-max-ifmap", cl::init(1024),
-  cl::Hidden, cl::ZeroOrMore, cl::desc("Maximum size of IFMap"));
+                                    cl::Hidden,
+                                    cl::desc("Maximum size of IFMap"));
 
-static cl::opt<bool> OptTiming("insert-timing", cl::init(false), cl::Hidden,
-  cl::ZeroOrMore, cl::desc("Enable timing of insert generation"));
-static cl::opt<bool> OptTimingDetail("insert-timing-detail", cl::init(false),
-  cl::Hidden, cl::ZeroOrMore, cl::desc("Enable detailed timing of insert "
-  "generation"));
+static cl::opt<bool> OptTiming("insert-timing", cl::Hidden,
+                               cl::desc("Enable timing of insert generation"));
+static cl::opt<bool>
+    OptTimingDetail("insert-timing-detail", cl::Hidden,
+                    cl::desc("Enable detailed timing of insert "
+                             "generation"));
 
-static cl::opt<bool> OptSelectAll0("insert-all0", cl::init(false), cl::Hidden,
-  cl::ZeroOrMore);
-static cl::opt<bool> OptSelectHas0("insert-has0", cl::init(false), cl::Hidden,
-  cl::ZeroOrMore);
+static cl::opt<bool> OptSelectAll0("insert-all0", cl::init(false), cl::Hidden);
+static cl::opt<bool> OptSelectHas0("insert-has0", cl::init(false), cl::Hidden);
 // Whether to construct constant values via "insert". Could eliminate constant
 // extenders, but often not practical.
-static cl::opt<bool> OptConst("insert-const", cl::init(false), cl::Hidden,
-  cl::ZeroOrMore);
+static cl::opt<bool> OptConst("insert-const", cl::init(false), cl::Hidden);
 
 // The preprocessor gets confused when the DEBUG macro is passed larger
 // chunks of code. Use this function to detect debugging.
@@ -1312,7 +1314,7 @@ void HexagonGenInsert::selectCandidates() {
     // element found is adequate, we will put it back on the list, other-
     // wise the list will remain empty, and the entry for this register
     // will be removed (i.e. this register will not be replaced by insert).
-    IFListType::iterator MinI = std::min_element(LL.begin(), LL.end(), IFO);
+    IFListType::iterator MinI = llvm::min_element(LL, IFO);
     assert(MinI != LL.end());
     IFRecordWithRegSet M = *MinI;
     LL.clear();

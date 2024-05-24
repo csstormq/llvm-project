@@ -22,6 +22,15 @@ using namespace mlir;
 
 namespace {
 constexpr static llvm::StringLiteral kAttrName = "dltest.layout";
+constexpr static llvm::StringLiteral kEndiannesKeyName = "dltest.endianness";
+constexpr static llvm::StringLiteral kAllocaKeyName =
+    "dltest.alloca_memory_space";
+constexpr static llvm::StringLiteral kProgramKeyName =
+    "dltest.program_memory_space";
+constexpr static llvm::StringLiteral kGlobalKeyName =
+    "dltest.global_memory_space";
+constexpr static llvm::StringLiteral kStackAlignmentKeyName =
+    "dltest.stack_alignment";
 
 /// Trivial array storage for the custom data layout spec attribute, just a list
 /// of entries.
@@ -52,6 +61,9 @@ struct CustomDataLayoutSpec
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(CustomDataLayoutSpec)
 
   using Base::Base;
+
+  static constexpr StringLiteral name = "test.custom_data_layout_spec";
+
   static CustomDataLayoutSpec get(MLIRContext *ctx,
                                   ArrayRef<DataLayoutEntryInterface> entries) {
     return Base::get(ctx, entries);
@@ -62,6 +74,21 @@ struct CustomDataLayoutSpec
   }
   DataLayoutEntryListRef getEntries() const { return getImpl()->entries; }
   LogicalResult verifySpec(Location loc) { return success(); }
+  StringAttr getEndiannessIdentifier(MLIRContext *context) const {
+    return Builder(context).getStringAttr(kEndiannesKeyName);
+  }
+  StringAttr getAllocaMemorySpaceIdentifier(MLIRContext *context) const {
+    return Builder(context).getStringAttr(kAllocaKeyName);
+  }
+  StringAttr getProgramMemorySpaceIdentifier(MLIRContext *context) const {
+    return Builder(context).getStringAttr(kProgramKeyName);
+  }
+  StringAttr getGlobalMemorySpaceIdentifier(MLIRContext *context) const {
+    return Builder(context).getStringAttr(kGlobalKeyName);
+  }
+  StringAttr getStackAlignmentIdentifier(MLIRContext *context) const {
+    return Builder(context).getStringAttr(kStackAlignmentKeyName);
+  }
 };
 
 /// A type subject to data layout that exits the program if it is queried more
@@ -73,19 +100,21 @@ struct SingleQueryType
 
   using Base::Base;
 
+  static constexpr StringLiteral name = "test.single_query";
+
   static SingleQueryType get(MLIRContext *ctx) { return Base::get(ctx); }
 
-  unsigned getTypeSizeInBits(const DataLayout &layout,
-                             DataLayoutEntryListRef params) const {
+  llvm::TypeSize getTypeSizeInBits(const DataLayout &layout,
+                                   DataLayoutEntryListRef params) const {
     static bool executed = false;
     if (executed)
       llvm::report_fatal_error("repeated call");
 
     executed = true;
-    return 1;
+    return llvm::TypeSize::getFixed(1);
   }
 
-  unsigned getABIAlignment(const DataLayout &layout,
+  uint64_t getABIAlignment(const DataLayout &layout,
                            DataLayoutEntryListRef params) {
     static bool executed = false;
     if (executed)
@@ -95,7 +124,7 @@ struct SingleQueryType
     return 2;
   }
 
-  unsigned getPreferredAlignment(const DataLayout &layout,
+  uint64_t getPreferredAlignment(const DataLayout &layout,
                                  DataLayoutEntryListRef params) {
     static bool executed = false;
     if (executed)
@@ -104,6 +133,42 @@ struct SingleQueryType
     executed = true;
     return 4;
   }
+
+  Attribute getEndianness(DataLayoutEntryInterface entry) {
+    static bool executed = false;
+    if (executed)
+      llvm::report_fatal_error("repeated call");
+
+    executed = true;
+    return Attribute();
+  }
+
+  Attribute getAllocaMemorySpace(DataLayoutEntryInterface entry) {
+    static bool executed = false;
+    if (executed)
+      llvm::report_fatal_error("repeated call");
+
+    executed = true;
+    return Attribute();
+  }
+
+  Attribute getProgramMemorySpace(DataLayoutEntryInterface entry) {
+    static bool executed = false;
+    if (executed)
+      llvm::report_fatal_error("repeated call");
+
+    executed = true;
+    return Attribute();
+  }
+
+  Attribute getGlobalMemorySpace(DataLayoutEntryInterface entry) {
+    static bool executed = false;
+    if (executed)
+      llvm::report_fatal_error("repeated call");
+
+    executed = true;
+    return Attribute();
+  }
 };
 
 /// A types that is not subject to data layout.
@@ -111,6 +176,8 @@ struct TypeNoLayout : public Type::TypeBase<TypeNoLayout, Type, TypeStorage> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TypeNoLayout)
 
   using Base::Base;
+
+  static constexpr StringLiteral name = "test.no_layout";
 
   static TypeNoLayout get(MLIRContext *ctx) { return Base::get(ctx); }
 };
@@ -130,32 +197,34 @@ struct OpWithLayout : public Op<OpWithLayout, DataLayoutOpInterface::Trait> {
     return getOperation()->getAttrOfType<DataLayoutSpecInterface>(kAttrName);
   }
 
-  static unsigned getTypeSizeInBits(Type type, const DataLayout &dataLayout,
-                                    DataLayoutEntryListRef params) {
+  static llvm::TypeSize getTypeSizeInBits(Type type,
+                                          const DataLayout &dataLayout,
+                                          DataLayoutEntryListRef params) {
     // Make a recursive query.
-    if (type.isa<FloatType>())
+    if (isa<FloatType>(type))
       return dataLayout.getTypeSizeInBits(
           IntegerType::get(type.getContext(), type.getIntOrFloatBitWidth()));
 
     // Handle built-in types that are not handled by the default process.
-    if (auto iType = type.dyn_cast<IntegerType>()) {
+    if (auto iType = dyn_cast<IntegerType>(type)) {
       for (DataLayoutEntryInterface entry : params)
-        if (entry.getKey().dyn_cast<Type>() == type)
-          return 8 *
-                 entry.getValue().cast<IntegerAttr>().getValue().getZExtValue();
-      return 8 * iType.getIntOrFloatBitWidth();
+        if (llvm::dyn_cast_if_present<Type>(entry.getKey()) == type)
+          return llvm::TypeSize::getFixed(
+              8 *
+              cast<IntegerAttr>(entry.getValue()).getValue().getZExtValue());
+      return llvm::TypeSize::getFixed(8 * iType.getIntOrFloatBitWidth());
     }
 
     // Use the default process for everything else.
     return detail::getDefaultTypeSize(type, dataLayout, params);
   }
 
-  static unsigned getTypeABIAlignment(Type type, const DataLayout &dataLayout,
+  static uint64_t getTypeABIAlignment(Type type, const DataLayout &dataLayout,
                                       DataLayoutEntryListRef params) {
     return llvm::PowerOf2Ceil(getTypeSize(type, dataLayout, params));
   }
 
-  static unsigned getTypePreferredAlignment(Type type,
+  static uint64_t getTypePreferredAlignment(Type type,
                                             const DataLayout &dataLayout,
                                             DataLayoutEntryListRef params) {
     return 2 * getTypeABIAlignment(type, dataLayout, params);
@@ -176,9 +245,9 @@ struct OpWith7BitByte
   }
 
   // Bytes are assumed to be 7-bit here.
-  static unsigned getTypeSize(Type type, const DataLayout &dataLayout,
-                              DataLayoutEntryListRef params) {
-    return llvm::divideCeil(dataLayout.getTypeSizeInBits(type), 7);
+  static llvm::TypeSize getTypeSize(Type type, const DataLayout &dataLayout,
+                                    DataLayoutEntryListRef params) {
+    return mlir::detail::divideCeil(dataLayout.getTypeSizeInBits(type), 7);
   }
 };
 
@@ -198,7 +267,7 @@ struct DLTestDialect : Dialect {
   void printAttribute(Attribute attr,
                       DialectAsmPrinter &printer) const override {
     printer << "spec<";
-    llvm::interleaveComma(attr.cast<CustomDataLayoutSpec>().getEntries(),
+    llvm::interleaveComma(cast<CustomDataLayoutSpec>(attr).getEntries(),
                           printer);
     printer << ">";
   }
@@ -212,18 +281,20 @@ struct DLTestDialect : Dialect {
       return CustomDataLayoutSpec::get(parser.getContext(), {});
 
     SmallVector<DataLayoutEntryInterface> entries;
-    do {
+    ok = succeeded(parser.parseCommaSeparatedList([&]() {
       entries.emplace_back();
       ok = succeeded(parser.parseAttribute(entries.back()));
       assert(ok);
-    } while (succeeded(parser.parseOptionalComma()));
+      return success();
+    }));
+    assert(ok);
     ok = succeeded(parser.parseGreater());
     assert(ok);
     return CustomDataLayoutSpec::get(parser.getContext(), entries);
   }
 
   void printType(Type type, DialectAsmPrinter &printer) const override {
-    if (type.isa<SingleQueryType>())
+    if (isa<SingleQueryType>(type))
       printer << "single_query";
     else
       printer << "no_layout";
@@ -258,6 +329,12 @@ module {}
   EXPECT_EQ(layout.getTypeABIAlignment(Float16Type::get(&ctx)), 2u);
   EXPECT_EQ(layout.getTypePreferredAlignment(IntegerType::get(&ctx, 42)), 8u);
   EXPECT_EQ(layout.getTypePreferredAlignment(Float16Type::get(&ctx)), 2u);
+
+  EXPECT_EQ(layout.getEndianness(), Attribute());
+  EXPECT_EQ(layout.getAllocaMemorySpace(), Attribute());
+  EXPECT_EQ(layout.getProgramMemorySpace(), Attribute());
+  EXPECT_EQ(layout.getGlobalMemorySpace(), Attribute());
+  EXPECT_EQ(layout.getStackAlignment(), 0u);
 }
 
 TEST(DataLayout, NullSpec) {
@@ -273,6 +350,7 @@ TEST(DataLayout, NullSpec) {
   auto op =
       cast<DataLayoutOpInterface>(module->getBody()->getOperations().front());
   DataLayout layout(op);
+
   EXPECT_EQ(layout.getTypeSize(IntegerType::get(&ctx, 42)), 42u);
   EXPECT_EQ(layout.getTypeSize(Float16Type::get(&ctx)), 16u);
   EXPECT_EQ(layout.getTypeSizeInBits(IntegerType::get(&ctx, 42)), 8u * 42u);
@@ -281,6 +359,14 @@ TEST(DataLayout, NullSpec) {
   EXPECT_EQ(layout.getTypeABIAlignment(Float16Type::get(&ctx)), 16u);
   EXPECT_EQ(layout.getTypePreferredAlignment(IntegerType::get(&ctx, 42)), 128u);
   EXPECT_EQ(layout.getTypePreferredAlignment(Float16Type::get(&ctx)), 32u);
+  EXPECT_EQ(layout.getTypeIndexBitwidth(Float16Type::get(&ctx)), std::nullopt);
+  EXPECT_EQ(layout.getTypeIndexBitwidth(IndexType::get(&ctx)), 64u);
+
+  EXPECT_EQ(layout.getEndianness(), Attribute());
+  EXPECT_EQ(layout.getAllocaMemorySpace(), Attribute());
+  EXPECT_EQ(layout.getProgramMemorySpace(), Attribute());
+  EXPECT_EQ(layout.getGlobalMemorySpace(), Attribute());
+  EXPECT_EQ(layout.getStackAlignment(), 0u);
 }
 
 TEST(DataLayout, EmptySpec) {
@@ -304,13 +390,27 @@ TEST(DataLayout, EmptySpec) {
   EXPECT_EQ(layout.getTypeABIAlignment(Float16Type::get(&ctx)), 16u);
   EXPECT_EQ(layout.getTypePreferredAlignment(IntegerType::get(&ctx, 42)), 128u);
   EXPECT_EQ(layout.getTypePreferredAlignment(Float16Type::get(&ctx)), 32u);
+  EXPECT_EQ(layout.getTypeIndexBitwidth(Float16Type::get(&ctx)), std::nullopt);
+  EXPECT_EQ(layout.getTypeIndexBitwidth(IndexType::get(&ctx)), 64u);
+
+  EXPECT_EQ(layout.getEndianness(), Attribute());
+  EXPECT_EQ(layout.getAllocaMemorySpace(), Attribute());
+  EXPECT_EQ(layout.getProgramMemorySpace(), Attribute());
+  EXPECT_EQ(layout.getGlobalMemorySpace(), Attribute());
+  EXPECT_EQ(layout.getStackAlignment(), 0u);
 }
 
 TEST(DataLayout, SpecWithEntries) {
   const char *ir = R"MLIR(
 "dltest.op_with_layout"() { dltest.layout = #dltest.spec<
   #dlti.dl_entry<i42, 5>,
-  #dlti.dl_entry<i16, 6>
+  #dlti.dl_entry<i16, 6>,
+  #dlti.dl_entry<index, 42>,
+  #dlti.dl_entry<"dltest.endianness", "little">,
+  #dlti.dl_entry<"dltest.alloca_memory_space", 5 : i32>,
+  #dlti.dl_entry<"dltest.program_memory_space", 3 : i32>,
+  #dlti.dl_entry<"dltest.global_memory_space", 2 : i32>,
+  #dlti.dl_entry<"dltest.stack_alignment", 128 : i32>
 > } : () -> ()
   )MLIR";
 
@@ -330,6 +430,8 @@ TEST(DataLayout, SpecWithEntries) {
   EXPECT_EQ(layout.getTypeABIAlignment(Float16Type::get(&ctx)), 8u);
   EXPECT_EQ(layout.getTypePreferredAlignment(IntegerType::get(&ctx, 42)), 16u);
   EXPECT_EQ(layout.getTypePreferredAlignment(Float16Type::get(&ctx)), 16u);
+  EXPECT_EQ(layout.getTypeIndexBitwidth(Float16Type::get(&ctx)), std::nullopt);
+  EXPECT_EQ(layout.getTypeIndexBitwidth(IndexType::get(&ctx)), 42u);
 
   EXPECT_EQ(layout.getTypeSize(IntegerType::get(&ctx, 32)), 32u);
   EXPECT_EQ(layout.getTypeSize(Float32Type::get(&ctx)), 32u);
@@ -339,6 +441,12 @@ TEST(DataLayout, SpecWithEntries) {
   EXPECT_EQ(layout.getTypeABIAlignment(Float32Type::get(&ctx)), 32u);
   EXPECT_EQ(layout.getTypePreferredAlignment(IntegerType::get(&ctx, 32)), 64u);
   EXPECT_EQ(layout.getTypePreferredAlignment(Float32Type::get(&ctx)), 64u);
+
+  EXPECT_EQ(layout.getEndianness(), Builder(&ctx).getStringAttr("little"));
+  EXPECT_EQ(layout.getAllocaMemorySpace(), Builder(&ctx).getI32IntegerAttr(5));
+  EXPECT_EQ(layout.getProgramMemorySpace(), Builder(&ctx).getI32IntegerAttr(3));
+  EXPECT_EQ(layout.getGlobalMemorySpace(), Builder(&ctx).getI32IntegerAttr(2));
+  EXPECT_EQ(layout.getStackAlignment(), 128u);
 }
 
 TEST(DataLayout, Caching) {
@@ -364,7 +472,7 @@ TEST(DataLayout, Caching) {
   EXPECT_EQ(sum, 2u);
 
   // A fresh data layout has a new cache, so the call to it should be dispatched
-  // down to the type and abort the proces.
+  // down to the type and abort the process.
   DataLayout second(op);
   ASSERT_DEATH(second.getTypeSize(SingleQueryType::get(&ctx)), "repeated call");
 }

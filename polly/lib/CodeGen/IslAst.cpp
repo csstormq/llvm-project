@@ -52,6 +52,7 @@
 #include <cassert>
 #include <cstdlib>
 
+#include "polly/Support/PollyDebug.h"
 #define DEBUG_TYPE "polly-ast"
 
 using namespace llvm;
@@ -62,27 +63,24 @@ using IslAstUserPayload = IslAstInfo::IslAstUserPayload;
 static cl::opt<bool>
     PollyParallel("polly-parallel",
                   cl::desc("Generate thread parallel code (isl codegen only)"),
-                  cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+                  cl::cat(PollyCategory));
 
 static cl::opt<bool> PrintAccesses("polly-ast-print-accesses",
                                    cl::desc("Print memory access functions"),
-                                   cl::init(false), cl::ZeroOrMore,
                                    cl::cat(PollyCategory));
 
 static cl::opt<bool> PollyParallelForce(
     "polly-parallel-force",
     cl::desc(
         "Force generation of thread parallel code ignoring any cost model"),
-    cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::cat(PollyCategory));
 
 static cl::opt<bool> UseContext("polly-ast-use-context",
                                 cl::desc("Use context"), cl::Hidden,
-                                cl::init(true), cl::ZeroOrMore,
-                                cl::cat(PollyCategory));
+                                cl::init(true), cl::cat(PollyCategory));
 
 static cl::opt<bool> DetectParallel("polly-ast-detect-parallel",
                                     cl::desc("Detect parallelism"), cl::Hidden,
-                                    cl::init(false), cl::ZeroOrMore,
                                     cl::cat(PollyCategory));
 
 STATISTIC(ScopsProcessed, "Number of SCoPs processed");
@@ -641,23 +639,19 @@ isl::ast_build IslAstInfo::getBuild(const isl::ast_node &Node) {
 static std::unique_ptr<IslAstInfo> runIslAst(
     Scop &Scop,
     function_ref<const Dependences &(Dependences::AnalysisLevel)> GetDeps) {
-  // Skip SCoPs in case they're already handled by PPCGCodeGeneration.
-  if (Scop.isToBeSkipped())
-    return {};
-
   ScopsProcessed++;
 
   const Dependences &D = GetDeps(Dependences::AL_Statement);
 
   if (D.getSharedIslCtx() != Scop.getSharedIslCtx()) {
-    LLVM_DEBUG(
+    POLLY_DEBUG(
         dbgs() << "Got dependence analysis for different SCoP/isl_ctx\n");
     return {};
   }
 
   std::unique_ptr<IslAstInfo> Ast = std::make_unique<IslAstInfo>(Scop, D);
 
-  LLVM_DEBUG({
+  POLLY_DEBUG({
     if (Ast)
       Ast->print(dbgs());
   });
@@ -758,7 +752,7 @@ void IslAstInfo::print(raw_ostream &OS) {
   P = isl_ast_node_print(RootNode.get(), P, Options);
   AstStr = isl_printer_get_str(P);
 
-  LLVM_DEBUG({
+  POLLY_DEBUG({
     dbgs() << S.getContextStr() << "\n";
     dbgs() << stringFromIslObj(S.getScheduleTree(), "null");
   });
@@ -828,7 +822,7 @@ INITIALIZE_PASS_END(IslAstInfoWrapperPass, "polly-ast",
 
 namespace {
 /// Print result from IslAstInfoWrapperPass.
-class IslAstInfoPrinterLegacyPass : public ScopPass {
+class IslAstInfoPrinterLegacyPass final : public ScopPass {
 public:
   static char ID;
 

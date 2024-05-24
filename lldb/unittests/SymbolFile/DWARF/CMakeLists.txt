@@ -1,5 +1,6 @@
 add_lldb_unittest(SymbolFileDWARFTests
   DWARFASTParserClangTests.cpp
+  DWARFDebugNamesIndexTest.cpp
   DWARFDIETest.cpp
   DWARFIndexCachingTest.cpp
   DWARFUnitTest.cpp
@@ -17,12 +18,14 @@ add_lldb_unittest(SymbolFileDWARFTests
     lldbPluginPlatformMacOSX
     lldbUtilityHelpers
     lldbSymbolHelpers
+    LLVMTestingSupport
   LINK_COMPONENTS
     Support
     DebugInfoPDB
   )
 
 set(test_inputs
-   test-dwarf.exe)
+   test-dwarf.exe
+   DW_AT_default_value-test.yaml)
 
 add_unittest_inputs(SymbolFileDWARFTests "${test_inputs}")

@@ -1,5 +1,10 @@
 include "llvm/Option/OptParser.td"
 
+multiclass BB<string name, string help1, string help2> {
+  def NAME: Flag<["--"], name>, HelpText<help1>;
+  def no_ # NAME: Flag<["--"], "no-" # name>, HelpText<help2>;
+}
+
 // Flags that lld/MachO understands but ld64 doesn't. These take
 // '--' instead of '-' and use dashes instead of underscores, so
 // they don't collide with the ld64 compat options.
@@ -28,8 +33,21 @@ def color_diagnostics_eq: Joined<["--"], "color-diagnostics=">,
 def threads_eq : Joined<["--"], "threads=">,
     HelpText<"Number of threads. '1' disables multi-threading. By default all available hardware threads are used">,
     Group<grp_lld>;
+def thinlto_emit_imports_files: Flag<["--"], "thinlto-emit-imports-files">,
+    Group<grp_lld>;
+def thinlto_emit_index_files: Flag<["--"], "thinlto-emit-index-files">,
+    Group<grp_lld>;
+def thinlto_index_only: Flag<["--"], "thinlto-index-only">,
+    Group<grp_lld>;
+def thinlto_index_only_eq: Joined<["--"], "thinlto-index-only=">,
+    Group<grp_lld>;
 def thinlto_jobs_eq : Joined<["--"], "thinlto-jobs=">,
     HelpText<"Number of ThinLTO jobs. Default to --threads=">,
+    Group<grp_lld>;
+def thinlto_object_suffix_replace_eq:
+    Joined<["--"], "thinlto-object-suffix-replace=">,
+    Group<grp_lld>;
+def thinlto_prefix_replace_eq: Joined<["--"], "thinlto-prefix-replace=">,
     Group<grp_lld>;
 def reproduce: Separate<["--"], "reproduce">,
     Group<grp_lld>;
@@ -40,19 +58,25 @@ def reproduce_eq: Joined<["--"], "reproduce=">,
 def version: Flag<["--"], "version">,
     HelpText<"Display the version number and exit">,
     Group<grp_lld>;
-def no_lto_legacy_pass_manager : Flag<["--"], "no-lto-legacy-pass-manager">,
-    HelpText<"Use the new pass manager in LLVM">,
+def time_trace_eq: Joined<["--"], "time-trace=">,
+    HelpText<"Record time trace to <file>">,
+    MetaVarName<"<file>">,
     Group<grp_lld>;
-def time_trace: Flag<["--"], "time-trace">, HelpText<"Record time trace">,
+def : Flag<["--"], "time-trace">,
+    Alias<time_trace_eq>,
+    HelpText<"Record time trace to file next to output">,
     Group<grp_lld>;
 def time_trace_granularity_eq: Joined<["--"], "time-trace-granularity=">,
     HelpText<"Minimum time granularity (in microseconds) traced by time profiler">,
     Group<grp_lld>;
-def time_trace_file_eq: Joined<["--"], "time-trace-file=">,
-    HelpText<"Specify time trace output file">,
+def deduplicate_strings: Flag<["--"], "deduplicate-strings">,
+    HelpText<"Enable string deduplication">,
     Group<grp_lld>;
-def deduplicate_literals: Flag<["--"], "deduplicate-literals">,
-    HelpText<"Enable literal deduplication. This is implied by --icf={safe,all}">,
+def no_deduplicate_strings: Flag<["--"], "no-deduplicate-strings">,
+    HelpText<"Disable string deduplication. This helps uncover cases of comparing string addresses instead of equality and might have a link time performance benefit.">,
+    Group<grp_lld>;
+def dead_strip_duplicates: Flag<["--"], "dead-strip-duplicates">,
+    HelpText<"Do not error on duplicate symbols that will be dead stripped.">,
     Group<grp_lld>;
 def print_dylib_search: Flag<["--"], "print-dylib-search">,
     HelpText<"Print which paths lld searched when trying to find dylibs">,
@@ -65,7 +89,11 @@ def lto_O: Joined<["--"], "lto-O">,
     HelpText<"Set optimization level for LTO (default: 2)">,
     MetaVarName<"<opt-level>">,
     Group<grp_lld>;
-def thinlto_cache_policy: Joined<["--"], "thinlto-cache-policy=">,
+def lto_CGO: Joined<["--"], "lto-CGO">,
+    HelpText<"Set codegen optimization level for LTO (default: 2)">,
+    MetaVarName<"<cgopt-level>">,
+    Group<grp_lld>;
+def thinlto_cache_policy_eq: Joined<["--"], "thinlto-cache-policy=">,
     HelpText<"Pruning policy for the ThinLTO cache">,
     Group<grp_lld>;
 def O : JoinedOrSeparate<["-"], "O">,
@@ -74,11 +102,11 @@ def start_lib: Flag<["--"], "start-lib">,
     HelpText<"Start a grouping of objects that should be treated as if they were together in an archive">;
 def end_lib: Flag<["--"], "end-lib">,
     HelpText<"End a grouping of objects that should be treated as if they were together in an archive">;
-def no_warn_dylib_install_name: Joined<["--"], "no-warn-dylib-install-name">,
-    HelpText<"Do not warn on -install-name if -dylib is not passed (default)">,
+def no_warn_dylib_install_name: Flag<["--"], "no-warn-dylib-install-name">,
+    HelpText<"Do not warn on -install_name if -dylib is not passed (default)">,
     Group<grp_lld>;
-def warn_dylib_install_name: Joined<["--"], "warn-dylib-install-name">,
-    HelpText<"Warn on -install-name if -dylib is not passed">,
+def warn_dylib_install_name: Flag<["--"], "warn-dylib-install-name">,
+    HelpText<"Warn on -install_name if -dylib is not passed">,
     Group<grp_lld>;
 def call_graph_profile_sort: Flag<["--"], "call-graph-profile-sort">,
     HelpText<"Reorder sections with call graph profile (default)">,
@@ -86,9 +114,36 @@ def call_graph_profile_sort: Flag<["--"], "call-graph-profile-sort">,
 def no_call_graph_profile_sort : Flag<["--"], "no-call-graph-profile-sort">,
     HelpText<"Do not reorder sections with call graph profile">,
     Group<grp_lld>;
-def print_symbol_order: Joined<["--"], "print-symbol-order=">,
+def print_symbol_order_eq: Joined<["--"], "print-symbol-order=">,
     HelpText<"Print a symbol order specified by --call-graph-profile-sort into the specified file">,
     Group<grp_lld>;
+def ignore_auto_link_option : Separate<["--"], "ignore-auto-link-option">,
+    Group<grp_lld>;
+def ignore_auto_link_option_eq : Joined<["--"], "ignore-auto-link-option=">,
+    Alias<!cast<Separate>(ignore_auto_link_option)>,
+    HelpText<"Ignore a single auto-linked library or framework. Useful to ignore invalid options that ld64 ignores">,
+    Group<grp_lld>;
+def strict_auto_link : Flag<["--"], "strict-auto-link">,
+    HelpText<"Always warn for missing frameworks or libraries if they are loaded via LC_LINKER_OPTIONS">,
+    Group<grp_lld>;
+def check_category_conflicts : Flag<["--"], "check-category-conflicts">,
+    HelpText<"Check for conflicts between category & class methods">,
+    Group<grp_lld>;
+def objc_category_merging : Flag<["-"], "objc_category_merging">,
+    HelpText<"Merge Objective-C categories that share the same base class">,
+    Group<grp_lld>;
+def no_objc_category_merging : Flag<["-"], "no_objc_category_merging">,
+    HelpText<"Do not merge Objective-C categories">,
+    Group<grp_lld>;
+def lto_debug_pass_manager: Flag<["--"], "lto-debug-pass-manager">,
+    HelpText<"Debug new pass manager">, Group<grp_lld>;
+def cs_profile_generate: Flag<["--"], "cs-profile-generate">,
+    HelpText<"Perform context sensitive PGO instrumentation">, Group<grp_lld>;
+def cs_profile_path: Joined<["--"], "cs-profile-path=">,
+    HelpText<"Context sensitive profile file path">, Group<grp_lld>;
+defm pgo_warn_mismatch: BB<"pgo-warn-mismatch",
+  "turn on warnings about profile cfg mismatch (default)",
+  "turn off warnings about profile cfg mismatch">, Group<grp_lld>;
 
 // This is a complete Options.td compiled from Apple's ld(1) manpage
 // dated 2018-03-07 and cross checked with ld64 source code in repo
@@ -237,6 +292,14 @@ def force_load : Separate<["-"], "force_load">,
 def force_load_swift_libs : Flag<["-"], "force_load_swift_libs">,
     HelpText<"Apply -force_load to libraries listed in LC_LINKER_OPTIONS whose names start with 'swift'">,
     Group<grp_libs>;
+def load_hidden : Separate<["-"], "load_hidden">,
+    MetaVarName<"<path>">,
+    HelpText<"Load all symbols from static library with hidden visibility">,
+    Group<grp_libs>;
+def hidden_l : Joined<["-"], "hidden-l">,
+    MetaVarName<"<name>">,
+    HelpText<"Like -l<name>, but load all symbols with hidden visibility">,
+    Group<grp_libs>;
 
 def grp_content : OptionGroup<"content">, HelpText<"ADDITIONAL CONTENT">;
 
@@ -312,7 +375,7 @@ def no_branch_islands : Flag<["-"], "no_branch_islands">,
     Flags<[HelpHidden]>,
     Group<grp_opts>;
 def no_deduplicate : Flag<["-"], "no_deduplicate">,
-    HelpText<"Disable code deduplicaiton (synonym for `--icf=none')">,
+    HelpText<"Disable code deduplication (synonym for `--icf=none')">,
     Alias<icf_eq>, AliasArgs<["none"]>,
     Group<grp_opts>;
 
@@ -320,7 +383,7 @@ def grp_version : OptionGroup<"version">, HelpText<"VERSION TARGETING">;
 
 def platform_version : MultiArg<["-"], "platform_version", 3>,
     MetaVarName<"<platform> <min_version> <sdk_version>">,
-    HelpText<"Platform (e.g., macos, ios, tvos, watchos, bridgeos, mac-catalyst, ios-sim, tvos-sim, watchos-sim, driverkit) and version numbers">,
+    HelpText<"Platform (e.g., macos, ios, tvos, watchos, xros, bridgeos, mac-catalyst, ios-sim, tvos-sim, watchos-sim, xros-sim, driverkit) and version numbers">,
     Group<grp_version>;
 def sdk_version : Separate<["-"], "sdk_version">,
     HelpText<"This option is undocumented in ld64">,
@@ -483,6 +546,9 @@ def exported_symbols_list : Separate<["-"], "exported_symbols_list">,
     MetaVarName<"<file>">,
     HelpText<"Symbols specified in <file> remain global, while others become private externs">,
     Group<grp_resolve>;
+def no_exported_symbols : Flag<["-"], "no_exported_symbols">,
+    HelpText<"Don't export any symbols from the binary, useful for main executables that don't have plugins">,
+    Group<grp_resolve>;
 def unexported_symbol : Separate<["-"], "unexported_symbol">,
     MetaVarName<"<symbol>">,
     HelpText<"Global <symbol> becomes private extern">,
@@ -499,7 +565,6 @@ def reexported_symbols_list : Separate<["-"], "reexported_symbols_list">,
 def alias : MultiArg<["-"], "alias", 2>,
     MetaVarName<"<symbol_name> <alternate_name>">,
     HelpText<"Create a symbol alias with default global visibility">,
-    Flags<[HelpHidden]>,
     Group<grp_resolve>;
 def alias_list : Separate<["-"], "alias_list">,
     MetaVarName<"<file>">,
@@ -581,17 +646,14 @@ def S : Flag<["-"], "S">,
     Group<grp_symtab>;
 def x : Flag<["-"], "x">,
     HelpText<"Exclude non-global symbols from the output symbol table">,
-    Flags<[HelpHidden]>,
     Group<grp_symtab>;
 def non_global_symbols_strip_list : Separate<["-"], "non_global_symbols_strip_list">,
     MetaVarName<"<path>">,
     HelpText<"Specify in <path> the non-global symbols that should be removed from the output symbol table">,
-    Flags<[HelpHidden]>,
     Group<grp_symtab>;
 def non_global_symbols_no_strip_list : Separate<["-"], "non_global_symbols_no_strip_list">,
     MetaVarName<"<path>">,
     HelpText<"Specify in <path> the non-global symbols that should remain in the output symbol table">,
-    Flags<[HelpHidden]>,
     Group<grp_symtab>;
 def oso_prefix : Separate<["-"], "oso_prefix">,
     MetaVarName<"<path>">,
@@ -601,21 +663,6 @@ def add_ast_path : Separate<["-"], "add_ast_path">,
     MetaVarName<"<path>">,
     HelpText<"AST paths will be emitted as STABS">,
     Group<grp_symtab>;
-
-def grp_bitcode : OptionGroup<"bitcode">, HelpText<"BITCODE BUILD FLOW">;
-
-def bitcode_bundle : Flag<["-"], "bitcode_bundle">,
-    HelpText<"Generate an embedded bitcode bundle in the __LLVM,__bundle section of the output">,
-    Group<grp_bitcode>;
-def bitcode_hide_symbols : Flag<["-"], "bitcode_hide_symbols">,
-    HelpText<"With -bitcode_bundle, hide all non-exported symbols from output bitcode bundle.">,
-    Flags<[HelpHidden]>,
-    Group<grp_bitcode>;
-def bitcode_symbol_map : Separate<["-"], "bitcode_symbol_map">,
-    MetaVarName<"<path>">,
-    HelpText<"Write the bitcode symbol reverse mapping to file <path>, or if a directory, to <path>/UUID.bcsymbolmap">,
-    Flags<[HelpHidden]>,
-    Group<grp_bitcode>;
 
 def grp_rare : OptionGroup<"rare">, HelpText<"RARELY USED">;
 
@@ -627,6 +674,9 @@ def adhoc_codesign : Flag<["-"], "adhoc_codesign">,
     Group<grp_rare>;
 def no_adhoc_codesign : Flag<["-"], "no_adhoc_codesign">,
     HelpText<"Do not write an ad-hoc code signature to the output file (default for x86_64 binaries)">,
+    Group<grp_rare>;
+def reproducible : Flag<["-"], "reproducible">,
+    HelpText<"Make the output reproducible by removing timestamps and other non-deterministic data. This is the default behavior.">,
     Group<grp_rare>;
 def version_details : Flag<["-"], "version_details">,
     HelpText<"Print the linker version in JSON form">,
@@ -646,10 +696,6 @@ def no_inits : Flag<["-"], "no_inits">,
     Group<grp_rare>;
 def no_warn_inits : Flag<["-"], "no_warn_inits">,
     HelpText<"Suppress warnings for static initializers in the output">,
-    Flags<[HelpHidden]>,
-    Group<grp_rare>;
-def debug_variant : Flag<["-"], "debug_variant">,
-    HelpText<"Suppress warnings germane to binaries shipping to customers">,
     Flags<[HelpHidden]>,
     Group<grp_rare>;
 def unaligned_pointers : Separate<["-"], "unaligned_pointers">,
@@ -759,7 +805,6 @@ def allow_sub_type_mismatches : Flag<["-"], "allow_sub_type_mismatches">,
     Group<grp_rare>;
 def no_uuid : Flag<["-"], "no_uuid">,
     HelpText<"Do not generate the LC_UUID load command">,
-    Flags<[HelpHidden]>,
     Group<grp_rare>;
 def root_safe : Flag<["-"], "root_safe">,
     HelpText<"Set the MH_ROOT_SAFE bit in the mach-o header">,
@@ -890,7 +935,6 @@ def e : Separate<["-"], "e">,
     Group<grp_rare>;
 def w : Flag<["-"], "w">,
     HelpText<"Suppress all warnings">,
-    Flags<[HelpHidden]>,
     Group<grp_rare>;
 def final_output : Separate<["-"], "final_output">,
     MetaVarName<"<name>">,
@@ -928,10 +972,6 @@ def interposable_list : Separate<["-"], "interposable_list">,
 def no_function_starts : Flag<["-"], "no_function_starts">,
     HelpText<"Do not create table of function start addresses">,
     Group<grp_rare>;
-def no_objc_category_merging : Flag<["-"], "no_objc_category_merging">,
-    HelpText<"Do not merge Objective-C categories into their classes">,
-    Flags<[HelpHidden]>,
-    Group<grp_rare>;
 def object_path_lto : Separate<["-"], "object_path_lto">,
     MetaVarName<"<path>">,
     HelpText<"Retain any temporary mach-o file in <path> that would otherwise be deleted during LTO">,
@@ -968,6 +1008,19 @@ def mcpu : Separate<["-"], "mcpu">,
     Group<grp_rare>;
 def no_dtrace_dof : Flag<["-"], "no_dtrace_dof">,
     HelpText<"Disable dtrace-dof processing (default).">,
+    Group<grp_rare>;
+def objc_stubs_fast : Flag<["-"], "objc_stubs_fast">,
+    HelpText<"Produce larger stubs for Objective-C method calls with fewer jumps (default).">,
+    Group<grp_rare>;
+def objc_stubs_small : Flag<["-"], "objc_stubs_small">,
+    HelpText<"Produce smaller stubs for Objective-C method calls with more jumps.">,
+    Group<grp_rare>;
+def dyld_env : Separate<["-"], "dyld_env">,
+    MetaVarName<"<dyld_env_var>">,
+    HelpText<"Specifies a LC_DYLD_ENVIRONMENT variable value pair.">,
+    Group<grp_rare>;
+def ignore_auto_link : Flag<["-"], "ignore_auto_link">,
+    HelpText<"Ignore LC_LINKER_OPTIONs">,
     Group<grp_rare>;
 
 def grp_deprecated : OptionGroup<"deprecated">, HelpText<"DEPRECATED">;
@@ -1147,6 +1200,28 @@ def slow_stubs : Flag<["-"], "slow_stubs">,
     Flags<[HelpHidden]>,
     Group<grp_obsolete>;
 
+def bitcode_bundle : Flag<["-"], "bitcode_bundle">,
+    HelpText<"Obsolete since the App Store no longer supports binaries with embedded bitcode">,
+    Flags<[HelpHidden]>,
+    Group<grp_obsolete>;
+def bitcode_hide_symbols : Flag<["-"], "bitcode_hide_symbols">,
+    HelpText<"Obsolete since the App Store no longer supports binaries with embedded bitcode">,
+    Flags<[HelpHidden]>,
+    Group<grp_obsolete>;
+def bitcode_symbol_map : Separate<["-"], "bitcode_symbol_map">,
+    MetaVarName<"<path>">,
+    HelpText<"Obsolete since the App Store no longer supports binaries with embedded bitcode">,
+    Flags<[HelpHidden]>,
+    Group<grp_obsolete>;
+def bitcode_process_mode : Separate<["-"], "bitcode_process_mode">,
+    HelpText<"Obsolete since the App Store no longer supports binaries with embedded bitcode">,
+    Flags<[HelpHidden]>,
+    Group<grp_obsolete>;
+def bitcode_verify : Flag<["-"], "bitcode_verify">,
+    HelpText<"Obsolete since the App Store no longer supports binaries with embedded bitcode">,
+    Flags<[HelpHidden]>,
+    Group<grp_obsolete>;
+
 def grp_undocumented : OptionGroup<"undocumented">, HelpText<"UNDOCUMENTED">;
 
 def add_linker_option : Flag<["-"], "add_linker_option">,
@@ -1173,14 +1248,6 @@ def allow_simulator_linking_to_macosx_dylibs : Flag<["-"], "allow_simulator_link
     HelpText<"This option is undocumented in ld64">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
-def bitcode_process_mode : Flag<["-"], "bitcode_process_mode">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
-    Group<grp_undocumented>;
-def bitcode_verify : Flag<["-"], "bitcode_verify">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
-    Group<grp_undocumented>;
 def classic_linker : Flag<["-"], "classic_linker">,
     HelpText<"This option is undocumented in ld64">,
     Flags<[HelpHidden]>,
@@ -1197,10 +1264,6 @@ def debug_snapshot : Flag<["-"], "debug_snapshot">,
     Group<grp_undocumented>;
 def demangle : Flag<["-"], "demangle">,
     HelpText<"Demangle symbol names in diagnostics">;
-def dyld_env : Flag<["-"], "dyld_env">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
-    Group<grp_undocumented>;
 def encryptable : Flag<["-"], "encryptable">,
     HelpText<"Generate the LC_ENCRYPTION_INFO load command">,
     Group<grp_undocumented>;
@@ -1212,12 +1275,20 @@ def executable_path : Flag<["-"], "executable_path">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
 def fixup_chains : Flag<["-"], "fixup_chains">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
+    HelpText<"Emit chained fixups">,
+    Group<grp_undocumented>;
+def no_fixup_chains : Flag<["-"], "no_fixup_chains">,
+    HelpText<"Emit fixup information as classic dyld opcodes">,
     Group<grp_undocumented>;
 def fixup_chains_section : Flag<["-"], "fixup_chains_section">,
     HelpText<"This option is undocumented in ld64">,
     Flags<[HelpHidden]>,
+    Group<grp_undocumented>;
+def objc_relative_method_lists : Flag<["-"], "objc_relative_method_lists">,
+    HelpText<"Emit relative method lists (more compact representation)">,
+    Group<grp_undocumented>;
+def no_objc_relative_method_lists : Flag<["-"], "no_objc_relative_method_lists">,
+    HelpText<"Don't emit relative method lists (use traditional representation)">,
     Group<grp_undocumented>;
 def flto_codegen_only : Flag<["-"], "flto-codegen-only">,
     HelpText<"This option is undocumented in ld64">,
@@ -1231,11 +1302,11 @@ def force_symbols_coalesce_list : Flag<["-"], "force_symbols_coalesce_list">,
     HelpText<"This option is undocumented in ld64">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
-def force_symbols_not_weak_list : Flag<["-"], "force_symbols_not_weak_list">,
+def force_symbols_not_weak_list : Separate<["-"], "force_symbols_not_weak_list">,
     HelpText<"This option is undocumented in ld64">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
-def force_symbols_weak_list : Flag<["-"], "force_symbols_weak_list">,
+def force_symbols_weak_list : Separate<["-"], "force_symbols_weak_list">,
     HelpText<"This option is undocumented in ld64">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
@@ -1250,17 +1321,11 @@ def i : Flag<["-"], "i">,
     HelpText<"This option is undocumented in ld64">,
     Flags<[HelpHidden]>,
     Group<grp_undocumented>;
-def ignore_auto_link : Flag<["-"], "ignore_auto_link">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
-    Group<grp_undocumented>;
 def ignore_optimization_hints : Flag<["-"], "ignore_optimization_hints">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
+    HelpText<"Ignore Linker Optimization Hints">,
     Group<grp_undocumented>;
 def init_offsets : Flag<["-"], "init_offsets">,
-    HelpText<"This option is undocumented in ld64">,
-    Flags<[HelpHidden]>,
+    HelpText<"Store __TEXT segment offsets of static initializers">,
     Group<grp_undocumented>;
 def keep_dwarf_unwind : Flag<["-"], "keep_dwarf_unwind">,
     HelpText<"This option is undocumented in ld64">,
@@ -1342,5 +1407,15 @@ def grp_ignored_silently : OptionGroup<"ignored_silently">, HelpText<"IGNORED SI
 
 def objc_abi_version : Separate<["-"], "objc_abi_version">,
     HelpText<"This option only applies to i386 in ld64">,
+    Flags<[HelpHidden]>,
+    Group<grp_ignored_silently>;
+def debug_variant : Flag<["-"], "debug_variant">,
+    HelpText<"Do not warn about issues that are only problems for binaries shipping to customers.">,
+    Flags<[HelpHidden]>,
+    Group<grp_ignored_silently>;
+
+// NOTE: This flag should be respected if -warn_duplicate_libraries is ever implemented.
+def no_warn_duplicate_libraries : Flag<["-"], "no_warn_duplicate_libraries">,
+    HelpText<"Do not warn if the input contains duplicate library options.">,
     Flags<[HelpHidden]>,
     Group<grp_ignored_silently>;

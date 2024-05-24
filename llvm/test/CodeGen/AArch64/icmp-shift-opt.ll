@@ -11,7 +11,7 @@ define i128 @opt_setcc_lt_power_of_2(i128 %a) nounwind {
 ; CHECK-NEXT:  .LBB0_1: // %loop
 ; CHECK-NEXT:    // =>This Inner Loop Header: Depth=1
 ; CHECK-NEXT:    adds x0, x0, #1
-; CHECK-NEXT:    adcs x1, x1, xzr
+; CHECK-NEXT:    cinc x1, x1, hs
 ; CHECK-NEXT:    orr x8, x1, x0, lsr #60
 ; CHECK-NEXT:    cbnz x8, .LBB0_1
 ; CHECK-NEXT:  // %bb.2: // %exit
@@ -137,11 +137,8 @@ define i1 @opt_setcc_shl_ne_zero_i256(i256 %a) nounwind {
 ; CHECK-LABEL: opt_setcc_shl_ne_zero_i256:
 ; CHECK:       // %bb.0:
 ; CHECK-NEXT:    orr x8, x2, x0
-; CHECK-NEXT:    extr x9, x3, x2, #47
-; CHECK-NEXT:    extr x10, x1, x0, #47
-; CHECK-NEXT:    extr x8, x8, x1, #47
-; CHECK-NEXT:    orr x9, x10, x9
-; CHECK-NEXT:    orr x8, x8, x9
+; CHECK-NEXT:    orr x8, x1, x8
+; CHECK-NEXT:    orr x8, x8, x3, lsl #17
 ; CHECK-NEXT:    cmp x8, #0
 ; CHECK-NEXT:    cset w0, ne
 ; CHECK-NEXT:    ret

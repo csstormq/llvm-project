@@ -23,10 +23,18 @@ def FIRToLLVMLowering : Pass<"fir-to-llvm-ir", "mlir::ModuleOp"> {
     will also convert ops in the standard and FIRCG dialects.
   }];
   let constructor = "::fir::createFIRToLLVMPass()";
-  let dependentDialects = ["mlir::LLVM::LLVMDialect"];
+  let dependentDialects = ["mlir::LLVM::LLVMDialect", "mlir::DLTIDialect"];
   let options = [
     Option<"forcedTargetTriple", "target", "std::string", /*default=*/"",
-           "Override module's target triple.">
+           "Override module's target triple.">,
+    Option<"forcedDataLayout", "datalayout", "std::string", /*default=*/"",
+           "Override module's data layout.">,
+    Option<"forcedTargetCPU", "target-cpu", "std::string", /*default=*/"",
+           "Override module's target CPU.">,
+    Option<"forcedTargetFeatures", "target-features", "std::string",
+           /*default=*/"", "Override module's target features.">,
+    Option<"applyTBAA", "apply-tbaa", "bool", /*default=*/"false",
+           "Attach TBAA tags to memory accessing operations.">
   ];
 }
 
@@ -39,28 +47,40 @@ def CodeGenRewrite : Pass<"cg-rewrite", "mlir::ModuleOp"> {
   let dependentDialects = [
     "fir::FIROpsDialect", "fir::FIRCodeGenDialect"
   ];
+  let options = [
+    Option<"preserveDeclare", "preserve-declare", "bool", /*default=*/"false",
+           "Preserve DeclareOp during pre codegen re-write.">
+  ];
   let statistics = [
     Statistic<"numDCE", "num-dce'd", "Number of operations eliminated">
   ];
 }
 
-def TargetRewrite : Pass<"target-rewrite", "mlir::ModuleOp"> {
+def TargetRewritePass : Pass<"target-rewrite", "mlir::ModuleOp"> {
   let summary = "Rewrite some FIR dialect into target specific forms.";
   let description = [{
       Certain abstractions in the FIR dialect need to be rewritten to reflect
       representations that may differ based on the target machine.
   }];
   let constructor = "::fir::createFirTargetRewritePass()";
-  let dependentDialects = [ "fir::FIROpsDialect" ];
+  let dependentDialects = [ "fir::FIROpsDialect", "mlir::func::FuncDialect",
+                            "mlir::DLTIDialect" ];
   let options = [
     Option<"forcedTargetTriple", "target", "std::string", /*default=*/"",
            "Override module's target triple.">,
+    Option<"forcedTargetCPU", "target-cpu", "std::string", /*default=*/"",
+           "Override module's target CPU.">,
+    Option<"forcedTargetFeatures", "target-features", "std::string",
+           /*default=*/"", "Override module's target features.">,
     Option<"noCharacterConversion", "no-character-conversion",
            "bool", /*default=*/"false",
            "Disable target-specific conversion of CHARACTER.">,
     Option<"noComplexConversion", "no-complex-conversion",
            "bool", /*default=*/"false",
-           "Disable target-specific conversion of COMPLEX.">
+           "Disable target-specific conversion of COMPLEX.">,
+    Option<"noStructConversion", "no-struct-conversion",
+           "bool", /*default=*/"false",
+           "Disable target-specific conversion of derived type value.">
   ];
 }
 

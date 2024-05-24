@@ -9,36 +9,35 @@
 
 // <string>
 
-//   bool starts_with(charT x) const noexcept;
+// constexpr bool starts_with(charT x) const noexcept;
 
 #include <string>
 #include <cassert>
 
 #include "test_macros.h"
 
-bool test() {
-  {
-    typedef std::string S;
-    S  s1 {};
-    S  s2 { "abcde", 5 };
+template <class S>
+constexpr void test_string() {
+  S s1{};
+  S s2{"abcde", 5};
 
-    ASSERT_NOEXCEPT(s1.starts_with('e'));
+  ASSERT_NOEXCEPT(s1.starts_with('e'));
 
-    assert (!s1.starts_with('a'));
-    assert (!s1.starts_with('x'));
-    assert ( s2.starts_with('a'));
-    assert (!s2.starts_with('x'));
-  }
+  assert(!s1.starts_with('a'));
+  assert(!s1.starts_with('x'));
+  assert(s2.starts_with('a'));
+  assert(!s2.starts_with('x'));
+}
+
+constexpr bool test() {
+  test_string<std::string>();
 
   return true;
 }
 
-int main(int, char**)
-{
+int main(int, char**) {
   test();
-#if TEST_STD_VER > 17
-  // static_assert(test());
-#endif
+  static_assert(test());
 
   return 0;
 }

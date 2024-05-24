@@ -9,15 +9,15 @@
 #ifndef MLIR_DIALECT_FUNC_IR_OPS_H
 #define MLIR_DIALECT_FUNC_IR_OPS_H
 
-#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
-#include "mlir/IR/FunctionInterfaces.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -29,12 +29,6 @@ class PatternRewriter;
 #include "mlir/Dialect/Func/IR/FuncOps.h.inc"
 
 #include "mlir/Dialect/Func/IR/FuncOpsDialect.h.inc"
-
-namespace mlir {
-/// FIXME: This is a temporary using directive to ease the transition of FuncOp
-/// to the Func dialect. This will be removed after all uses are updated.
-using FuncOp = func::FuncOp;
-} // namespace mlir
 
 namespace llvm {
 

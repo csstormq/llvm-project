@@ -376,21 +376,43 @@ TEST(SanitizerCommon, RemoveANSIEscapeSequencesFromString) {
   }
 }
 
-TEST(SanitizerCommon, InternalScopedString) {
+TEST(SanitizerCommon, InternalScopedStringAppend) {
   InternalScopedString str;
   EXPECT_EQ(0U, str.length());
   EXPECT_STREQ("", str.data());
 
-  str.append("foo");
+  str.Append("");
+  EXPECT_EQ(0U, str.length());
+  EXPECT_STREQ("", str.data());
+
+  str.Append("foo");
+  EXPECT_EQ(3U, str.length());
+  EXPECT_STREQ("foo", str.data());
+
+  str.Append("");
+  EXPECT_EQ(3U, str.length());
+  EXPECT_STREQ("foo", str.data());
+
+  str.Append("123\000456");
+  EXPECT_EQ(6U, str.length());
+  EXPECT_STREQ("foo123", str.data());
+}
+
+TEST(SanitizerCommon, InternalScopedStringAppendF) {
+  InternalScopedString str;
+  EXPECT_EQ(0U, str.length());
+  EXPECT_STREQ("", str.data());
+
+  str.AppendF("foo");
   EXPECT_EQ(3U, str.length());
   EXPECT_STREQ("foo", str.data());
 
   int x = 1234;
-  str.append("%d", x);
+  str.AppendF("%d", x);
   EXPECT_EQ(7U, str.length());
   EXPECT_STREQ("foo1234", str.data());
 
-  str.append("%d", x);
+  str.AppendF("%d", x);
   EXPECT_EQ(11U, str.length());
   EXPECT_STREQ("foo12341234", str.data());
 
@@ -405,7 +427,7 @@ TEST(SanitizerCommon, InternalScopedStringLarge) {
   for (int i = 0; i < 1000; ++i) {
     std::string append(i, 'a' + i % 26);
     expected += append;
-    str.append("%s", append.c_str());
+    str.AppendF("%s", append.c_str());
     EXPECT_EQ(expected, str.data());
   }
 }
@@ -416,12 +438,12 @@ TEST(SanitizerCommon, InternalScopedStringLargeFormat) {
   for (int i = 0; i < 1000; ++i) {
     std::string append(i, 'a' + i % 26);
     expected += append;
-    str.append("%s", append.c_str());
+    str.AppendF("%s", append.c_str());
     EXPECT_EQ(expected, str.data());
   }
 }
 
-#if SANITIZER_LINUX || SANITIZER_FREEBSD || SANITIZER_MAC || SANITIZER_IOS
+#if SANITIZER_LINUX || SANITIZER_FREEBSD || SANITIZER_APPLE || SANITIZER_IOS
 TEST(SanitizerCommon, GetRandom) {
   u8 buffer_1[32], buffer_2[32];
   for (bool blocking : { false, true }) {

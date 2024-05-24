@@ -6,17 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "OptEmitter.h"
+#include "Common/OptEmitter.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/TableGen/Record.h"
+#include "llvm/TableGen/TableGenBackend.h"
 
 using namespace llvm;
 
 /// OptParserEmitter - This tablegen backend takes an input .td file
 /// describing a list of options and emits a RST man page.
-namespace llvm {
-void EmitOptRST(RecordKeeper &Records, raw_ostream &OS) {
+static void EmitOptRST(RecordKeeper &Records, raw_ostream &OS) {
   llvm::StringMap<std::vector<Record *>> OptionsByGroup;
   std::vector<Record *> OptionsWithoutGroup;
 
@@ -85,15 +85,13 @@ void EmitOptRST(RecordKeeper &Records, raw_ostream &OS) {
       if (!isa<UnsetInit>(R->getValueInit("Values"))) {
         SmallVector<StringRef> Values;
         SplitString(R->getValueAsString("Values"), Values, ",");
-        HelpText += (" " + MetaVarName + " can be ").str();
+        HelpText += (" " + MetaVarName + " must be '").str();
 
-        if (Values.size() == 1) {
-          HelpText += ("'" + Values.front() + "'.").str();
-        } else {
-          HelpText += "one of '";
+        if (Values.size() > 1) {
           HelpText += join(Values.begin(), Values.end() - 1, "', '");
-          HelpText += ("' or '" + Values.back() + "'.").str();
+          HelpText += "' or '";
         }
+        HelpText += (Values.back() + "'.").str();
       }
 
       if (!HelpText.empty()) {
@@ -104,4 +102,6 @@ void EmitOptRST(RecordKeeper &Records, raw_ostream &OS) {
     }
   }
 }
-} // end namespace llvm
+
+static TableGen::Emitter::Opt X("gen-opt-rst", EmitOptRST,
+                                "Generate option RST");

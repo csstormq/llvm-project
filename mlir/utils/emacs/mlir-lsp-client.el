@@ -14,13 +14,15 @@
 ;; See the License for the specific language governing permissions and
 ;; limitations under the License.
 
+;; Version: 0.1.0
+
 ;;; Commentary:
 
 ;; LSP clinet to use with `mlir-mode' that uses `mlir-lsp-server' or any
 ;; user made compatible server.
 
 ;;; Code:
-(require 'lsp-mod)
+(require 'lsp-mode)
 
 (defgroup lsp-mlir nil
   "LSP support for MLIR."

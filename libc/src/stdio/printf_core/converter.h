@@ -14,22 +14,15 @@
 
 #include <stddef.h>
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE {
 namespace printf_core {
 
-class Converter {
-  Writer *writer;
-
-public:
-  Converter(Writer *writer);
-
-  // convert will call a conversion function to convert the FormatSection into
-  // its string representation, and then that will write the result to the
-  // writer.
-  void convert(FormatSection to_conv);
-};
+// convert will call a conversion function to convert the FormatSection into
+// its string representation, and then that will write the result to the
+// writer.
+int convert(Writer *writer, const FormatSection &to_conv);
 
 } // namespace printf_core
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE
 
 #endif // LLVM_LIBC_SRC_STDIO_PRINTF_CORE_CONVERTER_H

@@ -1,6 +1,6 @@
 // Test without serialization:
 // RUN: %clang_cc1 -triple x86_64-apple-darwin9 %s -std=c++20 \
-// RUN:    -fsyntax-only -ast-dump | FileCheck %s
+// RUN:    -ast-dump | FileCheck %s
 //
 // Test with serialization:
 // RUN: %clang_cc1 -triple x86_64-apple-darwin9 -std=c++20 -emit-pch -o %t %s
@@ -35,6 +35,7 @@ struct coro_t {
 coro_t f(int n) {
   A a{};
   // CHECK: CoawaitExpr {{0x[0-9a-fA-F]+}} <col:3, col:12>
+  // CHECK-NEXT: DeclRefExpr {{0x[0-9a-fA-F]+}} <col:12>
   // CHECK-NEXT: DeclRefExpr {{0x[0-9a-fA-F]+}} <col:12>
   // CHECK-NEXT: CXXMemberCallExpr {{0x[0-9a-fA-F]+}} <col:12>
   // CHECK-NEXT: MemberExpr {{0x[0-9a-fA-F]+}} <col:12>

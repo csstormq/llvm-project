@@ -49,7 +49,7 @@ module @attributes {
   // CHECK-DAG:   pdl_interp.check_type %[[ATTR1_TYPE]] is i64
   pdl.pattern : benefit(1) {
     %type = type : i64
-    %attr = attribute 10 : i64
+    %attr = attribute = 10 : i64
     %attr1 = attribute : %type
     %root = operation {"attr" = %attr, "attr1" = %attr1}
     rewrite %root with "rewriter"
@@ -73,6 +73,71 @@ module @constraints {
     %result0 = result 0 of %root
 
     pdl.apply_native_constraint "multi_constraint"(%input0, %input1, %result0 : !pdl.value, !pdl.value, !pdl.value)
+    rewrite %root with "rewriter"
+  }
+}
+
+// -----
+
+// CHECK-LABEL: module @constraint_with_result
+module @constraint_with_result {
+  // CHECK: func @matcher(%[[ROOT:.*]]: !pdl.operation)
+  // CHECK: %[[ATTR:.*]] = pdl_interp.apply_constraint "check_op_and_get_attr_constr"(%[[ROOT]]
+  // CHECK: pdl_interp.record_match @rewriters::@pdl_generated_rewriter(%[[ROOT]], %[[ATTR]] : !pdl.operation, !pdl.attribute)
+  pdl.pattern : benefit(1) {
+    %root = operation
+    %attr = pdl.apply_native_constraint "check_op_and_get_attr_constr"(%root : !pdl.operation) : !pdl.attribute
+    rewrite %root with "rewriter"(%attr : !pdl.attribute)
+  }
+}
+
+// -----
+
+// CHECK-LABEL: module @constraint_with_unused_result
+module @constraint_with_unused_result {
+  // CHECK: func @matcher(%[[ROOT:.*]]: !pdl.operation)
+  // CHECK: %[[ATTR:.*]] = pdl_interp.apply_constraint "check_op_and_get_attr_constr"(%[[ROOT]]
+  // CHECK: pdl_interp.record_match @rewriters::@pdl_generated_rewriter(%[[ROOT]] : !pdl.operation)
+  pdl.pattern : benefit(1) {
+    %root = operation
+    %attr = pdl.apply_native_constraint "check_op_and_get_attr_constr"(%root : !pdl.operation) : !pdl.attribute
+    rewrite %root with "rewriter"
+  }
+}
+
+// -----
+
+// CHECK-LABEL: module @constraint_with_result_multiple
+module @constraint_with_result_multiple {
+  // check that native constraints work as expected even when multiple identical constraints are fused
+
+  // CHECK: func @matcher(%[[ROOT:.*]]: !pdl.operation)
+  // CHECK: %[[ATTR:.*]] = pdl_interp.apply_constraint "check_op_and_get_attr_constr"(%[[ROOT]]
+  // CHECK-NOT: pdl_interp.apply_constraint "check_op_and_get_attr_constr"
+  // CHECK: pdl_interp.record_match @rewriters::@pdl_generated_rewriter_0(%[[ROOT]], %[[ATTR]]  : !pdl.operation, !pdl.attribute)
+  // CHECK: pdl_interp.record_match @rewriters::@pdl_generated_rewriter(%[[ROOT]], %[[ATTR]] : !pdl.operation, !pdl.attribute)
+  pdl.pattern : benefit(1) {
+    %root = operation
+    %attr = pdl.apply_native_constraint "check_op_and_get_attr_constr"(%root : !pdl.operation) : !pdl.attribute
+    rewrite %root with "rewriter"(%attr : !pdl.attribute)
+  }
+  pdl.pattern : benefit(1) {
+    %root = operation
+    %attr = pdl.apply_native_constraint "check_op_and_get_attr_constr"(%root : !pdl.operation) : !pdl.attribute
+    rewrite %root with "rewriter"(%attr : !pdl.attribute)
+  }
+}
+
+// -----
+
+// CHECK-LABEL: module @negated_constraint
+module @negated_constraint {
+  // CHECK: func @matcher(%[[ROOT:.*]]: !pdl.operation)
+  // CHECK: pdl_interp.apply_constraint "constraint"(%[[ROOT]] : !pdl.operation) {isNegated = true}
+  // CHECK: pdl_interp.record_match @rewriters::@pdl_generated_rewriter(%[[ROOT]] : !pdl.operation)
+  pdl.pattern : benefit(1) {
+    %root = operation
+    pdl.apply_native_constraint "constraint"(%root : !pdl.operation) {isNegated = true}
     rewrite %root with "rewriter"
   }
 }
@@ -583,7 +648,7 @@ module @attribute_literal {
 
   // Check the correct lowering of an attribute that hasn't been bound.
   pdl.pattern : benefit(1) {
-    %attr = attribute 10
+    %attr = attribute = 10
     pdl.apply_native_constraint "constraint"(%attr: !pdl.attribute)
 
     %root = operation

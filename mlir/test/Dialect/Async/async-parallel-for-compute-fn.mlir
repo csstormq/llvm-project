@@ -12,7 +12,7 @@
 // of parallel compute function arguments.
 
 // CHECK-LABEL: func @clone_constant(
-func @clone_constant(%arg0: memref<?xf32>, %lb: index, %ub: index, %st: index) {
+func.func @clone_constant(%arg0: memref<?xf32>, %lb: index, %ub: index, %st: index) {
   %one = arith.constant 1.0 : f32
 
   scf.parallel (%i) = (%lb) to (%ub) step (%st) {
@@ -40,7 +40,7 @@ func @clone_constant(%arg0: memref<?xf32>, %lb: index, %ub: index, %st: index) {
 // Check that constant loop bound sunk into the parallel compute function.
 
 // CHECK-LABEL: func @sink_constant_step(
-func @sink_constant_step(%arg0: memref<?xf32>, %lb: index, %ub: index) {
+func.func @sink_constant_step(%arg0: memref<?xf32>, %lb: index, %ub: index) {
   %one = arith.constant 1.0 : f32
   %st = arith.constant 123 : index
 
@@ -69,11 +69,30 @@ func @sink_constant_step(%arg0: memref<?xf32>, %lb: index, %ub: index) {
 
 // -----
 
+// Smoke test that parallel for doesn't crash when func dialect is not used.
+
+// CHECK-LABEL: llvm.func @without_func_dialect()
+llvm.func @without_func_dialect() {
+  %cst = arith.constant 0.0 : f32
+
+  %c0 = arith.constant 0 : index
+  %c22 = arith.constant 22 : index
+  %c1 = arith.constant 1 : index
+  %54 = memref.alloc() : memref<22xf32>
+  %alloc_4 = memref.alloc() : memref<22xf32>
+  scf.parallel (%arg0) = (%c0) to (%c22) step (%c1) {
+    memref.store %cst, %alloc_4[%arg0] : memref<22xf32>
+  }
+  llvm.return
+}
+
+// -----
+
 // Check that for statically known inner loop bound block size is aligned and
 // inner loop uses statically known loop trip counts.
 
 // CHECK-LABEL: func @sink_constant_step(
-func @sink_constant_step(%arg0: memref<?x10xf32>, %lb: index, %ub: index) {
+func.func @sink_constant_step(%arg0: memref<?x10xf32>, %lb: index, %ub: index) {
   %one = arith.constant 1.0 : f32
 
   %c0 = arith.constant 0 : index

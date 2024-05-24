@@ -13,7 +13,10 @@
 // const charT* do_is(const charT* low, const charT* high, mask* vec) const;
 
 // REQUIRES: locale.en_US.UTF-8
-// XFAIL: libcpp-has-no-wide-characters
+// XFAIL: no-wide-characters
+
+// Bionic has minimal locale support, investigate this later.
+// XFAIL: LIBCXX-ANDROID-FIXME
 
 #include <locale>
 #include <string>

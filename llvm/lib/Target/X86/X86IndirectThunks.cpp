@@ -61,23 +61,28 @@ static const char R11LVIThunkName[] = "__llvm_lvi_thunk_r11";
 namespace {
 struct RetpolineThunkInserter : ThunkInserter<RetpolineThunkInserter> {
   const char *getThunkPrefix() { return RetpolineNamePrefix; }
-  bool mayUseThunk(const MachineFunction &MF) {
+  bool mayUseThunk(const MachineFunction &MF, bool InsertedThunks) {
+    if (InsertedThunks)
+      return false;
     const auto &STI = MF.getSubtarget<X86Subtarget>();
     return (STI.useRetpolineIndirectCalls() ||
             STI.useRetpolineIndirectBranches()) &&
            !STI.useRetpolineExternalThunk();
   }
-  void insertThunks(MachineModuleInfo &MMI);
+  bool insertThunks(MachineModuleInfo &MMI, MachineFunction &MF);
   void populateThunk(MachineFunction &MF);
 };
 
 struct LVIThunkInserter : ThunkInserter<LVIThunkInserter> {
   const char *getThunkPrefix() { return LVIThunkNamePrefix; }
-  bool mayUseThunk(const MachineFunction &MF) {
+  bool mayUseThunk(const MachineFunction &MF, bool InsertedThunks) {
+    if (InsertedThunks)
+      return false;
     return MF.getSubtarget<X86Subtarget>().useLVIControlFlowIntegrity();
   }
-  void insertThunks(MachineModuleInfo &MMI) {
+  bool insertThunks(MachineModuleInfo &MMI, MachineFunction &MF) {
     createThunkFunction(MMI, R11LVIThunkName);
+    return true;
   }
   void populateThunk(MachineFunction &MF) {
     assert (MF.size() == 1);
@@ -113,32 +118,29 @@ public:
 private:
   std::tuple<RetpolineThunkInserter, LVIThunkInserter> TIs;
 
-  // FIXME: When LLVM moves to C++17, these can become folds
   template <typename... ThunkInserterT>
   static void initTIs(Module &M,
                       std::tuple<ThunkInserterT...> &ThunkInserters) {
-    (void)std::initializer_list<int>{
-        (std::get<ThunkInserterT>(ThunkInserters).init(M), 0)...};
+    (..., std::get<ThunkInserterT>(ThunkInserters).init(M));
   }
   template <typename... ThunkInserterT>
   static bool runTIs(MachineModuleInfo &MMI, MachineFunction &MF,
                      std::tuple<ThunkInserterT...> &ThunkInserters) {
-    bool Modified = false;
-    (void)std::initializer_list<int>{
-        Modified |= std::get<ThunkInserterT>(ThunkInserters).run(MMI, MF)...};
-    return Modified;
+    return (0 | ... | std::get<ThunkInserterT>(ThunkInserters).run(MMI, MF));
   }
 };
 
 } // end anonymous namespace
 
-void RetpolineThunkInserter::insertThunks(MachineModuleInfo &MMI) {
+bool RetpolineThunkInserter::insertThunks(MachineModuleInfo &MMI,
+                                          MachineFunction &MF) {
   if (MMI.getTarget().getTargetTriple().getArch() == Triple::x86_64)
     createThunkFunction(MMI, R11RetpolineName);
   else
     for (StringRef Name : {EAXRetpolineName, ECXRetpolineName, EDXRetpolineName,
                            EDIRetpolineName})
       createThunkFunction(MMI, Name);
+  return true;
 }
 
 void RetpolineThunkInserter::populateThunk(MachineFunction &MF) {
@@ -234,11 +236,11 @@ void RetpolineThunkInserter::populateThunk(MachineFunction &MF) {
   BuildMI(CaptureSpec, DebugLoc(), TII->get(X86::PAUSE));
   BuildMI(CaptureSpec, DebugLoc(), TII->get(X86::LFENCE));
   BuildMI(CaptureSpec, DebugLoc(), TII->get(X86::JMP_1)).addMBB(CaptureSpec);
-  CaptureSpec->setHasAddressTaken();
+  CaptureSpec->setMachineBlockAddressTaken();
   CaptureSpec->addSuccessor(CaptureSpec);
 
   CallTarget->addLiveIn(ThunkReg);
-  CallTarget->setHasAddressTaken();
+  CallTarget->setMachineBlockAddressTaken();
   CallTarget->setAlignment(Align(16));
 
   // Insert return address clobber

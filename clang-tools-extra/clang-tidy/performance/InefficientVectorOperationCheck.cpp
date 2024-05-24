@@ -15,9 +15,7 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace performance {
+namespace clang::tidy::performance {
 
 namespace {
 
@@ -159,8 +157,7 @@ void InefficientVectorOperationCheck::addMatcher(
 }
 
 void InefficientVectorOperationCheck::registerMatchers(MatchFinder *Finder) {
-  const auto VectorDecl = cxxRecordDecl(hasAnyName(SmallVector<StringRef, 5>(
-      VectorLikeClasses.begin(), VectorLikeClasses.end())));
+  const auto VectorDecl = cxxRecordDecl(hasAnyName(VectorLikeClasses));
   const auto AppendMethodDecl =
       cxxMethodDecl(hasAnyName("push_back", "emplace_back"));
   addMatcher(VectorDecl, VectorVarDeclName, VectorVarDeclStmtName,
@@ -274,6 +271,4 @@ void InefficientVectorOperationCheck::check(
   }
 }
 
-} // namespace performance
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::performance

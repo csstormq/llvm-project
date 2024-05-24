@@ -17,12 +17,14 @@
 #define LLVM_ADT_FOLDINGSET_H
 
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/STLForwardCompat.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/Support/Allocator.h"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 #include <utility>
 
 namespace llvm {
@@ -256,8 +258,8 @@ template<typename T> struct DefaultFoldingSetTrait {
 /// through template specialization the behavior can be tailored for specific
 /// types.  Combined with the FoldingSetNodeWrapper class, one can add objects
 /// to FoldingSets that were not originally designed to have that behavior.
-template<typename T> struct FoldingSetTrait
-  : public DefaultFoldingSetTrait<T> {};
+template <typename T, typename Enable = void>
+struct FoldingSetTrait : public DefaultFoldingSetTrait<T> {};
 
 /// DefaultContextualFoldingSetTrait - Like DefaultFoldingSetTrait, but
 /// for ContextualFoldingSets.
@@ -825,6 +827,13 @@ struct FoldingSetTrait<std::pair<T1, T2>> {
                              FoldingSetNodeID &ID) {
     ID.Add(P.first);
     ID.Add(P.second);
+  }
+};
+
+template <typename T>
+struct FoldingSetTrait<T, std::enable_if_t<std::is_enum<T>::value>> {
+  static void Profile(const T &X, FoldingSetNodeID &ID) {
+    ID.AddInteger(llvm::to_underlying(X));
   }
 };
 

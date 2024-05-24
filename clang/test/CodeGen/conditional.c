@@ -31,6 +31,7 @@ void* test8(void) {return 1 ? test6 : test7;}
 
 
 void _efree(void *ptr);
+void free(void *ptr);
 
 void _php_stream_free3(void) {
   (1 ? free(0) : _efree(0));
@@ -54,7 +55,6 @@ int test10(int c) {
 }
 enum { Gronk = 5 };
 
-// rdar://9289603
 // CHECK: @test11
 // CHECK: select i1 {{.*}}, i32 4, i32 5
 int test11(int c) {

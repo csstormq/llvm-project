@@ -8,6 +8,7 @@
 
 #include "Plugins/Platform/MacOSX/PlatformMacOSX.h"
 #include "Plugins/Platform/MacOSX/PlatformRemoteMacOSX.h"
+#include "TestingSupport/TestUtilities.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Host/FileSystem.h"
 #include "lldb/Host/HostInfo.h"
@@ -16,7 +17,6 @@
 #include "lldb/Target/Thread.h"
 #include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/Event.h"
-#include "lldb/Utility/Reproducer.h"
 #include "gtest/gtest.h"
 
 using namespace lldb_private;
@@ -27,22 +27,23 @@ namespace {
 class ProcessEventDataTest : public ::testing::Test {
 public:
   void SetUp() override {
-    llvm::cantFail(Reproducer::Initialize(ReproducerMode::Off, llvm::None));
     FileSystem::Initialize();
     HostInfo::Initialize();
     PlatformMacOSX::Initialize();
+    std::call_once(TestUtilities::g_debugger_initialize_flag,
+                   []() { Debugger::Initialize(nullptr); });
   }
   void TearDown() override {
     PlatformMacOSX::Terminate();
     HostInfo::Terminate();
     FileSystem::Terminate();
-    Reproducer::Terminate();
   }
 };
 
 class DummyProcess : public Process {
 public:
-  using Process::Process;
+  DummyProcess(lldb::TargetSP target_sp, lldb::ListenerSP listener_sp)
+      : Process(target_sp, listener_sp) {}
 
   bool CanDebug(lldb::TargetSP target, bool plugin_specified_by_name) override {
     return true;

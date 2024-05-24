@@ -131,6 +131,11 @@ void GetThreadStackTopAndBottom(bool at_initialization, uptr *stack_top,
 }
 #endif  // #if !SANITIZER_GO
 
+bool ErrorIsOOM(error_t err) {
+  // TODO: This should check which `err`s correspond to OOM.
+  return false;
+}
+
 void *MmapOrDie(uptr size, const char *mem_type, bool raw_report) {
   void *rv = VirtualAlloc(0, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
   if (rv == 0)
@@ -139,7 +144,7 @@ void *MmapOrDie(uptr size, const char *mem_type, bool raw_report) {
   return rv;
 }
 
-void UnmapOrDie(void *addr, uptr size) {
+void UnmapOrDie(void *addr, uptr size, bool raw_report) {
   if (!size || !addr)
     return;
 
@@ -151,10 +156,7 @@ void UnmapOrDie(void *addr, uptr size) {
   // fails try MEM_DECOMMIT.
   if (VirtualFree(addr, 0, MEM_RELEASE) == 0) {
     if (VirtualFree(addr, size, MEM_DECOMMIT) == 0) {
-      Report("ERROR: %s failed to "
-             "deallocate 0x%zx (%zd) bytes at address %p (error code: %d)\n",
-             SanitizerToolName, size, size, addr, GetLastError());
-      CHECK("unable to unmap" && 0);
+      ReportMunmapFailureAndDie(addr, size, GetLastError(), raw_report);
     }
   }
 }
@@ -227,6 +229,17 @@ void *MmapAlignedOrDieOnFatalError(uptr size, uptr alignment,
     return ReturnNullptrOnOOMOrDie(size, mem_type, "allocate aligned");
 
   return (void *)mapped_addr;
+}
+
+// ZeroMmapFixedRegion zero's out a region of memory previously returned from a
+// call to one of the MmapFixed* helpers. On non-windows systems this would be
+// done with another mmap, but on windows remapping is not an option.
+// VirtualFree(DECOMMIT)+VirtualAlloc(RECOMMIT) would also be a way to zero the
+// memory, but we can't do this atomically, so instead we fall back to using
+// internal_memset.
+bool ZeroMmapFixedRegion(uptr fixed_addr, uptr size) {
+  internal_memset((void*) fixed_addr, 0, size);
+  return true;
 }
 
 bool MmapFixedNoReserve(uptr fixed_addr, uptr size, const char *name) {
@@ -344,6 +357,11 @@ bool MprotectNoAccess(uptr addr, uptr size) {
 bool MprotectReadOnly(uptr addr, uptr size) {
   DWORD old_protection;
   return VirtualProtect((LPVOID)addr, size, PAGE_READONLY, &old_protection);
+}
+
+bool MprotectReadWrite(uptr addr, uptr size) {
+  DWORD old_protection;
+  return VirtualProtect((LPVOID)addr, size, PAGE_READWRITE, &old_protection);
 }
 
 void ReleaseMemoryPagesToOS(uptr beg, uptr end) {
@@ -702,13 +720,24 @@ void ListOfModules::fallbackInit() { clear(); }
 // atexit() as soon as it is ready for use (i.e. after .CRT$XIC initializers).
 InternalMmapVectorNoCtor<void (*)(void)> atexit_functions;
 
-int Atexit(void (*function)(void)) {
+static int queueAtexit(void (*function)(void)) {
   atexit_functions.push_back(function);
   return 0;
 }
 
+// If Atexit() is being called after RunAtexit() has already been run, it needs
+// to be able to call atexit() directly. Here we use a function ponter to
+// switch out its behaviour.
+// An example of where this is needed is the asan_dynamic runtime on MinGW-w64.
+// On this environment, __asan_init is called during global constructor phase,
+// way after calling the .CRT$XID initializer.
+static int (*volatile queueOrCallAtExit)(void (*)(void)) = &queueAtexit;
+
+int Atexit(void (*function)(void)) { return queueOrCallAtExit(function); }
+
 static int RunAtexit() {
   TraceLoggingUnregister(g_asan_provider);
+  queueOrCallAtExit = &atexit;
   int ret = 0;
   for (uptr i = 0; i < atexit_functions.size(); ++i) {
     ret |= atexit(atexit_functions[i]);
@@ -1087,10 +1116,6 @@ void CheckVMASize() {
 
 void InitializePlatformEarly() {
   // Do nothing.
-}
-
-void MaybeReexec() {
-  // No need to re-exec on Windows.
 }
 
 void CheckASLR() {

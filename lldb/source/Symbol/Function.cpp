@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Symbol/Function.h"
+#include "lldb/Core/Debugger.h"
 #include "lldb/Core/Disassembler.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleList.h"
@@ -121,6 +122,13 @@ size_t InlineFunctionInfo::MemorySize() const {
 /// @name Call site related structures
 /// @{
 
+CallEdge::~CallEdge() = default;
+
+CallEdge::CallEdge(AddrType caller_address_type, lldb::addr_t caller_address,
+                   bool is_tail_call, CallSiteParameterArray &&parameters)
+    : caller_address(caller_address), caller_address_type(caller_address_type),
+      is_tail_call(is_tail_call), parameters(std::move(parameters)) {}
+
 lldb::addr_t CallEdge::GetLoadAddress(lldb::addr_t unresolved_pc,
                                       Function &caller, Target &target) {
   Log *log = GetLog(LLDBLog::Step);
@@ -184,22 +192,39 @@ void DirectCallEdge::ParseSymbolFileAndResolve(ModuleList &images) {
   resolved = true;
 }
 
+DirectCallEdge::DirectCallEdge(const char *symbol_name,
+                               AddrType caller_address_type,
+                               lldb::addr_t caller_address, bool is_tail_call,
+                               CallSiteParameterArray &&parameters)
+    : CallEdge(caller_address_type, caller_address, is_tail_call,
+               std::move(parameters)) {
+  lazy_callee.symbol_name = symbol_name;
+}
+
 Function *DirectCallEdge::GetCallee(ModuleList &images, ExecutionContext &) {
   ParseSymbolFileAndResolve(images);
   assert(resolved && "Did not resolve lazy callee");
   return lazy_callee.def;
 }
 
+IndirectCallEdge::IndirectCallEdge(DWARFExpressionList call_target,
+                                   AddrType caller_address_type,
+                                   lldb::addr_t caller_address,
+                                   bool is_tail_call,
+                                   CallSiteParameterArray &&parameters)
+    : CallEdge(caller_address_type, caller_address, is_tail_call,
+               std::move(parameters)),
+      call_target(std::move(call_target)) {}
+
 Function *IndirectCallEdge::GetCallee(ModuleList &images,
                                       ExecutionContext &exe_ctx) {
   Log *log = GetLog(LLDBLog::Step);
   Status error;
   Value callee_addr_val;
-  if (!call_target.Evaluate(&exe_ctx, exe_ctx.GetRegisterContext(),
-                            /*loclist_base_load_addr=*/LLDB_INVALID_ADDRESS,
-                            /*initial_value_ptr=*/nullptr,
-                            /*object_address_ptr=*/nullptr, callee_addr_val,
-                            &error)) {
+  if (!call_target.Evaluate(
+          &exe_ctx, exe_ctx.GetRegisterContext(), LLDB_INVALID_ADDRESS,
+          /*initial_value_ptr=*/nullptr,
+          /*object_address_ptr=*/nullptr, callee_addr_val, &error)) {
     LLDB_LOGF(log, "IndirectCallEdge: Could not evaluate expression: %s",
               error.AsCString());
     return nullptr;
@@ -264,7 +289,7 @@ void Function::GetStartLineSourceInfo(FileSpec &source_file,
     if (line_table->FindLineEntryByAddress(GetAddressRange().GetBaseAddress(),
                                            line_entry, nullptr)) {
       line_no = line_entry.line;
-      source_file = line_entry.file;
+      source_file = line_entry.GetFile();
     }
   }
 }
@@ -286,7 +311,7 @@ void Function::GetEndLineSourceInfo(FileSpec &source_file, uint32_t &line_no) {
   LineEntry line_entry;
   if (line_table->FindLineEntryByAddress(scratch_addr, line_entry, nullptr)) {
     line_no = line_entry.line;
-    source_file = line_entry.file;
+    source_file = line_entry.GetFile();
   }
 }
 
@@ -306,7 +331,7 @@ llvm::ArrayRef<std::unique_ptr<CallEdge>> Function::GetCallEdges() {
   Block &block = GetBlock(/*can_create*/true);
   SymbolFile *sym_file = block.GetSymbolFile();
   if (!sym_file)
-    return llvm::None;
+    return std::nullopt;
 
   // Lazily read call site information from the SymbolFile.
   m_call_edges = sym_file->ParseCallEdgesInFunction(GetID());
@@ -348,12 +373,9 @@ Block &Function::GetBlock(bool can_create) {
     if (module_sp) {
       module_sp->GetSymbolFile()->ParseBlocksRecursive(*this);
     } else {
-      Host::SystemLog(Host::eSystemLogError,
-                      "error: unable to find module "
-                      "shared pointer for function '%s' "
-                      "in %s\n",
-                      GetName().GetCString(),
-                      m_comp_unit->GetPrimaryFile().GetPath().c_str());
+      Debugger::ReportError(llvm::formatv(
+          "unable to find module shared pointer for function '{0}' in {1}",
+          GetName().GetCString(), m_comp_unit->GetPrimaryFile().GetPath()));
     }
     m_block.SetBlockInfoHasBeenParsed(true, true);
   }
@@ -374,6 +396,15 @@ void Function::GetDescription(Stream *s, lldb::DescriptionLevel level,
     s->AsRawOstream() << ", name = \"" << name << '"';
   if (mangled)
     s->AsRawOstream() << ", mangled = \"" << mangled << '"';
+  if (level == eDescriptionLevelVerbose) {
+    *s << ", decl_context = {";
+    auto decl_context = GetCompilerContext();
+    // Drop the function itself from the context chain.
+    if (decl_context.size())
+      decl_context.pop_back();
+    llvm::interleaveComma(decl_context, *s, [&](auto &ctx) { ctx.Dump(*s); });
+    *s << "}";
+  }
   *s << ", range = ";
   Address::DumpStyle fallback_style;
   if (level == eDescriptionLevelVerbose)
@@ -442,8 +473,9 @@ bool Function::GetDisassembly(const ExecutionContext &exe_ctx,
   if (disassembler_sp) {
     const bool show_address = true;
     const bool show_bytes = false;
-    disassembler_sp->GetInstructionList().Dump(&strm, show_address, show_bytes,
-                                               &exe_ctx);
+    const bool show_control_flow_kind = false;
+    disassembler_sp->GetInstructionList().Dump(
+        &strm, show_address, show_bytes, show_control_flow_kind, &exe_ctx);
     return true;
   }
   return false;
@@ -490,13 +522,17 @@ ConstString Function::GetDisplayName() const {
 }
 
 CompilerDeclContext Function::GetDeclContext() {
-  ModuleSP module_sp = CalculateSymbolContextModule();
-
-  if (module_sp) {
+  if (ModuleSP module_sp = CalculateSymbolContextModule())
     if (SymbolFile *sym_file = module_sp->GetSymbolFile())
       return sym_file->GetDeclContextForUID(GetID());
-  }
-  return CompilerDeclContext();
+  return {};
+}
+
+std::vector<CompilerContext> Function::GetCompilerContext() {
+  if (ModuleSP module_sp = CalculateSymbolContextModule())
+    if (SymbolFile *sym_file = module_sp->GetSymbolFile())
+      return sym_file->GetCompilerContextForUID(GetID());
+  return {};
 }
 
 Type *Function::GetType() {

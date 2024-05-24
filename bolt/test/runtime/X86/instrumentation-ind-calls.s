@@ -1,5 +1,5 @@
 # This reproduces a bug with instrumentation when trying to count calls
-# when the target address is computed with a referece to the stack pointer.
+# when the target address is computed with a reference to the stack pointer.
 # Our instrumentation code uses the stack to save registers to be
 # transparent with the instrumented code, but we end up updating the stack
 # pointer while doing so, which affects this target address calculation.
@@ -10,18 +10,18 @@
 
 # RUN: llvm-mc -filetype=obj -triple x86_64-unknown-unknown \
 # RUN:   %s -o %t.o
-# RUN: %clang %cflags %t.o -o %t.exe -Wl,-q
+# RUN: %clang %cflags -no-pie %t.o -o %t.exe -Wl,-q
 
-# RUN: llvm-bolt %t.exe -instrument -instrumentation-file=%t.fdata \
+# RUN: llvm-bolt %t.exe --instrument --instrumentation-file=%t.fdata \
 # RUN:   -o %t.instrumented
 
 # Instrumented program needs to finish returning zero
 # RUN: %t.instrumented arg1 arg2
 
 # Test that the instrumented data makes sense
-# RUN:  llvm-bolt %t.exe -o %t.bolted -data %t.fdata \
-# RUN:    -reorder-blocks=cache+ -reorder-functions=hfsort+ \
-# RUN:    -print-only=main -print-finalized | FileCheck %s
+# RUN:  llvm-bolt %t.exe -o %t.bolted --data %t.fdata \
+# RUN:    --reorder-blocks=ext-tsp --reorder-functions=hfsort+ \
+# RUN:    --print-only=main --print-finalized | FileCheck %s
 
 # RUN: %t.bolted arg1 arg2
 

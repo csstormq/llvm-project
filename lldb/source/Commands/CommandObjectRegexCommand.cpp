@@ -19,10 +19,9 @@ using namespace lldb_private;
 // CommandObjectRegexCommand constructor
 CommandObjectRegexCommand::CommandObjectRegexCommand(
     CommandInterpreter &interpreter, llvm::StringRef name, llvm::StringRef help,
-    llvm::StringRef syntax, uint32_t max_matches, uint32_t completion_type_mask,
-    bool is_removable)
+    llvm::StringRef syntax, uint32_t completion_type_mask, bool is_removable)
     : CommandObjectRaw(interpreter, name, help, syntax),
-      m_max_matches(max_matches), m_completion_type_mask(completion_type_mask),
+      m_completion_type_mask(completion_type_mask),
       m_is_removable(is_removable) {}
 
 // Destructor
@@ -55,7 +54,7 @@ llvm::Expected<std::string> CommandObjectRegexCommand::SubstituteVariables(
   return output.str();
 }
 
-bool CommandObjectRegexCommand::DoExecute(llvm::StringRef command,
+void CommandObjectRegexCommand::DoExecute(llvm::StringRef command,
                                           CommandReturnObject &result) {
   EntryCollection::const_iterator pos, end = m_entries.end();
   for (pos = m_entries.begin(); pos != end; ++pos) {
@@ -65,17 +64,18 @@ bool CommandObjectRegexCommand::DoExecute(llvm::StringRef command,
           SubstituteVariables(pos->command, matches);
       if (!new_command) {
         result.SetError(new_command.takeError());
-        return false;
+        return;
       }
 
       // Interpret the new command and return this as the result!
       if (m_interpreter.GetExpandRegexAliases())
         result.GetOutputStream().Printf("%s\n", new_command->c_str());
-      // Pass in true for "no context switching".  The command that called us
-      // should have set up the context appropriately, we shouldn't have to
-      // redo that.
-      return m_interpreter.HandleCommand(new_command->c_str(),
-                                         eLazyBoolCalculate, result);
+      // We don't have to pass an override_context here, as the command that 
+      // called us should have set up the context appropriately.
+      bool force_repeat_command = true;
+      m_interpreter.HandleCommand(new_command->c_str(), eLazyBoolNo, result,
+                                  force_repeat_command);
+      return;
     }
   }
   result.SetStatus(eReturnStatusFailed);
@@ -86,7 +86,6 @@ bool CommandObjectRegexCommand::DoExecute(llvm::StringRef command,
                             << "' failed to match any "
                                "regular expression in the '"
                             << m_cmd_name << "' regex ";
-  return false;
 }
 
 bool CommandObjectRegexCommand::AddRegexCommand(llvm::StringRef re_cstr,
@@ -105,7 +104,7 @@ bool CommandObjectRegexCommand::AddRegexCommand(llvm::StringRef re_cstr,
 
 void CommandObjectRegexCommand::HandleCompletion(CompletionRequest &request) {
   if (m_completion_type_mask) {
-    CommandCompletions::InvokeCommonCompletionCallbacks(
+    lldb_private::CommandCompletions::InvokeCommonCompletionCallbacks(
         GetCommandInterpreter(), m_completion_type_mask, request, nullptr);
   }
 }

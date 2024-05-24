@@ -128,9 +128,6 @@
 /* Define to 1 if you have the <link.h> header file. */
 #cmakedefine HAVE_LINK_H ${HAVE_LINK_H}
 
-/* Define to 1 if you have the `lseek64' function. */
-#cmakedefine HAVE_LSEEK64 ${HAVE_LSEEK64}
-
 /* Define to 1 if you have the <mach/mach.h> header file. */
 #cmakedefine HAVE_MACH_MACH_H ${HAVE_MACH_MACH_H}
 
@@ -155,9 +152,6 @@
 /* Define to 1 if you have the `pread' function. */
 #cmakedefine HAVE_PREAD ${HAVE_PREAD}
 
-/* Have pthread_getspecific */
-#cmakedefine HAVE_PTHREAD_GETSPECIFIC ${HAVE_PTHREAD_GETSPECIFIC}
-
 /* Define to 1 if you have the <pthread.h> header file. */
 #cmakedefine HAVE_PTHREAD_H ${HAVE_PTHREAD_H}
 
@@ -181,9 +175,6 @@
 
 /* Define to 1 if you have the <signal.h> header file. */
 #cmakedefine HAVE_SIGNAL_H ${HAVE_SIGNAL_H}
-
-/* Define to 1 if you have the `strerror' function. */
-#cmakedefine HAVE_STRERROR ${HAVE_STRERROR}
 
 /* Define to 1 if you have the `strerror_r' function. */
 #cmakedefine HAVE_STRERROR_R ${HAVE_STRERROR_R}
@@ -293,18 +284,14 @@
 /* Linker version detected at compile time. */
 #cmakedefine HOST_LINK_VERSION "${HOST_LINK_VERSION}"
 
-/* Target triple LLVM will generate code for by default */
-/* Doesn't use `cmakedefine` because it is allowed to be empty. */
-#define LLVM_DEFAULT_TARGET_TRIPLE "${LLVM_DEFAULT_TARGET_TRIPLE}"
-
 /* Define if overriding target triple is enabled */
 #cmakedefine LLVM_TARGET_TRIPLE_ENV "${LLVM_TARGET_TRIPLE_ENV}"
 
-/* LLVM version information */
-#cmakedefine LLVM_VERSION_INFO "${LLVM_VERSION_INFO}"
-
 /* Whether tools show host and target info when invoked with --version */
 #cmakedefine01 LLVM_VERSION_PRINTER_SHOW_HOST_TARGET_INFO
+
+/* Whether tools show optional build config flags when invoked with --version */
+#cmakedefine01 LLVM_VERSION_PRINTER_SHOW_BUILD_CONFIG
 
 /* Define if libxml2 is supported on this platform. */
 #cmakedefine LLVM_ENABLE_LIBXML2 ${LLVM_ENABLE_LIBXML2}
@@ -330,12 +317,6 @@
 /* Define to the vendor of this package. */
 #cmakedefine PACKAGE_VENDOR "${PACKAGE_VENDOR}"
 
-/* Define as the return type of signal handlers (`int' or `void'). */
-#cmakedefine RETSIGTYPE ${RETSIGTYPE}
-
-/* Define if std::is_trivially_copyable is supported */
-#cmakedefine HAVE_STD_IS_TRIVIALLY_COPYABLE ${HAVE_STD_IS_TRIVIALLY_COPYABLE}
-
 /* Define to a function implementing stricmp */
 #cmakedefine stricmp ${stricmp}
 
@@ -352,5 +333,7 @@
 #cmakedefine01 LLVM_SUPPORT_XCODE_SIGNPOSTS
 
 #cmakedefine HAVE_PROC_PID_RUSAGE 1
+
+#cmakedefine HAVE_BUILTIN_THREAD_POINTER ${HAVE_BUILTIN_THREAD_POINTER}
 
 #endif

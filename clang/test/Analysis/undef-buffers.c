@@ -1,4 +1,4 @@
-// RUN: %clang_analyze_cc1 -analyzer-store=region -verify %s \
+// RUN: %clang_analyze_cc1 -verify %s \
 // RUN:   -analyzer-checker=core \
 // RUN:   -analyzer-checker=unix \
 // RUN:   -analyzer-checker=core.uninitialized \
@@ -20,7 +20,7 @@ char stackBased2 (void) {
   return buf[0]; // expected-warning{{Undefined}}
 }
 
-// Exercise the conditional visitor. Radar://10105448
+// Exercise the conditional visitor.
 char stackBased3 (int *x) {
   char buf[2];
   int *y;

@@ -44,7 +44,6 @@ public:
     None,
     Custom,  // For custom placeholders
     Builder, // For the $_builder placeholder
-    Op,      // For the $_op placeholder
     Self,    // For the $_self placeholder
   };
 
@@ -58,11 +57,10 @@ public:
 
   // Setters for builtin placeholders
   FmtContext &withBuilder(Twine subst);
-  FmtContext &withOp(Twine subst);
   FmtContext &withSelf(Twine subst);
 
-  Optional<StringRef> getSubstFor(PHKind placeholder) const;
-  Optional<StringRef> getSubstFor(StringRef placeholder) const;
+  std::optional<StringRef> getSubstFor(PHKind placeholder) const;
+  std::optional<StringRef> getSubstFor(StringRef placeholder) const;
 
   static PHKind getPlaceHolderKind(StringRef str);
 
@@ -135,14 +133,15 @@ protected:
   // std::vector<Base*>.
   struct CreateAdapters {
     template <typename... Ts>
-    std::vector<llvm::detail::format_adapter *> operator()(Ts &...items) {
-      return std::vector<llvm::detail::format_adapter *>{&items...};
+    std::vector<llvm::support::detail::format_adapter *>
+    operator()(Ts &...items) {
+      return std::vector<llvm::support::detail::format_adapter *>{&items...};
     }
   };
 
   StringRef fmt;
   const FmtContext *context;
-  std::vector<llvm::detail::format_adapter *> adapters;
+  std::vector<llvm::support::detail::format_adapter *> adapters;
   std::vector<FmtReplacement> replacements;
 
 public:
@@ -165,19 +164,24 @@ public:
     return s.str();
   }
 
-  template <unsigned N> SmallString<N> sstr() const {
+  template <unsigned N>
+  SmallString<N> sstr() const {
     SmallString<N> result;
     llvm::raw_svector_ostream s(result);
     format(s);
     return result;
   }
 
-  template <unsigned N> operator SmallString<N>() const { return sstr<N>(); }
+  template <unsigned N>
+  operator SmallString<N>() const {
+    return sstr<N>();
+  }
 
   operator std::string() const { return str(); }
 };
 
-template <typename Tuple> class FmtObject : public FmtObjectBase {
+template <typename Tuple>
+class FmtObject : public FmtObjectBase {
   // Storage for the parameter adapters.  Since the base class erases the type
   // of the parameters, we have to own the storage for the parameters here, and
   // have the base class store type-erased pointers into this tuple.
@@ -188,7 +192,7 @@ public:
       : FmtObjectBase(fmt, ctx, std::tuple_size<Tuple>::value),
         parameters(std::move(params)) {
     adapters.reserve(std::tuple_size<Tuple>::value);
-    adapters = llvm::apply_tuple(CreateAdapters(), parameters);
+    adapters = std::apply(CreateAdapters(), parameters);
   }
 
   FmtObject(FmtObject const &that) = delete;
@@ -196,14 +200,14 @@ public:
   FmtObject(FmtObject &&that)
       : FmtObjectBase(std::move(that)), parameters(std::move(that.parameters)) {
     adapters.reserve(that.adapters.size());
-    adapters = llvm::apply_tuple(CreateAdapters(), parameters);
+    adapters = std::apply(CreateAdapters(), parameters);
   }
 };
 
 class FmtStrVecObject : public FmtObjectBase {
 public:
-  using StrFormatAdapter =
-      decltype(llvm::detail::build_format_adapter(std::declval<std::string>()));
+  using StrFormatAdapter = decltype(llvm::support::detail::build_format_adapter(
+      std::declval<std::string>()));
 
   FmtStrVecObject(StringRef fmt, const FmtContext *ctx,
                   ArrayRef<std::string> params);
@@ -256,14 +260,15 @@ private:
 ///    in C++ code generation.
 template <typename... Ts>
 inline auto tgfmt(StringRef fmt, const FmtContext *ctx, Ts &&...vals)
-    -> FmtObject<decltype(std::make_tuple(
-        llvm::detail::build_format_adapter(std::forward<Ts>(vals))...))> {
+    -> FmtObject<
+        decltype(std::make_tuple(llvm::support::detail::build_format_adapter(
+            std::forward<Ts>(vals))...))> {
   using ParamTuple = decltype(std::make_tuple(
-      llvm::detail::build_format_adapter(std::forward<Ts>(vals))...));
+      llvm::support::detail::build_format_adapter(std::forward<Ts>(vals))...));
   return FmtObject<ParamTuple>(
       fmt, ctx,
-      std::make_tuple(
-          llvm::detail::build_format_adapter(std::forward<Ts>(vals))...));
+      std::make_tuple(llvm::support::detail::build_format_adapter(
+          std::forward<Ts>(vals))...));
 }
 
 inline FmtStrVecObject tgfmt(StringRef fmt, const FmtContext *ctx,

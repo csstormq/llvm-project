@@ -26,37 +26,39 @@ Non-comprehensive list of changes in this release
 ELF Improvements
 ----------------
 
-* ``-z pack-relative-relocs`` is now available to support ``DT_RELR`` for glibc 2.36+.
-  (`D120701 <https://reviews.llvm.org/D120701>`_)
-* ``--no-fortran-common`` (pre 12.0.0 behavior) is now the default.
+* ``--compress-sections <section-glib>={none,zlib,zstd}[:level]`` is added to compress
+  matched output sections without the ``SHF_ALLOC`` flag.
+  (`#84855 <https://github.com/llvm/llvm-project/pull/84855>`_)
+  (`#90567 <https://github.com/llvm/llvm-project/pull/90567>`_)
+* The default compression level for zlib is now independent of linker
+  optimization level (``Z_BEST_SPEED``).
+* ``GNU_PROPERTY_AARCH64_FEATURE_PAUTH`` notes, ``R_AARCH64_AUTH_ABS64`` and
+  ``R_AARCH64_AUTH_RELATIVE`` relocations are now supported.
+  (`#72714 <https://github.com/llvm/llvm-project/pull/72714>`_)
+* ``--debug-names`` is added to create a merged ``.debug_names`` index
+  from input ``.debug_names`` sections. Type units are not handled yet.
+  (`#86508 <https://github.com/llvm/llvm-project/pull/86508>`_)
+* ``--enable-non-contiguous-regions`` option allows automatically packing input
+  sections into memory regions by automatically spilling to later matches if a
+  region would overflow. This reduces the toil of manually packing regions
+  (typical for embedded). It also makes full LTO feasible in such cases, since
+  IR merging currently prevents the linker script from referring to input
+  files. (`#90007 <https://github.com/llvm/llvm-project/pull/90007>`_)
 
 Breaking changes
 ----------------
 
-* The GNU ld incompatible ``--no-define-common`` has been removed.
-* The obscure ``-dc``/``-dp`` options have been removed.
-* ``-d`` is now ignored.
-* If a prevailing COMDAT group defines STB_WEAK symbol, having a STB_GLOBAL symbol in a non-prevailing group is now rejected with a diagnostic.
-  (`D120626 <https://reviews.llvm.org/D120626>`_)
-
 COFF Improvements
 -----------------
-
-* Added autodetection of MSVC toolchain, a la clang-cl.  Also added /winsysroot
-  support for explicit specification of MSVC toolchain location.
-  (`D118070 <https://reviews.llvm.org/D118070>`_)
-* ...
 
 MinGW Improvements
 ------------------
 
-* ...
-
 MachO Improvements
 ------------------
-
-* Item 1.
 
 WebAssembly Improvements
 ------------------------
 
+Fixes
+#####

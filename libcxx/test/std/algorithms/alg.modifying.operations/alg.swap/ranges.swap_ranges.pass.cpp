@@ -9,7 +9,6 @@
 // <algorithm>
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
-// UNSUPPORTED: libcpp-has-no-incomplete-ranges
 
 // template<input_iterator I1, sentinel_for<I1> S1, input_iterator I2, sentinel_for<I2> S2>
 //   requires indirectly_swappable<I1, I2>
@@ -66,7 +65,7 @@ constexpr void test_range() {
   std::array r2 = {4, 5, 6};
 
 
-  std::same_as<std::ranges::in_in_result<int*, int*>> auto r = std::ranges::swap_ranges(r1, r2);
+  std::same_as<std::ranges::in_in_result<std::array<int, 3>::iterator, std::array<int, 3>::iterator>> auto r = std::ranges::swap_ranges(r1, r2);
   assert(r.in1 == r1.end());
   assert(r.in2 == r2.end());
 
@@ -147,7 +146,7 @@ constexpr void test_iterators() {
 
 constexpr void test_rval_range() {
   {
-    using Expected = std::ranges::swap_ranges_result<int*, std::ranges::dangling>;
+    using Expected = std::ranges::swap_ranges_result<std::array<int, 3>::iterator, std::ranges::dangling>;
     std::array<int, 3> r = {1, 2, 3};
     std::same_as<Expected> auto a = std::ranges::swap_ranges(r, std::array{4, 5, 6});
     assert((r == std::array{4, 5, 6}));
@@ -155,11 +154,20 @@ constexpr void test_rval_range() {
   }
   {
     std::array<int, 3> r = {1, 2, 3};
-    using Expected = std::ranges::swap_ranges_result<std::ranges::dangling, int*>;
+    using Expected = std::ranges::swap_ranges_result<std::ranges::dangling, std::array<int, 3>::iterator>;
     std::same_as<Expected> auto b = std::ranges::swap_ranges(std::array{4, 5, 6}, r);
     assert((r == std::array{4, 5, 6}));
     assert(b.in2 == r.begin() + 3);
   }
+}
+
+template <class Out>
+constexpr void test_proxy_in_iterators() {
+  test_iterators<ProxyIterator<cpp20_input_iterator<int*>>, Out>();
+  test_iterators<ProxyIterator<forward_iterator<int*>>, Out>();
+  test_iterators<ProxyIterator<bidirectional_iterator<int*>>, Out>();
+  test_iterators<ProxyIterator<random_access_iterator<int*>>, Out>();
+  test_iterators<ProxyIterator<contiguous_iterator<int*>>, Out>();
 }
 
 constexpr bool test() {
@@ -194,6 +202,12 @@ constexpr bool test() {
   test_iterators<int*, bidirectional_iterator<int*>>();
   test_iterators<int*, random_access_iterator<int*>>();
   test_iterators<int*, int*>();
+
+  test_proxy_in_iterators<ProxyIterator<cpp20_input_iterator<int*>>>();
+  test_proxy_in_iterators<ProxyIterator<forward_iterator<int*>>>();
+  test_proxy_in_iterators<ProxyIterator<bidirectional_iterator<int*>>>();
+  test_proxy_in_iterators<ProxyIterator<random_access_iterator<int*>>>();
+  test_proxy_in_iterators<ProxyIterator<contiguous_iterator<int*>>>();
 
   test_sentinel();
   test_different_lengths();

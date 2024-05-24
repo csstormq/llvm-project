@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 #endif
 
+#include "lldb/Core/Debugger.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Host/HostInfo.h"
@@ -40,12 +41,15 @@ PlatformAppleSimulator::PlatformAppleSimulator(
     const char *class_name, const char *description, ConstString plugin_name,
     llvm::Triple::OSType preferred_os,
     llvm::SmallVector<llvm::StringRef, 4> supported_triples,
-    llvm::StringRef sdk, lldb_private::XcodeSDK::Type sdk_type,
+    std::string sdk_name_primary, std::string sdk_name_secondary,
+    lldb_private::XcodeSDK::Type sdk_type,
     CoreSimulatorSupport::DeviceType::ProductFamilyID kind)
     : PlatformDarwin(true), m_class_name(class_name),
       m_description(description), m_plugin_name(plugin_name), m_kind(kind),
       m_os_type(preferred_os), m_supported_triples(supported_triples),
-      m_sdk(sdk), m_sdk_type(sdk_type) {}
+      m_sdk_name_primary(std::move(sdk_name_primary)),
+      m_sdk_name_secondary(std::move(sdk_name_secondary)),
+      m_sdk_type(sdk_type) {}
 
 /// Destructor.
 ///
@@ -82,8 +86,9 @@ lldb_private::Status PlatformAppleSimulator::LaunchProcess(
 
 void PlatformAppleSimulator::GetStatus(Stream &strm) {
   Platform::GetStatus(strm);
-  if (!m_sdk.empty())
-    strm << "  SDK Path: \"" << m_sdk << "\"\n";
+  llvm::StringRef sdk = GetSDKFilepath();
+  if (!sdk.empty())
+    strm << "  SDK Path: \"" << sdk << "\"\n";
   else
     strm << "  SDK Path: error: unable to locate SDK\n";
 
@@ -104,7 +109,7 @@ void PlatformAppleSimulator::GetStatus(Stream &strm) {
       strm << "   " << device.GetUDID() << ": " << device.GetName() << "\n";
     }
 
-    if (m_device.hasValue() && m_device->operator bool()) {
+    if (m_device.has_value() && m_device->operator bool()) {
       strm << "Current device: " << m_device->GetUDID() << ": "
            << m_device->GetName();
       if (m_device->GetState() == CoreSimulatorSupport::Device::State::Booted) {
@@ -226,13 +231,13 @@ PlatformAppleSimulator::DebugProcess(ProcessLaunchInfo &launch_info,
 FileSpec PlatformAppleSimulator::GetCoreSimulatorPath() {
 #if defined(__APPLE__)
   std::lock_guard<std::mutex> guard(m_core_sim_path_mutex);
-  if (!m_core_simulator_framework_path.hasValue()) {
+  if (!m_core_simulator_framework_path.has_value()) {
     m_core_simulator_framework_path =
         FileSpec("/Library/Developer/PrivateFrameworks/CoreSimulator.framework/"
                  "CoreSimulator");
     FileSystem::Instance().Resolve(*m_core_simulator_framework_path);
   }
-  return m_core_simulator_framework_path.getValue();
+  return m_core_simulator_framework_path.value();
 #else
   return FileSpec();
 #endif
@@ -251,16 +256,17 @@ void PlatformAppleSimulator::LoadCoreSimulator() {
 
 #if defined(__APPLE__)
 CoreSimulatorSupport::Device PlatformAppleSimulator::GetSimulatorDevice() {
-  if (!m_device.hasValue()) {
+  if (!m_device.has_value()) {
     const CoreSimulatorSupport::DeviceType::ProductFamilyID dev_id = m_kind;
-    std::string developer_dir = HostInfo::GetXcodeDeveloperDirectory().GetPath();
+    std::string developer_dir =
+        HostInfo::GetXcodeDeveloperDirectory().GetPath();
     m_device = CoreSimulatorSupport::DeviceSet::GetAvailableDevices(
                    developer_dir.c_str())
                    .GetFanciest(dev_id);
   }
 
-  if (m_device.hasValue())
-    return m_device.getValue();
+  if (m_device.has_value())
+    return m_device.value();
   else
     return CoreSimulatorSupport::Device();
 }
@@ -277,10 +283,29 @@ std::vector<ArchSpec> PlatformAppleSimulator::GetSupportedArchitectures(
 static llvm::StringRef GetXcodeSDKDir(std::string preferred,
                                       std::string secondary) {
   llvm::StringRef sdk;
-  sdk = HostInfo::GetXcodeSDKPath(XcodeSDK(std::move(preferred)));
+  auto get_sdk = [&](std::string sdk) -> llvm::StringRef {
+    auto sdk_path_or_err =
+        HostInfo::GetSDKRoot(HostInfo::SDKOptions{XcodeSDK(std::move(sdk))});
+    if (!sdk_path_or_err) {
+      Debugger::ReportError("Error while searching for Xcode SDK: " +
+                            toString(sdk_path_or_err.takeError()));
+      return {};
+    }
+    return *sdk_path_or_err;
+  };
+
+  sdk = get_sdk(preferred);
   if (sdk.empty())
-    sdk = HostInfo::GetXcodeSDKPath(XcodeSDK(std::move(secondary)));
+    sdk = get_sdk(secondary);
   return sdk;
+}
+
+llvm::StringRef PlatformAppleSimulator::GetSDKFilepath() {
+  if (!m_have_searched_for_sdk) {
+    m_sdk = GetXcodeSDKDir(m_sdk_name_primary, m_sdk_name_secondary);
+    m_have_searched_for_sdk = true;
+  }
+  return m_sdk;
 }
 
 PlatformSP PlatformAppleSimulator::CreateInstance(
@@ -289,7 +314,7 @@ PlatformSP PlatformAppleSimulator::CreateInstance(
     llvm::Triple::OSType preferred_os,
     llvm::SmallVector<llvm::Triple::OSType, 4> supported_os,
     llvm::SmallVector<llvm::StringRef, 4> supported_triples,
-    std::string sdk_name_preferred, std::string sdk_name_secondary,
+    std::string sdk_name_primary, std::string sdk_name_secondary,
     lldb_private::XcodeSDK::Type sdk_type,
     CoreSimulatorSupport::DeviceType::ProductFamilyID kind, bool force,
     const ArchSpec *arch) {
@@ -310,8 +335,7 @@ PlatformSP PlatformAppleSimulator::CreateInstance(
 
   bool create = force;
   if (!create && arch && arch->IsValid()) {
-    if (std::count(supported_arch.begin(), supported_arch.end(),
-                   arch->GetMachine())) {
+    if (llvm::is_contained(supported_arch, arch->GetMachine())) {
       const llvm::Triple &triple = arch->GetTriple();
       switch (triple.getVendor()) {
       case llvm::Triple::Apple:
@@ -331,7 +355,7 @@ PlatformSP PlatformAppleSimulator::CreateInstance(
       }
 
       if (create) {
-        if (std::count(supported_os.begin(), supported_os.end(), triple.getOS()))
+        if (llvm::is_contained(supported_os, triple.getOS()))
           create = true;
 #if defined(__APPLE__)
         // Only accept "unknown" for the OS if the host is Apple and it
@@ -348,11 +372,9 @@ PlatformSP PlatformAppleSimulator::CreateInstance(
   if (create) {
     LLDB_LOGF(log, "%s::%s() creating platform", class_name, __FUNCTION__);
 
-    llvm::StringRef sdk =
-        GetXcodeSDKDir(sdk_name_preferred, sdk_name_secondary);
     return PlatformSP(new PlatformAppleSimulator(
         class_name, description, plugin_name, preferred_os, supported_triples,
-        sdk, sdk_type, kind));
+        sdk_name_primary, sdk_name_secondary, sdk_type, kind));
   }
 
   LLDB_LOGF(log, "%s::%s() aborting creation of platform", class_name,
@@ -444,9 +466,10 @@ Status PlatformAppleSimulator::GetSymbolFile(const FileSpec &platform_file,
   if (platform_file.GetPath(platform_file_path, sizeof(platform_file_path))) {
     char resolved_path[PATH_MAX];
 
-    if (!m_sdk.empty()) {
+    llvm::StringRef sdk = GetSDKFilepath();
+    if (!sdk.empty()) {
       ::snprintf(resolved_path, sizeof(resolved_path), "%s/%s",
-                 m_sdk.str().c_str(), platform_file_path);
+                 sdk.str().c_str(), platform_file_path);
 
       // First try in the SDK and see if the file is in there
       local_file.SetFile(resolved_path, FileSpec::Style::native);
@@ -521,7 +544,7 @@ static bool shouldSkipSimulatorPlatform(bool force, const ArchSpec *arch) {
   // If the arch is known not to specify a simulator environment, skip creating
   // the simulator platform (we can create it later if there's a matching arch).
   // This avoids very slow xcrun queries for non-simulator archs (the slowness
-  // is due to xcrun not caching negative queries (rdar://74882205)).
+  // is due to xcrun not caching negative queries.
   return !force && arch && arch->IsValid() &&
          !arch->TripleEnvironmentWasSpecified();
 }
@@ -652,6 +675,41 @@ struct PlatformAppleWatchSimulator {
   }
 };
 
+static const char *g_xros_plugin_name = "xros-simulator";
+static const char *g_xros_description = "XROS simulator platform plug-in.";
+
+/// XRSimulator Plugin.
+struct PlatformXRSimulator {
+  static void Initialize() {
+    PluginManager::RegisterPlugin(g_xros_plugin_name, g_xros_description,
+                                  PlatformXRSimulator::CreateInstance);
+  }
+
+  static void Terminate() {
+    PluginManager::UnregisterPlugin(PlatformXRSimulator::CreateInstance);
+  }
+
+  static PlatformSP CreateInstance(bool force, const ArchSpec *arch) {
+    return PlatformAppleSimulator::CreateInstance(
+        "PlatformXRSimulator", g_xros_description,
+        ConstString(g_xros_plugin_name),
+        {llvm::Triple::aarch64, llvm::Triple::x86_64, llvm::Triple::x86},
+        llvm::Triple::XROS, {llvm::Triple::XROS},
+        {
+#ifdef __APPLE__
+#if __arm64__
+          "arm64e-apple-xros-simulator", "arm64-apple-xros-simulator",
+#else
+          "x86_64-apple-xros-simulator", "x86_64h-apple-xros-simulator",
+#endif
+#endif
+        },
+        "XRSimulator.Internal.sdk", "XRSimulator.sdk",
+        XcodeSDK::Type::XRSimulator,
+        CoreSimulatorSupport::DeviceType::ProductFamilyID::appleXR, force,
+        arch);
+  }
+};
 
 static unsigned g_initialize_count = 0;
 
@@ -662,12 +720,14 @@ void PlatformAppleSimulator::Initialize() {
     PlatformiOSSimulator::Initialize();
     PlatformAppleTVSimulator::Initialize();
     PlatformAppleWatchSimulator::Initialize();
+    PlatformXRSimulator::Initialize();
   }
 }
 
 void PlatformAppleSimulator::Terminate() {
   if (g_initialize_count > 0)
     if (--g_initialize_count == 0) {
+      PlatformXRSimulator::Terminate();
       PlatformAppleWatchSimulator::Terminate();
       PlatformAppleTVSimulator::Terminate();
       PlatformiOSSimulator::Terminate();

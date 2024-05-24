@@ -25,11 +25,9 @@ extern cl::OptionCategory BoltCategory;
 extern cl::opt<unsigned> Verbosity;
 
 cl::opt<bool>
-PrintSymbolAliases("print-aliases",
-  cl::desc("print aliases when printing objects"),
-  cl::Hidden,
-  cl::ZeroOrMore,
-  cl::cat(BoltCategory));
+    PrintSymbolAliases("print-aliases",
+                       cl::desc("print aliases when printing objects"),
+                       cl::Hidden, cl::cat(BoltCategory));
 }
 
 bool BinaryData::isAbsolute() const { return Flags & SymbolRef::SF_Absolute; }
@@ -57,17 +55,9 @@ bool BinaryData::hasName(StringRef Name) const {
   return false;
 }
 
-bool BinaryData::hasNameRegex(StringRef NameRegex) const {
-  Regex MatchName(NameRegex);
-  for (const MCSymbol *Symbol : Symbols)
-    if (MatchName.match(Symbol->getName()))
-      return true;
-  return false;
-}
-
 bool BinaryData::nameStartsWith(StringRef Prefix) const {
   for (const MCSymbol *Symbol : Symbols)
-    if (Symbol->getName().startswith(Prefix))
+    if (Symbol->getName().starts_with(Prefix))
       return true;
   return false;
 }

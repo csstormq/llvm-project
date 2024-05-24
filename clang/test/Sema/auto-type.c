@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 %s -fsyntax-only -Wno-strict-prototypes -verify -pedantic -std=c11
+// RUN: %clang_cc1 %s -fsyntax-only -Wno-strict-prototypes -verify -pedantic -std=c11 -fexperimental-new-constant-interpreter
 
 __auto_type a = 5; // expected-warning {{'__auto_type' is a GNU extension}}
 __extension__ __auto_type a1 = 5;
@@ -37,7 +38,7 @@ void Issue53652(void) {
 
   // GCC does not accept this either, for the same reason.
   _Atomic(__auto_type) aat2 = a; // expected-error {{'__auto_type' not allowed here}} \
-                                 // expected-warning {{type specifier missing, defaults to 'int'}}
+                                 // expected-error {{type specifier missing, defaults to 'int'}}
 
   // Ensure the types are what we expect them to be, regardless of order we
   // pass the types.
@@ -77,4 +78,14 @@ void Issue53652(void) {
   (void)_Generic(a,
                  __typeof__(i) : 0,   // expected-note {{compatible type 'typeof (i)' (aka 'int') specified here}}
                  __typeof__(a) : 1);  // expected-error {{type 'typeof (a)' (aka 'int') in generic association compatible with previously specified type 'typeof (i)' (aka 'int')}}
+}
+
+void Issue55702(void) {
+  // A controlling expression which uses __auto_type should not be
+  // automatically compatible with every association; we should be using the
+  // canonical type for that comparison.
+  void *ptr = 0;
+  __auto_type v = ptr;
+  (void)_Generic(v, long double : 0, double : 0, default : 1); // OK
+  _Static_assert(_Generic(v, long double : 0, default : 1) == 1, "fail");
 }

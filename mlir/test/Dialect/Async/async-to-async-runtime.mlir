@@ -1,8 +1,8 @@
-// RUN: mlir-opt %s -split-input-file -async-to-async-runtime                  \
-// RUN:   | FileCheck %s --dump-input=always
+// RUN: mlir-opt %s -split-input-file -async-func-to-async-runtime             \
+// RUN:   -async-to-async-runtime | FileCheck %s --dump-input=always
 
 // CHECK-LABEL: @execute_no_async_args
-func @execute_no_async_args(%arg0: f32, %arg1: memref<1xf32>) {
+func.func @execute_no_async_args(%arg0: f32, %arg1: memref<1xf32>) {
   %token = async.execute {
     %c0 = arith.constant 0 : index
     memref.store %arg0, %arg1[%c0] : memref<1xf32>
@@ -25,15 +25,20 @@ func @execute_no_async_args(%arg0: f32, %arg1: memref<1xf32>) {
 // CHECK: %[[SAVED:.*]] = async.coro.save %[[HDL]]
 // CHECK: async.runtime.resume %[[HDL]]
 // CHECK: async.coro.suspend %[[SAVED]]
-// CHECK-SAME: ^[[SUSPEND:.*]], ^[[RESUME:.*]], ^[[CLEANUP:.*]]
+// CHECK-SAME: ^[[SUSPEND:.*]], ^[[RESUME:.*]], ^[[DESTROY:.*]]
 
 // Resume coroutine after suspension.
 // CHECK: ^[[RESUME]]:
 // CHECK:   memref.store
 // CHECK:   async.runtime.set_available %[[TOKEN]]
+// CHECK:   cf.br ^[[CLEANUP:.*]]
 
 // Delete coroutine.
 // CHECK: ^[[CLEANUP]]:
+// CHECK:   async.coro.free %[[ID]], %[[HDL]]
+
+// Delete coroutine.
+// CHECK: ^[[DESTROY]]:
 // CHECK:   async.coro.free %[[ID]], %[[HDL]]
 
 // Suspend coroutine, and also a return statement for ramp function.
@@ -44,7 +49,7 @@ func @execute_no_async_args(%arg0: f32, %arg1: memref<1xf32>) {
 // -----
 
 // CHECK-LABEL: @nested_async_execute
-func @nested_async_execute(%arg0: f32, %arg1: f32, %arg2: memref<1xf32>) {
+func.func @nested_async_execute(%arg0: f32, %arg1: f32, %arg2: memref<1xf32>) {
   // CHECK: %[[TOKEN:.*]] = call @async_execute_fn_0(%arg0, %arg2, %arg1)
   %token0 = async.execute {
     %c0 = arith.constant 0 : index
@@ -79,11 +84,15 @@ func @nested_async_execute(%arg0: f32, %arg1: f32, %arg2: memref<1xf32>) {
 
 // CHECK: async.runtime.resume %[[HDL]]
 // CHECK: async.coro.suspend
-// CHECK-SAME: ^[[SUSPEND:.*]], ^[[RESUME:.*]], ^[[CLEANUP:.*]]
+// CHECK-SAME: ^[[SUSPEND:.*]], ^[[RESUME:.*]], ^[[DESTROY:.*]]
 
 // CHECK: ^[[RESUME]]:
 // CHECK:   memref.store
 // CHECK:   async.runtime.set_available %[[TOKEN]]
+// CHECK:   cf.br ^[[CLEANUP:.*]]
+
+// CHECK: ^[[CLEANUP]]:
+// CHECK: ^[[DESTROY]]:
 
 // Function outlined from the outer async.execute operation.
 // CHECK-LABEL: func private @async_execute_fn_0
@@ -96,7 +105,7 @@ func @nested_async_execute(%arg0: f32, %arg1: f32, %arg2: memref<1xf32>) {
 // Suspend coroutine in the beginning.
 // CHECK: async.runtime.resume %[[HDL]]
 // CHECK: async.coro.suspend
-// CHECK-SAME: ^[[SUSPEND:.*]], ^[[RESUME_0:.*]], ^[[CLEANUP:.*]]
+// CHECK-SAME: ^[[SUSPEND:.*]], ^[[RESUME_0:.*]], ^[[DESTROY_0:.*]]
 
 // Suspend coroutine second time waiting for the completion of inner execute op.
 // CHECK: ^[[RESUME_0]]:
@@ -104,7 +113,7 @@ func @nested_async_execute(%arg0: f32, %arg1: f32, %arg2: memref<1xf32>) {
 // CHECK:   %[[SAVED:.*]] = async.coro.save %[[HDL]]
 // CHECK:   async.runtime.await_and_resume %[[INNER_TOKEN]], %[[HDL]]
 // CHECK:   async.coro.suspend %[[SAVED]]
-// CHECK-SAME: ^[[SUSPEND]], ^[[RESUME_1:.*]], ^[[CLEANUP]]
+// CHECK-SAME: ^[[SUSPEND]], ^[[RESUME_1:.*]], ^[[DESTROY_0]]
 
 // Check the error of the awaited token after resumption.
 // CHECK: ^[[RESUME_1]]:
@@ -115,15 +124,17 @@ func @nested_async_execute(%arg0: f32, %arg1: f32, %arg2: memref<1xf32>) {
 // CHECK: ^[[CONTINUATION:.*]]:
 // CHECK:   memref.store
 // CHECK:   async.runtime.set_available %[[TOKEN]]
+// CHECK:   cf.br ^[[CLEANUP_0:.*]]
 
 // CHECK: ^[[SET_ERROR]]:
-// CHECK: ^[[CLEANUP]]:
+// CHECK: ^[[CLEANUP_0]]:
+// CHECK: ^[[DESTROY_0]]:
 // CHECK: ^[[SUSPEND]]:
 
 // -----
 
 // CHECK-LABEL: @async_execute_token_dependency
-func @async_execute_token_dependency(%arg0: f32, %arg1: memref<1xf32>) {
+func.func @async_execute_token_dependency(%arg0: f32, %arg1: memref<1xf32>) {
   // CHECK: %[[TOKEN:.*]] = call @async_execute_fn
   %token = async.execute {
     %c0 = arith.constant 0 : index
@@ -182,7 +193,7 @@ func @async_execute_token_dependency(%arg0: f32, %arg1: memref<1xf32>) {
 // -----
 
 // CHECK-LABEL: @async_group_await_all
-func @async_group_await_all(%arg0: f32, %arg1: memref<1xf32>) {
+func.func @async_group_await_all(%arg0: f32, %arg1: memref<1xf32>) {
   // CHECK: %[[C:.*]] = arith.constant 1 : index
   %c = arith.constant 1 : index
   // CHECK: %[[GROUP:.*]] = async.runtime.create_group %[[C]] : !async.group
@@ -237,7 +248,7 @@ func @async_group_await_all(%arg0: f32, %arg1: memref<1xf32>) {
 // -----
 
 // CHECK-LABEL: @execute_and_return_f32
-func @execute_and_return_f32() -> f32 {
+func.func @execute_and_return_f32() -> f32 {
  // CHECK: %[[RET:.*]]:2 = call @async_execute_fn
   %token, %result = async.execute -> !async.value<f32> {
     %c0 = arith.constant 123.0 : f32
@@ -276,7 +287,7 @@ func @execute_and_return_f32() -> f32 {
 // -----
 
 // CHECK-LABEL: @async_value_operands
-func @async_value_operands() {
+func.func @async_value_operands() {
   // CHECK: %[[RET:.*]]:2 = call @async_execute_fn
   %token, %result = async.execute -> !async.value<f32> {
     %c0 = arith.constant 123.0 : f32
@@ -333,7 +344,7 @@ func @async_value_operands() {
 // -----
 
 // CHECK-LABEL: @execute_assertion
-func @execute_assertion(%arg0: i1) {
+func.func @execute_assertion(%arg0: i1) {
   %token = async.execute {
     cf.assert %arg0, "error"
     async.yield
@@ -354,7 +365,7 @@ func @execute_assertion(%arg0: i1) {
 
 // Initial coroutine suspension.
 // CHECK:      async.coro.suspend
-// CHECK-SAME: ^[[SUSPEND:.*]], ^[[RESUME:.*]], ^[[CLEANUP:.*]]
+// CHECK-SAME: ^[[SUSPEND:.*]], ^[[RESUME:.*]], ^[[DESTROY:.*]]
 
 // Resume coroutine after suspension.
 // CHECK: ^[[RESUME]]:
@@ -363,7 +374,7 @@ func @execute_assertion(%arg0: i1) {
 // Set coroutine completion token to available state.
 // CHECK: ^[[SET_AVAILABLE]]:
 // CHECK:   async.runtime.set_available %[[TOKEN]]
-// CHECK:   cf.br ^[[CLEANUP]]
+// CHECK:   cf.br ^[[CLEANUP:.*]]
 
 // Set coroutine completion token to error state.
 // CHECK: ^[[SET_ERROR]]:
@@ -372,6 +383,10 @@ func @execute_assertion(%arg0: i1) {
 
 // Delete coroutine.
 // CHECK: ^[[CLEANUP]]:
+// CHECK:   async.coro.free %[[ID]], %[[HDL]]
+
+// Delete coroutine.
+// CHECK: ^[[DESTROY]]:
 // CHECK:   async.coro.free %[[ID]], %[[HDL]]
 
 // Suspend coroutine, and also a return statement for ramp function.
@@ -384,7 +399,7 @@ func @execute_assertion(%arg0: i1) {
 // lowered to branch-based control flow to enable coroutine CFG rewrite.
 
 // CHECK-LABEL: @lower_scf_to_cfg
-func @lower_scf_to_cfg(%arg0: f32, %arg1: memref<1xf32>, %arg2: i1) {
+func.func @lower_scf_to_cfg(%arg0: f32, %arg1: memref<1xf32>, %arg2: i1) {
   %token0 = async.execute { async.yield }
   %token1 = async.execute {
     scf.if %arg2 {
@@ -416,7 +431,7 @@ func @lower_scf_to_cfg(%arg0: f32, %arg1: memref<1xf32>, %arg2: i1) {
 // outline async execute function.
 
 // CHECK-LABEL: @clone_constants
-func @clone_constants(%arg0: f32, %arg1: memref<1xf32>) {
+func.func @clone_constants(%arg0: f32, %arg1: memref<1xf32>) {
   %c0 = arith.constant 0 : index
   %token = async.execute {
     memref.store %arg0, %arg1[%c0] : memref<1xf32>
@@ -425,6 +440,56 @@ func @clone_constants(%arg0: f32, %arg1: memref<1xf32>) {
   async.await %token : !async.token
   return
 }
+
+// Function outlined from the async.execute operation.
+// CHECK-LABEL: func private @async_execute_fn(
+// CHECK-SAME:    %[[VALUE:arg[0-9]+]]: f32,
+// CHECK-SAME:    %[[MEMREF:arg[0-9]+]]: memref<1xf32>
+// CHECK-SAME:  ) -> !async.token
+// CHECK:         %[[CST:.*]] = arith.constant 0 : index
+// CHECK:         memref.store %[[VALUE]], %[[MEMREF]][%[[CST]]]
+
+// -----
+// Async Functions should be none blocking
+
+// CHECK-LABEL: @async_func_await
+async.func @async_func_await(%arg0: f32, %arg1: !async.value<f32>)
+              -> !async.token {
+  %0 = async.await %arg1 : !async.value<f32>
+  return
+}
+// Create token for return op, and mark a function as a coroutine.
+// CHECK: %[[TOKEN:.*]] = async.runtime.create : !async.token
+// CHECK: %[[ID:.*]] = async.coro.id
+// CHECK: %[[HDL:.*]] = async.coro.begin
+// CHECK:   cf.br ^[[ORIGIN_ENTRY:.*]]
+
+// CHECK: ^[[ORIGIN_ENTRY]]:
+// CHECK: %[[SAVED:.*]] = async.coro.save %[[HDL]]
+// CHECK: async.runtime.await_and_resume %[[arg1:.*]], %[[HDL]] :
+// CHECK-SAME: !async.value<f32>
+// CHECK: async.coro.suspend %[[SAVED]]
+// CHECK-SAME: ^[[SUSPEND:.*]], ^[[RESUME:.*]], ^[[CLEANUP:.*]]
+
+// -----
+// Async execute inside async func
+
+// CHECK-LABEL: @execute_in_async_func
+async.func @execute_in_async_func(%arg0: f32, %arg1: memref<1xf32>)
+             -> !async.token {
+  %token = async.execute {
+    %c0 = arith.constant 0 : index
+    memref.store %arg0, %arg1[%c0] : memref<1xf32>
+    async.yield
+  }
+  async.await %token : !async.token
+  return
+}
+// Call outlind async execute Function
+// CHECK: %[[RES:.*]] = call @async_execute_fn(
+// CHECK-SAME:    %[[VALUE:arg[0-9]+]],
+// CHECK-SAME:    %[[MEMREF:arg[0-9]+]]
+// CHECK-SAME:  ) : (f32, memref<1xf32>) -> !async.token
 
 // Function outlined from the async.execute operation.
 // CHECK-LABEL: func private @async_execute_fn(

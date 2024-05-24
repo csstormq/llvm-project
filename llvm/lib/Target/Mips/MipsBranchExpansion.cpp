@@ -299,9 +299,8 @@ void MipsBranchExpansion::initMBBInfo() {
     MachineBasicBlock *MBB = MFp->getBlockNumbered(I);
 
     // Compute size of MBB.
-    for (MachineBasicBlock::instr_iterator MI = MBB->instr_begin();
-         MI != MBB->instr_end(); ++MI)
-      MBBInfos[I].Size += TII->getInstSizeInBytes(*MI);
+    for (MachineInstr &MI : MBB->instrs())
+      MBBInfos[I].Size += TII->getInstSizeInBytes(MI);
   }
 }
 
@@ -534,7 +533,7 @@ void MipsBranchExpansion::expandToLongBranch(MBBInfo &I) {
       }
       if (hasDelaySlot) {
         if (STI->isTargetNaCl()) {
-          BuildMI(*BalTgtMBB, Pos, DL, TII->get(Mips::NOP));
+          TII->insertNop(*BalTgtMBB, Pos, DL);
         } else {
           BuildMI(*BalTgtMBB, Pos, DL, TII->get(Mips::ADDiu), Mips::SP)
               .addReg(Mips::SP)
@@ -677,9 +676,8 @@ void MipsBranchExpansion::expandToLongBranch(MBBInfo &I) {
       //  nop
       // $fallthrough:
       //
-      MIBundleBuilder(*LongBrMBB, Pos)
-          .append(BuildMI(*MFp, DL, TII->get(Mips::J)).addMBB(TgtMBB))
-          .append(BuildMI(*MFp, DL, TII->get(Mips::NOP)));
+      BuildMI(*LongBrMBB, Pos, DL, TII->get(Mips::J)).addMBB(TgtMBB);
+      TII->insertNop(*LongBrMBB, Pos, DL)->bundleWithPred();
     } else {
       // At this point, offset where we need to branch does not fit into
       // immediate field of the branch instruction and is not in the same
@@ -768,8 +766,8 @@ bool MipsBranchExpansion::handleSlot(Pred Predicate, Safe SafeInSlot) {
         if (std::next(Iit) == FI->end() ||
             std::next(Iit)->getOpcode() != Mips::NOP) {
           Changed = true;
-          MIBundleBuilder(&*I).append(
-              BuildMI(*MFp, I->getDebugLoc(), TII->get(Mips::NOP)));
+          TII->insertNop(*(I->getParent()), std::next(I), I->getDebugLoc())
+              ->bundleWithPred();
           NumInsertedNops++;
         }
       }
@@ -880,7 +878,7 @@ bool MipsBranchExpansion::runOnMachineFunction(MachineFunction &MF) {
   const TargetMachine &TM = MF.getTarget();
   IsPIC = TM.isPositionIndependent();
   ABI = static_cast<const MipsTargetMachine &>(TM).getABI();
-  STI = &static_cast<const MipsSubtarget &>(MF.getSubtarget());
+  STI = &MF.getSubtarget<MipsSubtarget>();
   TII = static_cast<const MipsInstrInfo *>(STI->getInstrInfo());
 
   if (IsPIC && ABI.IsO32() &&

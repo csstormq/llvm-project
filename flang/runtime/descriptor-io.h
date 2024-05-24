@@ -17,21 +17,23 @@
 #include "edit-input.h"
 #include "edit-output.h"
 #include "io-stmt.h"
+#include "namelist.h"
 #include "terminator.h"
 #include "type-info.h"
 #include "unit.h"
+#include "flang/Common/optional.h"
 #include "flang/Common/uint128.h"
 #include "flang/Runtime/cpp-type.h"
 #include "flang/Runtime/descriptor.h"
 
 namespace Fortran::runtime::io::descr {
 template <typename A>
-inline A &ExtractElement(IoStatementState &io, const Descriptor &descriptor,
-    const SubscriptValue subscripts[]) {
+inline RT_API_ATTRS A &ExtractElement(IoStatementState &io,
+    const Descriptor &descriptor, const SubscriptValue subscripts[]) {
   A *p{descriptor.Element<A>(subscripts)};
   if (!p) {
-    io.GetIoErrorHandler().Crash(
-        "ExtractElement: null base address or subscripts out of range");
+    io.GetIoErrorHandler().Crash("Bad address for I/O item -- null base "
+                                 "address or subscripts out of range");
   }
   return *p;
 }
@@ -43,7 +45,7 @@ inline A &ExtractElement(IoStatementState &io, const Descriptor &descriptor,
 // NAMELIST array output.
 
 template <int KIND, Direction DIR>
-inline bool FormattedIntegerIO(
+inline RT_API_ATTRS bool FormattedIntegerIO(
     IoStatementState &io, const Descriptor &descriptor) {
   std::size_t numElements{descriptor.Elements()};
   SubscriptValue subscripts[maxRank];
@@ -76,7 +78,7 @@ inline bool FormattedIntegerIO(
 }
 
 template <int KIND, Direction DIR>
-inline bool FormattedRealIO(
+inline RT_API_ATTRS bool FormattedRealIO(
     IoStatementState &io, const Descriptor &descriptor) {
   std::size_t numElements{descriptor.Elements()};
   SubscriptValue subscripts[maxRank];
@@ -109,7 +111,7 @@ inline bool FormattedRealIO(
 }
 
 template <int KIND, Direction DIR>
-inline bool FormattedComplexIO(
+inline RT_API_ATTRS bool FormattedComplexIO(
     IoStatementState &io, const Descriptor &descriptor) {
   std::size_t numElements{descriptor.Elements()};
   SubscriptValue subscripts[maxRank];
@@ -157,7 +159,7 @@ inline bool FormattedComplexIO(
 }
 
 template <typename A, Direction DIR>
-inline bool FormattedCharacterIO(
+inline RT_API_ATTRS bool FormattedCharacterIO(
     IoStatementState &io, const Descriptor &descriptor) {
   std::size_t numElements{descriptor.Elements()};
   SubscriptValue subscripts[maxRank];
@@ -176,7 +178,7 @@ inline bool FormattedCharacterIO(
         if (!EditCharacterOutput(io, *edit, x, length)) {
           return false;
         }
-      } else {
+      } else { // input
         if (edit->descriptor != DataEdit::ListDirectedNullValue) {
           if (EditCharacterInput(io, *edit, x, length)) {
             anyInput = true;
@@ -197,7 +199,7 @@ inline bool FormattedCharacterIO(
 }
 
 template <int KIND, Direction DIR>
-inline bool FormattedLogicalIO(
+inline RT_API_ATTRS bool FormattedLogicalIO(
     IoStatementState &io, const Descriptor &descriptor) {
   std::size_t numElements{descriptor.Elements()};
   SubscriptValue subscripts[maxRank];
@@ -239,19 +241,23 @@ inline bool FormattedLogicalIO(
 }
 
 template <Direction DIR>
-static bool DescriptorIO(IoStatementState &, const Descriptor &);
+static RT_API_ATTRS bool DescriptorIO(IoStatementState &, const Descriptor &,
+    const NonTbpDefinedIoTable * = nullptr);
 
+// For intrinsic (not defined) derived type I/O, formatted & unformatted
 template <Direction DIR>
-static bool DefaultFormattedComponentIO(IoStatementState &io,
+static RT_API_ATTRS bool DefaultComponentIO(IoStatementState &io,
     const typeInfo::Component &component, const Descriptor &origDescriptor,
-    const SubscriptValue origSubscripts[], Terminator &terminator) {
+    const SubscriptValue origSubscripts[], Terminator &terminator,
+    const NonTbpDefinedIoTable *table) {
+#if !defined(RT_DEVICE_AVOID_RECURSION)
   if (component.genre() == typeInfo::Component::Genre::Data) {
     // Create a descriptor for the component
     StaticDescriptor<maxRank, true, 16 /*?*/> statDesc;
     Descriptor &desc{statDesc.descriptor()};
     component.CreatePointerDescriptor(
         desc, origDescriptor, terminator, origSubscripts);
-    return DescriptorIO<DIR>(io, desc);
+    return DescriptorIO<DIR>(io, desc, table);
   } else {
     // Component is itself a descriptor
     char *pointer{
@@ -259,33 +265,45 @@ static bool DefaultFormattedComponentIO(IoStatementState &io,
     RUNTIME_CHECK(
         terminator, component.genre() == typeInfo::Component::Genre::Automatic);
     const Descriptor &compDesc{*reinterpret_cast<const Descriptor *>(pointer)};
-    return DescriptorIO<DIR>(io, compDesc);
+    return DescriptorIO<DIR>(io, compDesc, table);
   }
+#else
+  terminator.Crash("not yet implemented: component IO");
+#endif
 }
 
-std::optional<bool> DefinedFormattedIo(
-    IoStatementState &, const Descriptor &, const typeInfo::SpecialBinding &);
-
 template <Direction DIR>
-static bool FormattedDerivedTypeIO(
-    IoStatementState &io, const Descriptor &descriptor) {
+static RT_API_ATTRS bool DefaultComponentwiseFormattedIO(IoStatementState &io,
+    const Descriptor &descriptor, const typeInfo::DerivedType &type,
+    const NonTbpDefinedIoTable *table, const SubscriptValue subscripts[]) {
   IoErrorHandler &handler{io.GetIoErrorHandler()};
-  // Derived type information must be present for formatted I/O.
-  const DescriptorAddendum *addendum{descriptor.Addendum()};
-  RUNTIME_CHECK(handler, addendum != nullptr);
-  const typeInfo::DerivedType *type{addendum->derivedType()};
-  RUNTIME_CHECK(handler, type != nullptr);
-  if (const typeInfo::SpecialBinding *
-      special{type->FindSpecialBinding(DIR == Direction::Input
-              ? typeInfo::SpecialBinding::Which::ReadFormatted
-              : typeInfo::SpecialBinding::Which::WriteFormatted)}) {
-    if (std::optional<bool> wasDefined{
-            DefinedFormattedIo(io, descriptor, *special)}) {
-      return *wasDefined; // user-defined I/O was applied
+  const Descriptor &compArray{type.component()};
+  RUNTIME_CHECK(handler, compArray.rank() == 1);
+  std::size_t numComponents{compArray.Elements()};
+  SubscriptValue at[maxRank];
+  compArray.GetLowerBounds(at);
+  for (std::size_t k{0}; k < numComponents;
+       ++k, compArray.IncrementSubscripts(at)) {
+    const typeInfo::Component &component{
+        *compArray.Element<typeInfo::Component>(at)};
+    if (!DefaultComponentIO<DIR>(
+            io, component, descriptor, subscripts, handler, table)) {
+      // Return true for NAMELIST input if any component appeared.
+      auto *listInput{
+          io.get_if<ListDirectedStatementState<Direction::Input>>()};
+      return DIR == Direction::Input && k > 0 && listInput &&
+          listInput->inNamelistSequence();
     }
   }
-  // Default componentwise derived type formatting
-  const Descriptor &compArray{type->component()};
+  return true;
+}
+
+template <Direction DIR>
+static RT_API_ATTRS bool DefaultComponentwiseUnformattedIO(IoStatementState &io,
+    const Descriptor &descriptor, const typeInfo::DerivedType &type,
+    const NonTbpDefinedIoTable *table) {
+  IoErrorHandler &handler{io.GetIoErrorHandler()};
+  const Descriptor &compArray{type.component()};
   RUNTIME_CHECK(handler, compArray.rank() == 1);
   std::size_t numComponents{compArray.Elements()};
   std::size_t numElements{descriptor.Elements()};
@@ -299,8 +317,8 @@ static bool FormattedDerivedTypeIO(
          ++k, compArray.IncrementSubscripts(at)) {
       const typeInfo::Component &component{
           *compArray.Element<typeInfo::Component>(at)};
-      if (!DefaultFormattedComponentIO<DIR>(
-              io, component, descriptor, subscripts, handler)) {
+      if (!DefaultComponentIO<DIR>(
+              io, component, descriptor, subscripts, handler, table)) {
         return false;
       }
     }
@@ -308,27 +326,117 @@ static bool FormattedDerivedTypeIO(
   return true;
 }
 
-bool DefinedUnformattedIo(
-    IoStatementState &, const Descriptor &, const typeInfo::SpecialBinding &);
+RT_API_ATTRS Fortran::common::optional<bool> DefinedFormattedIo(
+    IoStatementState &, const Descriptor &, const typeInfo::DerivedType &,
+    const typeInfo::SpecialBinding &, const SubscriptValue[]);
+
+template <Direction DIR>
+static RT_API_ATTRS bool FormattedDerivedTypeIO(IoStatementState &io,
+    const Descriptor &descriptor, const NonTbpDefinedIoTable *table) {
+  IoErrorHandler &handler{io.GetIoErrorHandler()};
+  // Derived type information must be present for formatted I/O.
+  const DescriptorAddendum *addendum{descriptor.Addendum()};
+  RUNTIME_CHECK(handler, addendum != nullptr);
+  const typeInfo::DerivedType *type{addendum->derivedType()};
+  RUNTIME_CHECK(handler, type != nullptr);
+  Fortran::common::optional<typeInfo::SpecialBinding> nonTbpSpecial;
+  const typeInfo::SpecialBinding *special{nullptr};
+  if (table) {
+    if (const auto *definedIo{table->Find(*type,
+            DIR == Direction::Input ? common::DefinedIo::ReadFormatted
+                                    : common::DefinedIo::WriteFormatted)}) {
+      if (definedIo->subroutine) {
+        nonTbpSpecial.emplace(DIR == Direction::Input
+                ? typeInfo::SpecialBinding::Which::ReadFormatted
+                : typeInfo::SpecialBinding::Which::WriteFormatted,
+            definedIo->subroutine, definedIo->isDtvArgPolymorphic, false,
+            false);
+        special = &*nonTbpSpecial;
+      }
+    }
+  }
+  if (!special) {
+    if (const typeInfo::SpecialBinding *
+        binding{type->FindSpecialBinding(DIR == Direction::Input
+                ? typeInfo::SpecialBinding::Which::ReadFormatted
+                : typeInfo::SpecialBinding::Which::WriteFormatted)}) {
+      if (!table || !table->ignoreNonTbpEntries || binding->isTypeBound()) {
+        special = binding;
+      }
+    }
+  }
+  SubscriptValue subscripts[maxRank];
+  descriptor.GetLowerBounds(subscripts);
+  std::size_t numElements{descriptor.Elements()};
+  for (std::size_t j{0}; j < numElements;
+       ++j, descriptor.IncrementSubscripts(subscripts)) {
+    Fortran::common::optional<bool> result;
+    if (special) {
+      result = DefinedFormattedIo(io, descriptor, *type, *special, subscripts);
+    }
+    if (!result) {
+      result = DefaultComponentwiseFormattedIO<DIR>(
+          io, descriptor, *type, table, subscripts);
+    }
+    if (!result.value()) {
+      // Return true for NAMELIST input if we got anything.
+      auto *listInput{
+          io.get_if<ListDirectedStatementState<Direction::Input>>()};
+      return DIR == Direction::Input && j > 0 && listInput &&
+          listInput->inNamelistSequence();
+    }
+  }
+  return true;
+}
+
+RT_API_ATTRS bool DefinedUnformattedIo(IoStatementState &, const Descriptor &,
+    const typeInfo::DerivedType &, const typeInfo::SpecialBinding &);
 
 // Unformatted I/O
 template <Direction DIR>
-static bool UnformattedDescriptorIO(
-    IoStatementState &io, const Descriptor &descriptor) {
+static RT_API_ATTRS bool UnformattedDescriptorIO(IoStatementState &io,
+    const Descriptor &descriptor, const NonTbpDefinedIoTable *table = nullptr) {
   IoErrorHandler &handler{io.GetIoErrorHandler()};
   const DescriptorAddendum *addendum{descriptor.Addendum()};
-  const typeInfo::DerivedType *type{
-      addendum ? addendum->derivedType() : nullptr};
-  if (const typeInfo::SpecialBinding *
-      special{type
-              ? type->FindSpecialBinding(DIR == Direction::Input
-                        ? typeInfo::SpecialBinding::Which::ReadUnformatted
-                        : typeInfo::SpecialBinding::Which::WriteUnformatted)
-              : nullptr}) {
-    // User-defined derived type unformatted I/O
-    return DefinedUnformattedIo(io, descriptor, *special);
+  if (const typeInfo::DerivedType *
+      type{addendum ? addendum->derivedType() : nullptr}) {
+    // derived type unformatted I/O
+    if (table) {
+      if (const auto *definedIo{table->Find(*type,
+              DIR == Direction::Input ? common::DefinedIo::ReadUnformatted
+                                      : common::DefinedIo::WriteUnformatted)}) {
+        if (definedIo->subroutine) {
+          typeInfo::SpecialBinding special{DIR == Direction::Input
+                  ? typeInfo::SpecialBinding::Which::ReadUnformatted
+                  : typeInfo::SpecialBinding::Which::WriteUnformatted,
+              definedIo->subroutine, definedIo->isDtvArgPolymorphic, false,
+              false};
+          if (Fortran::common::optional<bool> wasDefined{
+                  DefinedUnformattedIo(io, descriptor, *type, special)}) {
+            return *wasDefined;
+          }
+        } else {
+          return DefaultComponentwiseUnformattedIO<DIR>(
+              io, descriptor, *type, table);
+        }
+      }
+    }
+    if (const typeInfo::SpecialBinding *
+        special{type->FindSpecialBinding(DIR == Direction::Input
+                ? typeInfo::SpecialBinding::Which::ReadUnformatted
+                : typeInfo::SpecialBinding::Which::WriteUnformatted)}) {
+      if (!table || !table->ignoreNonTbpEntries || special->isTypeBound()) {
+        // defined derived type unformatted I/O
+        return DefinedUnformattedIo(io, descriptor, *type, *special);
+      }
+    }
+    // Default derived type unformatted I/O
+    // TODO: If no component at any level has defined READ or WRITE
+    // (as appropriate), the elements are contiguous, and no byte swapping
+    // is active, do a block transfer via the code below.
+    return DefaultComponentwiseUnformattedIO<DIR>(io, descriptor, *type, table);
   } else {
-    // Regular derived type unformatted I/O, not user-defined
+    // intrinsic type unformatted I/O
     auto *externalUnf{io.get_if<ExternalUnformattedIoStatementState<DIR>>()};
     auto *childUnf{io.get_if<ChildUnformattedIoStatementState<DIR>>()};
     auto *inq{
@@ -336,28 +444,41 @@ static bool UnformattedDescriptorIO(
     RUNTIME_CHECK(handler, externalUnf || childUnf || inq);
     std::size_t elementBytes{descriptor.ElementBytes()};
     std::size_t numElements{descriptor.Elements()};
+    std::size_t swappingBytes{elementBytes};
+    if (auto maybeCatAndKind{descriptor.type().GetCategoryAndKind()}) {
+      // Byte swapping units can be smaller than elements, namely
+      // for COMPLEX and CHARACTER.
+      if (maybeCatAndKind->first == TypeCategory::Character) {
+        // swap each character position independently
+        swappingBytes = maybeCatAndKind->second; // kind
+      } else if (maybeCatAndKind->first == TypeCategory::Complex) {
+        // swap real and imaginary components independently
+        swappingBytes /= 2;
+      }
+    }
     SubscriptValue subscripts[maxRank];
     descriptor.GetLowerBounds(subscripts);
     using CharType =
         std::conditional_t<DIR == Direction::Output, const char, char>;
-    auto Transfer{[=](CharType &x, std::size_t totalBytes,
-                      std::size_t elementBytes) -> bool {
+    auto Transfer{[=](CharType &x, std::size_t totalBytes) -> bool {
       if constexpr (DIR == Direction::Output) {
-        return externalUnf ? externalUnf->Emit(&x, totalBytes, elementBytes)
-            : childUnf     ? childUnf->Emit(&x, totalBytes, elementBytes)
-                           : inq->Emit(&x, totalBytes, elementBytes);
+        return externalUnf ? externalUnf->Emit(&x, totalBytes, swappingBytes)
+            : childUnf     ? childUnf->Emit(&x, totalBytes, swappingBytes)
+                           : inq->Emit(&x, totalBytes, swappingBytes);
       } else {
-        return externalUnf ? externalUnf->Receive(&x, totalBytes, elementBytes)
-                           : childUnf->Receive(&x, totalBytes, elementBytes);
+        return externalUnf ? externalUnf->Receive(&x, totalBytes, swappingBytes)
+                           : childUnf->Receive(&x, totalBytes, swappingBytes);
       }
     }};
-    if (descriptor.IsContiguous()) { // contiguous unformatted I/O
+    bool swapEndianness{externalUnf && externalUnf->unit().swapEndianness()};
+    if (!swapEndianness &&
+        descriptor.IsContiguous()) { // contiguous unformatted I/O
       char &x{ExtractElement<char>(io, descriptor, subscripts)};
-      return Transfer(x, numElements * elementBytes, elementBytes);
-    } else { // non-contiguous unformatted I/O
+      return Transfer(x, numElements * elementBytes);
+    } else { // non-contiguous or byte-swapped intrinsic type unformatted I/O
       for (std::size_t j{0}; j < numElements; ++j) {
         char &x{ExtractElement<char>(io, descriptor, subscripts)};
-        if (!Transfer(x, elementBytes, elementBytes)) {
+        if (!Transfer(x, elementBytes)) {
           return false;
         }
         if (!descriptor.IncrementSubscripts(subscripts) &&
@@ -371,14 +492,14 @@ static bool UnformattedDescriptorIO(
 }
 
 template <Direction DIR>
-static bool DescriptorIO(IoStatementState &io, const Descriptor &descriptor) {
+static RT_API_ATTRS bool DescriptorIO(IoStatementState &io,
+    const Descriptor &descriptor, const NonTbpDefinedIoTable *table) {
   IoErrorHandler &handler{io.GetIoErrorHandler()};
   if (handler.InError()) {
     return false;
   }
   if (!io.get_if<IoDirectionState<DIR>>()) {
-    io.GetIoErrorHandler().Crash(
-        "DescriptorIO() called for wrong I/O direction");
+    handler.Crash("DescriptorIO() called for wrong I/O direction");
     return false;
   }
   if constexpr (DIR == Direction::Input) {
@@ -387,7 +508,7 @@ static bool DescriptorIO(IoStatementState &io, const Descriptor &descriptor) {
     }
   }
   if (!io.get_if<FormattedIoStatementState<DIR>>()) {
-    return UnformattedDescriptorIO<DIR>(io, descriptor);
+    return UnformattedDescriptorIO<DIR>(io, descriptor, table);
   }
   if (auto catAndKind{descriptor.type().GetCategoryAndKind()}) {
     TypeCategory cat{catAndKind->first};
@@ -407,8 +528,7 @@ static bool DescriptorIO(IoStatementState &io, const Descriptor &descriptor) {
         return FormattedIntegerIO<16, DIR>(io, descriptor);
       default:
         handler.Crash(
-            "DescriptorIO: Unimplemented INTEGER kind (%d) in descriptor",
-            kind);
+            "not yet implemented: INTEGER(KIND=%d) in formatted IO", kind);
         return false;
       }
     case TypeCategory::Real:
@@ -428,7 +548,7 @@ static bool DescriptorIO(IoStatementState &io, const Descriptor &descriptor) {
         return FormattedRealIO<16, DIR>(io, descriptor);
       default:
         handler.Crash(
-            "DescriptorIO: Unimplemented REAL kind (%d) in descriptor", kind);
+            "not yet implemented: REAL(KIND=%d) in formatted IO", kind);
         return false;
       }
     case TypeCategory::Complex:
@@ -448,8 +568,7 @@ static bool DescriptorIO(IoStatementState &io, const Descriptor &descriptor) {
         return FormattedComplexIO<16, DIR>(io, descriptor);
       default:
         handler.Crash(
-            "DescriptorIO: Unimplemented COMPLEX kind (%d) in descriptor",
-            kind);
+            "not yet implemented: COMPLEX(KIND=%d) in formatted IO", kind);
         return false;
       }
     case TypeCategory::Character:
@@ -462,8 +581,7 @@ static bool DescriptorIO(IoStatementState &io, const Descriptor &descriptor) {
         return FormattedCharacterIO<char32_t, DIR>(io, descriptor);
       default:
         handler.Crash(
-            "DescriptorIO: Unimplemented CHARACTER kind (%d) in descriptor",
-            kind);
+            "not yet implemented: CHARACTER(KIND=%d) in formatted IO", kind);
         return false;
       }
     case TypeCategory::Logical:
@@ -478,12 +596,11 @@ static bool DescriptorIO(IoStatementState &io, const Descriptor &descriptor) {
         return FormattedLogicalIO<8, DIR>(io, descriptor);
       default:
         handler.Crash(
-            "DescriptorIO: Unimplemented LOGICAL kind (%d) in descriptor",
-            kind);
+            "not yet implemented: LOGICAL(KIND=%d) in formatted IO", kind);
         return false;
       }
     case TypeCategory::Derived:
-      return FormattedDerivedTypeIO<DIR>(io, descriptor);
+      return FormattedDerivedTypeIO<DIR>(io, descriptor, table);
     }
   }
   handler.Crash("DescriptorIO: bad type code (%d) in descriptor",

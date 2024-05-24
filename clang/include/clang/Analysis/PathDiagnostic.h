@@ -19,7 +19,6 @@
 #include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/FoldingSet.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -30,6 +29,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -73,7 +73,7 @@ struct PathDiagnosticConsumerOptions {
   bool ShouldSerializeStats = false;
 
   /// If the consumer intends to produce multiple output files, should it
-  /// use a pseudo-random file name name or a human-readable file name.
+  /// use a pseudo-random file name or a human-readable file name.
   bool ShouldWriteVerboseReportFilename = false;
 
   /// Whether the consumer should treat consumed diagnostics as hard errors.
@@ -532,7 +532,7 @@ public:
 };
 
 class PathDiagnosticEventPiece : public PathDiagnosticSpotPiece {
-  Optional<bool> IsPrunable;
+  std::optional<bool> IsPrunable;
 
 public:
   PathDiagnosticEventPiece(const PathDiagnosticLocation &pos,
@@ -544,15 +544,13 @@ public:
   /// flag may have been previously set, at which point it will not
   /// be reset unless one specifies to do so.
   void setPrunable(bool isPrunable, bool override = false) {
-    if (IsPrunable.hasValue() && !override)
-     return;
+    if (IsPrunable && !override)
+      return;
     IsPrunable = isPrunable;
   }
 
   /// Return true if the diagnostic piece is prunable.
-  bool isPrunable() const {
-    return IsPrunable.getValueOr(false);
-  }
+  bool isPrunable() const { return IsPrunable.value_or(false); }
 
   void dump() const override;
 
@@ -782,6 +780,9 @@ class PathDiagnostic : public llvm::FoldingSetNode {
   PathDiagnosticLocation UniqueingLoc;
   const Decl *UniqueingDecl;
 
+  /// The top-level entry point from which this issue was discovered.
+  const Decl *AnalysisEntryPoint = nullptr;
+
   /// Lines executed in the path.
   std::unique_ptr<FilesToLineNumsMap> ExecutedLines;
 
@@ -790,7 +791,7 @@ public:
   PathDiagnostic(StringRef CheckerName, const Decl *DeclWithIssue,
                  StringRef bugtype, StringRef verboseDesc, StringRef shortDesc,
                  StringRef category, PathDiagnosticLocation LocationToUnique,
-                 const Decl *DeclToUnique,
+                 const Decl *DeclToUnique, const Decl *AnalysisEntryPoint,
                  std::unique_ptr<FilesToLineNumsMap> ExecutedLines);
   ~PathDiagnostic();
 
@@ -853,6 +854,9 @@ public:
   FilesToLineNumsMap &getExecutedLines() {
     return *ExecutedLines;
   }
+
+  /// Get the top-level entry point from which this issue was discovered.
+  const Decl *getAnalysisEntryPoint() const { return AnalysisEntryPoint; }
 
   /// Return the semantic context where an issue occurred.  If the
   /// issue occurs along a path, this represents the "central" area

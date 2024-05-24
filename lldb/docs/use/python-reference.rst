@@ -10,9 +10,6 @@ command interpreter (we refer to this for brevity as the embedded interpreter).
 Of course, in this context it has full access to the LLDB API - with some
 additional conveniences we will call out in the FAQ.
 
-.. contents::
-   :local:
-
 Documentation
 --------------
 
@@ -356,7 +353,7 @@ The custom Resolver is provided as a Python class with the following methods:
 |                    |                                       | symbol name, you could write a generic symbol name based Resolver, and then allow the user to pass               |
 |                    |                                       | in the particular symbol in the extra_args                                                                       |
 +--------------------+---------------------------------------+------------------------------------------------------------------------------------------------------------------+
-| ``__callback__``   | ``sym_ctx``:`lldb.SBSymbolContext`   | This is the Resolver callback.                                                                                    |
+| ``__callback__``   | ``sym_ctx``:`lldb.SBSymbolContext`    | This is the Resolver callback.                                                                                   |
 |                    |                                       | The ``sym_ctx`` argument will be filled with the current stage                                                   |
 |                    |                                       | of the search.                                                                                                   |
 |                    |                                       |                                                                                                                  |
@@ -378,7 +375,7 @@ The custom Resolver is provided as a Python class with the following methods:
 |                    |                                       | So you would want to return `lldb.eSearchDepthModule`.  This method is optional.  If not provided the search     |
 |                    |                                       | will be done at Module depth.                                                                                    |
 +--------------------+---------------------------------------+------------------------------------------------------------------------------------------------------------------+
-| ``get_short_help`  | ``None``                              | This is an optional method.  If provided, the returned string will be printed at the beginning of                |
+| ``get_short_help`` | ``None``                              | This is an optional method.  If provided, the returned string will be printed at the beginning of                |
 |                    |                                       | the description for this breakpoint.                                                                             |
 +--------------------+---------------------------------------+------------------------------------------------------------------------------------------------------------------+
 
@@ -494,14 +491,17 @@ which will work like all the natively defined lldb commands. This provides a
 very flexible and easy way to extend LLDB to meet your debugging requirements.
 
 To write a python function that implements a new LLDB command define the
-function to take four arguments as follows:
+function to take five arguments as follows:
 
 ::
 
-  def command_function(debugger, command, result, internal_dict):
+  def command_function(debugger, command, exe_ctx, result, internal_dict):
       # Your code goes here
 
-Optionally, you can also provide a Python docstring, and LLDB will use it when providing help for your command, as in:
+The meaning of the arguments is given in the table below.
+
+If you provide a Python docstring in your command function LLDB will use it
+when providing "long help" for your command, as in:
 
 ::
 
@@ -509,18 +509,23 @@ Optionally, you can also provide a Python docstring, and LLDB will use it when p
       """This command takes a lot of options and does many fancy things"""
       # Your code goes here
 
-Since lldb 3.5.2, LLDB Python commands can also take an SBExecutionContext as an
-argument. This is useful in cases where the command's notion of where to act is
-independent of the currently-selected entities in the debugger.
+though providing help can also be done programmatically (see below).
 
-This feature is enabled if the command-implementing function can be recognized
-as taking 5 arguments, or a variable number of arguments, and it alters the
-signature as such:
+Prior to lldb 3.5.2 (April 2015), LLDB Python command definitions didn't take the SBExecutionContext
+argument. So you may still see commands where the command definition is:
 
 ::
 
-  def command_function(debugger, command, exe_ctx, result, internal_dict):
+  def command_function(debugger, command, result, internal_dict):
       # Your code goes here
+
+Using this form is strongly discouraged because it can only operate on the "currently selected"
+target, process, thread, frame.  The command will behave as expected when run
+directly on the command line.  But if the command is used in a stop-hook, breakpoint
+callback, etc. where the response to the callback determines whether we will select
+this or that particular process/frame/thread, the global "currently selected"
+entity is not necessarily the one the callback is meant to handle.  In that case, this
+command definition form can't do the right thing.
 
 +-------------------+--------------------------------+----------------------------------------------------------------------------------------------------------------------------------+
 | Argument          | Type                           | Description                                                                                                                      |
@@ -608,7 +613,7 @@ look like:
 
       # Finally, dispose of the debugger you just made.
       lldb.SBDebugger.Destroy(debugger)
-      # Terminate the debug sesssion
+      # Terminate the debug session
       lldb.SBDebugger.Terminate()
 
 
@@ -643,6 +648,51 @@ Now we can load the module into LLDB and use it
   total 365848
   -rw-r--r--@  1 someuser  wheel         6148 Jan 19 17:27 .DS_Store
   -rw-------   1 someuser  wheel         7331 Jan 19 15:37 crash.log
+
+You can also make "container" commands to organize the commands you are adding to
+lldb.  Most of the lldb built-in commands structure themselves this way, and using
+a tree structure has the benefit of leaving the one-word command space free for user
+aliases.  It can also make it easier to find commands if you are adding more than
+a few of them.  Here's a trivial example of adding two "utility" commands into a
+"my-utilities" container:
+
+::
+
+  #!/usr/bin/env python
+
+  import lldb
+
+  def first_utility(debugger, command, result, internal_dict):
+      print("I am the first utility")
+
+  def second_utility(debugger, command, result, internal_dict):
+      print("I am the second utility")
+
+  # And the initialization code to add your commands
+  def __lldb_init_module(debugger, internal_dict):
+      debugger.HandleCommand('command container add -h "A container for my utilities" my-utilities')
+      debugger.HandleCommand('command script add -f my_utilities.first_utility -h "My first utility" my-utilities first')
+      debugger.HandleCommand('command script add -f my_utilities.second_utility -h "My second utility" my-utilities second')
+      print('The "my-utilities" python command has been installed and its subcommands are ready for use.')
+
+Then your new commands are available under the my-utilities node:
+
+::
+
+  (lldb) help my-utilities
+  A container for my utilities
+
+  Syntax: my-utilities
+
+  The following subcommands are supported:
+
+      first  -- My first utility  Expects 'raw' input (see 'help raw-input'.)
+      second -- My second utility  Expects 'raw' input (see 'help raw-input'.)
+
+  For more help on any particular subcommand, type 'help <command> <subcommand>'.
+  (lldb) my-utilities first
+  I am the first utility
+
 
 A more interesting template has been created in the source repository that can
 help you to create lldb command quickly:
@@ -815,7 +865,8 @@ functions 'read', 'write' and 'close' follows:
     def get_recognized_arguments(self, frame):
       if frame.name in ["read", "write", "close"]:
         fd = frame.EvaluateExpression("$arg1").unsigned
-        value = lldb.target.CreateValueFromExpression("fd", "(int)%d" % fd)
+        target = frame.thread.process.target
+        value = target.CreateValueFromExpression("fd", "(int)%d" % fd)
         return [value]
       return []
 
@@ -842,8 +893,8 @@ When the program is stopped at the beginning of the 'read' function in libc, we 
   (lldb) frame variable
   (int) fd = 3
 
-Writing Target Stop-Hooks in Python:
-------------------------------------
+Writing Target Stop-Hooks in Python
+-----------------------------------
 
 Stop hooks fire whenever the process stops just before control is returned to the
 user.  Stop hooks can either be a set of lldb command-line commands, or can

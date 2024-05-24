@@ -1,3 +1,11 @@
+//===- bolt/unittest/Core/MCPlusBuilder.cpp -------------------------------===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #ifdef AARCH64_AVAILABLE
 #include "AArch64Subtarget.h"
 #endif // AARCH64_AVAILABLE
@@ -11,7 +19,6 @@
 #include "bolt/Rewrite/RewriteInstance.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
-#include "llvm/Object/ELFObjectFile.h"
 #include "llvm/Support/TargetSelect.h"
 #include "gtest/gtest.h"
 
@@ -50,10 +57,12 @@ protected:
 
   void initializeBolt() {
     BC = cantFail(BinaryContext::createBinaryContext(
-        ObjFile.get(), true, DWARFContext::create(*ObjFile.get())));
+        ObjFile->makeTriple(), ObjFile->getFileName(), nullptr, true,
+        DWARFContext::create(*ObjFile.get()), {llvm::outs(), llvm::errs()}));
     ASSERT_FALSE(!BC);
-    BC->initializeTarget(std::unique_ptr<MCPlusBuilder>(createMCPlusBuilder(
-        GetParam(), BC->MIA.get(), BC->MII.get(), BC->MRI.get())));
+    BC->initializeTarget(std::unique_ptr<MCPlusBuilder>(
+        createMCPlusBuilder(GetParam(), BC->MIA.get(), BC->MII.get(),
+                            BC->MRI.get(), BC->STI.get())));
   }
 
   void testRegAliases(Triple::ArchType Arch, uint64_t Register,
@@ -115,7 +124,7 @@ TEST_P(MCPlusBuilderTester, ReplaceRegWithImm) {
   if (GetParam() != Triple::x86_64)
     GTEST_SKIP();
   BinaryFunction *BF = BC->createInjectedBinaryFunction("BF", true);
-  std::unique_ptr<BinaryBasicBlock> BB = BF->createBasicBlock(0);
+  std::unique_ptr<BinaryBasicBlock> BB = BF->createBasicBlock();
   MCInst Inst; // cmpl    %eax, %ebx
   Inst.setOpcode(X86::CMP32rr);
   Inst.addOperand(MCOperand::createReg(X86::EAX));
@@ -132,26 +141,24 @@ TEST_P(MCPlusBuilderTester, ReplaceRegWithImm) {
 
 TEST_P(MCPlusBuilderTester, Annotation) {
   MCInst Inst;
-  bool Success = BC->MIB->createTailCall(Inst, BC->Ctx->createNamedTempSymbol(),
-                                         BC->Ctx.get());
-  ASSERT_TRUE(Success);
+  BC->MIB->createTailCall(Inst, BC->Ctx->createNamedTempSymbol(),
+                          BC->Ctx.get());
   MCSymbol *LPSymbol = BC->Ctx->createNamedTempSymbol("LP");
   uint64_t Value = INT32_MIN;
   // Test encodeAnnotationImm using this indirect way
   BC->MIB->addEHInfo(Inst, MCPlus::MCLandingPad(LPSymbol, Value));
   // Round-trip encoding-decoding check for negative values
-  Optional<MCPlus::MCLandingPad> EHInfo = BC->MIB->getEHInfo(Inst);
-  ASSERT_TRUE(EHInfo.hasValue());
-  MCPlus::MCLandingPad LP = EHInfo.getValue();
+  std::optional<MCPlus::MCLandingPad> EHInfo = BC->MIB->getEHInfo(Inst);
+  ASSERT_TRUE(EHInfo.has_value());
+  MCPlus::MCLandingPad LP = EHInfo.value();
   uint64_t DecodedValue = LP.second;
   ASSERT_EQ(Value, DecodedValue);
 
   // Large int64 should trigger an out of range assertion
   Value = 0x1FF'FFFF'FFFF'FFFFULL;
   Inst.clear();
-  Success = BC->MIB->createTailCall(Inst, BC->Ctx->createNamedTempSymbol(),
-                                    BC->Ctx.get());
-  ASSERT_TRUE(Success);
+  BC->MIB->createTailCall(Inst, BC->Ctx->createNamedTempSymbol(),
+                          BC->Ctx.get());
   ASSERT_DEATH(BC->MIB->addEHInfo(Inst, MCPlus::MCLandingPad(LPSymbol, Value)),
                "annotation value out of range");
 }

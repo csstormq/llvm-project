@@ -119,7 +119,10 @@ void llvm::report_fatal_error(const Twine &Reason, bool GenCrashDiag) {
   // files registered with RemoveFileOnSignal.
   sys::RunInterruptHandlers();
 
-  abort();
+  if (GenCrashDiag)
+    abort();
+  else
+    exit(1);
 }
 
 void llvm::install_bad_alloc_error_handler(fatal_error_handler_t handler,
@@ -127,7 +130,8 @@ void llvm::install_bad_alloc_error_handler(fatal_error_handler_t handler,
 #if LLVM_ENABLE_THREADS == 1
   std::lock_guard<std::mutex> Lock(BadAllocErrorHandlerMutex);
 #endif
-  assert(!ErrorHandler && "Bad alloc error handler already registered!\n");
+  assert(!BadAllocErrorHandler &&
+         "Bad alloc error handler already registered!\n");
   BadAllocErrorHandler = handler;
   BadAllocErrorHandlerUserData = user_data;
 }

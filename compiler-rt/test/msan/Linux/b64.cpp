@@ -1,4 +1,4 @@
-// RUN: %clangxx_msan -O0 %s -o %t -lresolv && %run %t
+// RUN: %clangxx_msan -O0 %s -o %t && %run %t
 // RUN: not %run %t NTOP_READ 2>&1 | FileCheck %s --check-prefix=NTOP_READ
 // RUN: not %run %t PTON_READ 2>&1 | FileCheck %s --check-prefix=PTON_READ
 
@@ -60,7 +60,7 @@ int main(int iArgc, char *szArgv[]) {
     char dst[dst_len];
     int res = b64_ntop(reinterpret_cast<const unsigned char *>(src), src_len,
                        dst, dst_len);
-    // NTOP_READ: Uninitialized bytes in __interceptor___b64_ntop
+    // NTOP_READ: Uninitialized bytes in __b64_ntop
     return 0;
   }
 
@@ -73,7 +73,7 @@ int main(int iArgc, char *szArgv[]) {
     __msan_poison(src, src_len);
     unsigned char target[src_len];
     int res = b64_pton(src, target, src_len);
-    // PTON_READ: Uninitialized bytes in __interceptor___b64_pton
+    // PTON_READ: Uninitialized bytes in __b64_pton
     return 0;
   }
 

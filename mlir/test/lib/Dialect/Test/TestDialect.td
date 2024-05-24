@@ -14,7 +14,6 @@ include "mlir/IR/OpBase.td"
 def Test_Dialect : Dialect {
   let name = "test";
   let cppNamespace = "::test";
-  let emitAccessorPrefix = kEmitAccessorPrefix_Prefixed;
   let hasCanonicalizer = 1;
   let hasConstantMaterializer = 1;
   let hasOperationAttrVerify = 1;
@@ -23,14 +22,22 @@ def Test_Dialect : Dialect {
   let hasOperationInterfaceFallback = 1;
   let hasNonDefaultDestructor = 1;
   let useDefaultTypePrinterParser = 0;
+  let useDefaultAttributePrinterParser = 1;
+  let isExtensible = 1;
   let dependentDialects = ["::mlir::DLTIDialect"];
+  let discardableAttrs = (ins
+     "mlir::IntegerAttr":$discardable_attr_key,
+     "SimpleAAttr":$other_discardable_attr_key
+  );
 
   let extraClassDeclaration = [{
     void registerAttributes();
+    void registerInterfaces();
     void registerTypes();
+    void registerOpsSyntax();
 
     // Provides a custom printing/parsing for some operations.
-    ::llvm::Optional<ParseOpHook>
+    ::std::optional<ParseOpHook>
       getParseOperationHook(::llvm::StringRef opName) const override;
     ::llvm::unique_function<void(::mlir::Operation *,
                                  ::mlir::OpAsmPrinter &printer)>
@@ -39,10 +46,10 @@ def Test_Dialect : Dialect {
      ::mlir::Type parseType(::mlir::DialectAsmParser &parser) const override;
      void printType(::mlir::Type type,
                     ::mlir::DialectAsmPrinter &printer) const override;
+
   private:
     // Storage for a custom fallback interface.
     void *fallbackEffectOpInterfaces;
-
   }];
 }
 

@@ -1,11 +1,11 @@
-// RUN: mlir-opt %s -convert-scf-to-cf \
+// RUN: mlir-opt %s -convert-vector-to-scf -convert-scf-to-cf \
 // RUN:             -convert-vector-to-llvm='reassociate-fp-reductions' \
 // RUN:             -convert-func-to-llvm -reconcile-unrealized-casts | \
 // RUN: mlir-cpu-runner -e entry -entry-point-result=void  \
-// RUN:   -shared-libs=%mlir_integration_test_dir/libmlir_c_runner_utils%shlibext | \
+// RUN:   -shared-libs=%mlir_c_runner_utils | \
 // RUN: FileCheck %s
 
-func @entry() {
+func.func @entry() {
   // Construct test vector, numerically very stable.
   %f1 = arith.constant 1.0: f32
   %f2 = arith.constant 2.0: f32
@@ -27,11 +27,17 @@ func @entry() {
   %1 = vector.reduction <mul>, %v2 : vector<64xf32> into f32
   vector.print %1 : f32
   // CHECK: 6
-  %2 = vector.reduction <minf>, %v2 : vector<64xf32> into f32
+  %2 = vector.reduction <minimumf>, %v2 : vector<64xf32> into f32
   vector.print %2 : f32
   // CHECK: 1
-  %3 = vector.reduction <maxf>, %v2 : vector<64xf32> into f32
+  %3 = vector.reduction <maximumf>, %v2 : vector<64xf32> into f32
   vector.print %3 : f32
+  // CHECK: 3
+  %4 = vector.reduction <minnumf>, %v2 : vector<64xf32> into f32
+  vector.print %4 : f32
+  // CHECK: 1
+  %5 = vector.reduction <maxnumf>, %v2 : vector<64xf32> into f32
+  vector.print %5 : f32
   // CHECK: 3
 
   return

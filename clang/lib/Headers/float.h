@@ -10,6 +10,10 @@
 #ifndef __CLANG_FLOAT_H
 #define __CLANG_FLOAT_H
 
+#if defined(__MVS__) && __has_include_next(<float.h>)
+#include_next <float.h>
+#else
+
 /* If we're on MinGW, fall back to the system's float.h, which might have
  * additional definitions provided for Windows.
  * For more details see http://msdn.microsoft.com/en-us/library/y0ybw9fy.aspx
@@ -38,9 +42,10 @@
 #  undef FLT_MANT_DIG
 #  undef DBL_MANT_DIG
 #  undef LDBL_MANT_DIG
-#  if __STDC_VERSION__ >= 199901L || !defined(__STRICT_ANSI__) ||              \
-      __cplusplus >= 201103L ||                                                \
-      (__STDC_HOSTED__ && defined(_AIX) && defined(_ALL_SOURCE))
+#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L) ||              \
+    !defined(__STRICT_ANSI__) ||                                               \
+    (defined(__cplusplus) && __cplusplus >= 201103L) ||                        \
+    (__STDC_HOSTED__ && defined(_AIX) && defined(_ALL_SOURCE))
 #    undef DECIMAL_DIG
 #  endif
 #  undef FLT_DIG
@@ -67,9 +72,10 @@
 #  undef FLT_MIN
 #  undef DBL_MIN
 #  undef LDBL_MIN
-#  if __STDC_VERSION__ >= 201112L || !defined(__STRICT_ANSI__) ||              \
-      __cplusplus >= 201703L ||                                                \
-      (__STDC_HOSTED__ && defined(_AIX) && defined(_ALL_SOURCE))
+#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L) ||              \
+    !defined(__STRICT_ANSI__) ||                                               \
+    (defined(__cplusplus) && __cplusplus >= 201703L) ||                        \
+    (__STDC_HOSTED__ && defined(_AIX) && defined(_ALL_SOURCE))
 #    undef FLT_TRUE_MIN
 #    undef DBL_TRUE_MIN
 #    undef LDBL_TRUE_MIN
@@ -84,7 +90,10 @@
 
 /* Characteristics of floating point types, C99 5.2.4.2.2 */
 
+#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L) ||              \
+    (defined(__cplusplus) && __cplusplus >= 201103L)
 #define FLT_EVAL_METHOD __FLT_EVAL_METHOD__
+#endif
 #define FLT_ROUNDS (__builtin_flt_rounds())
 #define FLT_RADIX __FLT_RADIX__
 
@@ -92,8 +101,9 @@
 #define DBL_MANT_DIG __DBL_MANT_DIG__
 #define LDBL_MANT_DIG __LDBL_MANT_DIG__
 
-#if __STDC_VERSION__ >= 199901L || !defined(__STRICT_ANSI__) ||                \
-    __cplusplus >= 201103L ||                                                  \
+#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L) ||              \
+    !defined(__STRICT_ANSI__) ||                                               \
+    (defined(__cplusplus) && __cplusplus >= 201103L) ||                        \
     (__STDC_HOSTED__ && defined(_AIX) && defined(_ALL_SOURCE))
 #  define DECIMAL_DIG __DECIMAL_DIG__
 #endif
@@ -130,8 +140,9 @@
 #define DBL_MIN __DBL_MIN__
 #define LDBL_MIN __LDBL_MIN__
 
-#if __STDC_VERSION__ >= 201112L || !defined(__STRICT_ANSI__) ||                \
-    __cplusplus >= 201703L ||                                                  \
+#if (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L) ||              \
+    !defined(__STRICT_ANSI__) ||                                               \
+    (defined(__cplusplus) && __cplusplus >= 201703L) ||                        \
     (__STDC_HOSTED__ && defined(_AIX) && defined(_ALL_SOURCE))
 #  define FLT_TRUE_MIN __FLT_DENORM_MIN__
 #  define DBL_TRUE_MIN __DBL_DENORM_MIN__
@@ -158,4 +169,5 @@
 #  define FLT16_TRUE_MIN    __FLT16_TRUE_MIN__
 #endif /* __STDC_WANT_IEC_60559_TYPES_EXT__ */
 
+#endif /* __MVS__ */
 #endif /* __CLANG_FLOAT_H */

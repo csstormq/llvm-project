@@ -36,6 +36,7 @@
 using namespace llvm;
 
 #define GET_INSTRINFO_MC_DESC
+#define ENABLE_INSTR_PREDICATE_VERIFIER
 #include "AMDGPUGenInstrInfo.inc"
 
 #define GET_SUBTARGETINFO_MC_DESC
@@ -69,7 +70,7 @@ static MCRegisterInfo *createAMDGPUMCRegisterInfo(const Triple &TT) {
 
 MCRegisterInfo *llvm::createGCNMCRegisterInfo(AMDGPUDwarfFlavour DwarfFlavour) {
   MCRegisterInfo *X = new MCRegisterInfo();
-  InitAMDGPUMCRegisterInfo(X, AMDGPU::PC_REG, DwarfFlavour);
+  InitAMDGPUMCRegisterInfo(X, AMDGPU::PC_REG, DwarfFlavour, DwarfFlavour);
   return X;
 }
 
@@ -104,13 +105,16 @@ static MCTargetStreamer * createAMDGPUObjectTargetStreamer(
   return new AMDGPUTargetELFStreamer(S, STI);
 }
 
+static MCTargetStreamer *createAMDGPUNullTargetStreamer(MCStreamer &S) {
+  return new AMDGPUTargetStreamer(S);
+}
+
 static MCStreamer *createMCStreamer(const Triple &T, MCContext &Context,
                                     std::unique_ptr<MCAsmBackend> &&MAB,
                                     std::unique_ptr<MCObjectWriter> &&OW,
-                                    std::unique_ptr<MCCodeEmitter> &&Emitter,
-                                    bool RelaxAll) {
+                                    std::unique_ptr<MCCodeEmitter> &&Emitter) {
   return createAMDGPUELFStreamer(T, Context, std::move(MAB), std::move(OW),
-                                 std::move(Emitter), RelaxAll);
+                                 std::move(Emitter));
 }
 
 namespace {
@@ -123,7 +127,7 @@ public:
   bool evaluateBranch(const MCInst &Inst, uint64_t Addr, uint64_t Size,
                       uint64_t &Target) const override {
     if (Inst.getNumOperands() == 0 || !Inst.getOperand(0).isImm() ||
-        Info->get(Inst.getOpcode()).OpInfo[0].OperandType !=
+        Info->get(Inst.getOpcode()).operands()[0].OperandType !=
             MCOI::OPERAND_PCREL)
       return false;
 
@@ -145,8 +149,9 @@ static MCInstrAnalysis *createAMDGPUMCInstrAnalysis(const MCInstrInfo *Info) {
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAMDGPUTargetMC() {
 
   TargetRegistry::RegisterMCInstrInfo(getTheGCNTarget(), createAMDGPUMCInstrInfo);
-  TargetRegistry::RegisterMCInstrInfo(getTheAMDGPUTarget(), createR600MCInstrInfo);
-  for (Target *T : {&getTheAMDGPUTarget(), &getTheGCNTarget()}) {
+  TargetRegistry::RegisterMCInstrInfo(getTheR600Target(),
+                                      createR600MCInstrInfo);
+  for (Target *T : {&getTheR600Target(), &getTheGCNTarget()}) {
     RegisterMCAsmInfo<AMDGPUMCAsmInfo> X(*T);
 
     TargetRegistry::RegisterMCRegInfo(*T, createAMDGPUMCRegisterInfo);
@@ -158,17 +163,19 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAMDGPUTargetMC() {
   }
 
   // R600 specific registration
-  TargetRegistry::RegisterMCCodeEmitter(getTheAMDGPUTarget(),
+  TargetRegistry::RegisterMCCodeEmitter(getTheR600Target(),
                                         createR600MCCodeEmitter);
   TargetRegistry::RegisterObjectTargetStreamer(
-      getTheAMDGPUTarget(), createAMDGPUObjectTargetStreamer);
+      getTheR600Target(), createAMDGPUObjectTargetStreamer);
 
   // GCN specific registration
   TargetRegistry::RegisterMCCodeEmitter(getTheGCNTarget(),
-                                        createSIMCCodeEmitter);
+                                        createAMDGPUMCCodeEmitter);
 
   TargetRegistry::RegisterAsmTargetStreamer(getTheGCNTarget(),
                                             createAMDGPUAsmTargetStreamer);
   TargetRegistry::RegisterObjectTargetStreamer(
       getTheGCNTarget(), createAMDGPUObjectTargetStreamer);
+  TargetRegistry::RegisterNullTargetStreamer(getTheGCNTarget(),
+                                             createAMDGPUNullTargetStreamer);
 }

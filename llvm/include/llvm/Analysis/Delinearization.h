@@ -125,10 +125,22 @@ bool getIndexExpressionsFromGEP(ScalarEvolution &SE,
                                 SmallVectorImpl<const SCEV *> &Subscripts,
                                 SmallVectorImpl<int> &Sizes);
 
+/// Implementation of fixed size array delinearization. Try to delinearize
+/// access function for a fixed size multi-dimensional array, by deriving
+/// subscripts from GEP instructions. Returns true upon success and false
+/// otherwise. \p Inst is the load/store instruction whose pointer operand is
+/// the one we want to delinearize. \p AccessFn is its corresponding SCEV
+/// expression w.r.t. the surrounding loop.
+bool tryDelinearizeFixedSizeImpl(ScalarEvolution *SE, Instruction *Inst,
+                                 const SCEV *AccessFn,
+                                 SmallVectorImpl<const SCEV *> &Subscripts,
+                                 SmallVectorImpl<int> &Sizes);
+
 struct DelinearizationPrinterPass
     : public PassInfoMixin<DelinearizationPrinterPass> {
   explicit DelinearizationPrinterPass(raw_ostream &OS);
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+  static bool isRequired() { return true; }
 
 private:
   raw_ostream &OS;

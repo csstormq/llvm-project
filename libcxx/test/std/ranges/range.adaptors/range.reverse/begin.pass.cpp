@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
-// UNSUPPORTED: libcpp-has-no-incomplete-ranges
 
 // constexpr reverse_iterator<iterator_t<V>> begin();
 // constexpr reverse_iterator<iterator_t<V>> begin() requires common_range<V>;
@@ -116,7 +115,7 @@ constexpr bool test() {
     ASSERT_SAME_TYPE(decltype(std::move(rev).begin()), std::reverse_iterator<bidirectional_iterator<int*>>);
   }
   // Non-common random access range.
-  // Note: const overload invalid for non-common ranges, though it would not be imposible
+  // Note: const overload invalid for non-common ranges, though it would not be impossible
   // to implement for random access ranges.
   {
     auto rev = std::ranges::reverse_view(RASentRange{buffer, buffer + 8});

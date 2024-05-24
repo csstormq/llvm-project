@@ -1,4 +1,4 @@
-// RUN: %clang_analyze_cc1 -w -verify %s \
+// RUN: %clang_analyze_cc1 -w -Wno-int-conversion -verify %s \
 // RUN:   -analyzer-checker=core \
 // RUN:   -analyzer-checker=unix.cstring.NullArg \
 // RUN:   -analyzer-checker=alpha.unix.cstring \
@@ -7,8 +7,8 @@
 #define NULL ((void *)0)
 
 typedef __typeof(sizeof(int)) size_t;
-size_t strlcpy(char *dst, const char *src, size_t n);
-size_t strlcat(char *dst, const char *src, size_t n);
+size_t strlcpy(char *restrict dst, const char *restrict src, size_t n);
+size_t strlcat(char *restrict dst, const char *restrict src, size_t n);
 size_t strlen(const char *s);
 void clang_analyzer_eval(int);
 

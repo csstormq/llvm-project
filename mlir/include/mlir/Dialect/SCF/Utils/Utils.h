@@ -13,10 +13,12 @@
 #ifndef MLIR_DIALECT_SCF_UTILS_UTILS_H_
 #define MLIR_DIALECT_SCF_UTILS_UTILS_H_
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/STLExtras.h"
+#include <optional>
 
 namespace mlir {
 class Location;
@@ -28,38 +30,29 @@ class ValueRange;
 class Value;
 
 namespace func {
+class CallOp;
 class FuncOp;
 } // namespace func
 
-namespace scf {
-class IfOp;
-class ForOp;
-class ParallelOp;
-} // namespace scf
-
-/// Create a clone of `loop` with `newIterOperands` added as new initialization
-/// values and `newYieldedValues` added as new yielded values. The returned
-/// ForOp has `newYieldedValues.size()` new result values.  The `loop` induction
-/// variable and `newIterOperands` are remapped to the new induction variable
-/// and the new entry block arguments respectively.
-///
-/// Additionally, if `replaceLoopResults` is true, all uses of
-/// `loop.getResults()` are replaced with the first `loop.getNumResults()`
-/// return values respectively. This additional replacement is provided as a
-/// convenience to update the consumers of `loop`, in the case e.g. when `loop`
-/// is soon to be deleted.
-///
-/// Return the cloned loop.
-///
-/// This convenience function is useful to factorize common mechanisms related
-/// to hoisting roundtrips to memory into yields. It does not perform any
-/// legality checks.
-///
-/// Prerequisite: `newYieldedValues.size() == newYieldedValues.size()`.
-scf::ForOp cloneWithNewYields(OpBuilder &b, scf::ForOp loop,
-                              ValueRange newIterOperands,
-                              ValueRange newYieldedValues,
-                              bool replaceLoopResults = true);
+/// Update a perfectly nested loop nest to yield new values from the innermost
+/// loop and propagating it up through the loop nest. This function
+/// - Expects `loopNest` to be a perfectly nested loop with outer most loop
+///   first and innermost loop last.
+/// - `newIterOperands` are the initialization values to be used for the
+///    outermost loop
+/// - `newYielValueFn` is the callback that generates the new values to be
+///   yielded from within the innermost loop.
+/// - The original loops are not erased,  but are left in a "no-op" state where
+///   the body of the loop just yields the basic block arguments that correspond
+///   to the initialization values of a loop. The original loops are dead after
+///   this method.
+/// - If `replaceIterOperandsUsesInLoop` is true, all uses of the
+///   `newIterOperands` within the generated new loop are replaced with the
+///   corresponding `BlockArgument` in the loop body.
+SmallVector<scf::ForOp> replaceLoopNestWithNewYields(
+    RewriterBase &rewriter, MutableArrayRef<scf::ForOp> loopNest,
+    ValueRange newIterOperands, const NewYieldValuesFn &newYieldValuesFn,
+    bool replaceIterOperandsUsesInLoop = true);
 
 /// Outline a region with a single block into a new FuncOp.
 /// Assumes the FuncOp result types is the type of the yielded operands of the
@@ -68,12 +61,13 @@ scf::ForOp cloneWithNewYields(OpBuilder &b, scf::ForOp loop,
 /// `outlinedFuncBody` to alloc simple canonicalizations.
 /// Creates a new FuncOp and thus cannot be used in a FuncOp pass.
 /// The client is responsible for providing a unique `funcName` that will not
-/// collide with another FuncOp name.
+/// collide with another FuncOp name.  If `callOp` is provided, it will be set
+/// to point to the operation that calls the outlined function.
 // TODO: support more than single-block regions.
 // TODO: more flexible constant handling.
-FailureOr<func::FuncOp> outlineSingleBlockRegion(RewriterBase &rewriter,
-                                                 Location loc, Region &region,
-                                                 StringRef funcName);
+FailureOr<func::FuncOp>
+outlineSingleBlockRegion(RewriterBase &rewriter, Location loc, Region &region,
+                         StringRef funcName, func::CallOp *callOp = nullptr);
 
 /// Outline the then and/or else regions of `ifOp` as follows:
 ///  - if `thenFn` is not null, `thenFnName` must be specified and the `then`
@@ -97,7 +91,7 @@ bool getInnermostParallelLoops(Operation *rootOp,
 /// from scf.for or scf.parallel loop.
 /// if `loopFilter` is passed, the filter determines which loop to consider.
 /// Other induction variables are ignored.
-Optional<std::pair<AffineExpr, AffineExpr>>
+std::optional<std::pair<AffineExpr, AffineExpr>>
 getSCFMinMaxExpr(Value value, SmallVectorImpl<Value> &dims,
                  SmallVectorImpl<Value> &symbols,
                  llvm::function_ref<bool(Operation *)> loopFilter = nullptr);
@@ -105,17 +99,18 @@ getSCFMinMaxExpr(Value value, SmallVectorImpl<Value> &dims,
 /// Replace a perfect nest of "for" loops with a single linearized loop. Assumes
 /// `loops` contains a list of perfectly nested loops with bounds and steps
 /// independent of any loop induction variable involved in the nest.
-void coalesceLoops(MutableArrayRef<scf::ForOp> loops);
+LogicalResult coalesceLoops(MutableArrayRef<scf::ForOp> loops);
+LogicalResult coalesceLoops(RewriterBase &rewriter,
+                            MutableArrayRef<scf::ForOp>);
+
+/// Walk an affine.for to find a band to coalesce.
+LogicalResult coalescePerfectlyNestedSCFForLoops(scf::ForOp op);
 
 /// Take the ParallelLoop and for each set of dimension indices, combine them
 /// into a single dimension. combinedDimensions must contain each index into
 /// loops exactly once.
-void collapseParallelLoops(scf::ParallelOp loops,
+void collapseParallelLoops(RewriterBase &rewriter, scf::ParallelOp loops,
                            ArrayRef<std::vector<unsigned>> combinedDimensions);
-
-/// Promotes the loop body of a scf::ForOp to its containing block if the loop
-/// was known to have a single iteration.
-LogicalResult promoteIfSingleIteration(scf::ForOp forOp);
 
 /// Unrolls this for operation by the specified unroll factor. Returns failure
 /// if the loop cannot be unrolled either due to restrictions or due to invalid
@@ -160,6 +155,27 @@ Loops tilePerfectlyNested(scf::ForOp rootForOp, ArrayRef<Value> sizes);
 /// AffineForOp, and the second op is a terminator).
 void getPerfectlyNestedLoops(SmallVectorImpl<scf::ForOp> &nestedLoops,
                              scf::ForOp root);
+
+/// Given two scf.forall loops, `target` and `source`, fuses `target` into
+/// `source`. Assumes that the given loops are siblings and are independent of
+/// each other.
+///
+/// This function does not perform any legality checks and simply fuses the
+/// loops. The caller is responsible for ensuring that the loops are legal to
+/// fuse.
+scf::ForallOp fuseIndependentSiblingForallLoops(scf::ForallOp target,
+                                                scf::ForallOp source,
+                                                RewriterBase &rewriter);
+
+/// Given two scf.for loops, `target` and `source`, fuses `target` into
+/// `source`. Assumes that the given loops are siblings and are independent of
+/// each other.
+///
+/// This function does not perform any legality checks and simply fuses the
+/// loops. The caller is responsible for ensuring that the loops are legal to
+/// fuse.
+scf::ForOp fuseIndependentSiblingForLoops(scf::ForOp target, scf::ForOp source,
+                                          RewriterBase &rewriter);
 
 } // namespace mlir
 

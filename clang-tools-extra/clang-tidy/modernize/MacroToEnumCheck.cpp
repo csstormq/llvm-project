@@ -7,6 +7,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "MacroToEnumCheck.h"
+#include "IntegralLiteralExpressionMatcher.h"
+
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Lex/Preprocessor.h"
@@ -16,9 +18,7 @@
 #include <cctype>
 #include <string>
 
-namespace clang {
-namespace tidy {
-namespace modernize {
+namespace clang::tidy::modernize {
 
 static bool hasOnlyComments(SourceLocation Loc, const LangOptions &Options,
                             StringRef Text) {
@@ -73,25 +73,6 @@ static bool hasOnlyComments(SourceLocation Loc, const LangOptions &Options,
   return true;
 }
 
-// Validate that this literal token is a valid integer literal.  A literal token
-// could be a floating-point token, which isn't acceptable as a value for an
-// enumeration.  A floating-point token must either have a decimal point or an
-// exponent ('E' or 'P').
-static bool isIntegralConstant(const Token &Token) {
-  const char *Begin = Token.getLiteralData();
-  const char *End = Begin + Token.getLength();
-
-  // not a hexadecimal floating-point literal
-  if (Token.getLength() > 2 && Begin[0] == '0' && std::toupper(Begin[1]) == 'X')
-    return std::none_of(Begin + 2, End, [](char C) {
-      return C == '.' || std::toupper(C) == 'P';
-    });
-
-  // not a decimal floating-point literal
-  return std::none_of(
-      Begin, End, [](char C) { return C == '.' || std::toupper(C) == 'E'; });
-}
-
 static StringRef getTokenName(const Token &Tok) {
   return Tok.is(tok::raw_identifier) ? Tok.getRawIdentifier()
                                      : Tok.getIdentifierInfo()->getName();
@@ -112,14 +93,15 @@ using MacroList = SmallVector<EnumMacro>;
 enum class IncludeGuard { None, FileChanged, IfGuard, DefineGuard };
 
 struct FileState {
-  FileState()
-      : ConditionScopes(0), LastLine(0), GuardScanner(IncludeGuard::None) {}
+  FileState() = default;
 
-  int ConditionScopes;
-  unsigned int LastLine;
-  IncludeGuard GuardScanner;
+  int ConditionScopes = 0;
+  unsigned int LastLine = 0;
+  IncludeGuard GuardScanner = IncludeGuard::None;
   SourceLocation LastMacroLocation;
 };
+
+} // namespace
 
 class MacroToEnumCallbacks : public PPCallbacks {
 public:
@@ -133,9 +115,10 @@ public:
 
   void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                           StringRef FileName, bool IsAngled,
-                          CharSourceRange FilenameRange, const FileEntry *File,
-                          StringRef SearchPath, StringRef RelativePath,
-                          const Module *Imported,
+                          CharSourceRange FilenameRange,
+                          OptionalFileEntryRef File, StringRef SearchPath,
+                          StringRef RelativePath, const Module *SuggestedModule,
+                          bool ModuleImported,
                           SrcMgr::CharacteristicKind FileType) override {
     clearCurrentEnum(HashLoc);
   }
@@ -197,6 +180,8 @@ public:
   // After we've seen everything, issue warnings and fix-its.
   void EndOfMainFile() override;
 
+  void invalidateRange(SourceRange Range);
+
 private:
   void newEnum() {
     if (Enums.empty() || !Enums.back().empty())
@@ -222,14 +207,20 @@ private:
   void conditionStart(const SourceLocation &Loc);
   void checkCondition(SourceRange ConditionRange);
   void checkName(const Token &MacroNameTok);
+  void rememberExpressionName(const Token &Tok);
+  void rememberExpressionTokens(ArrayRef<Token> MacroTokens);
+  void invalidateExpressionNames();
+  void issueDiagnostics();
   void warnMacroEnum(const EnumMacro &Macro) const;
   void fixEnumMacro(const MacroList &MacroList) const;
+  bool isInitializer(ArrayRef<Token> MacroTokens);
 
   MacroToEnumCheck *Check;
   const LangOptions &LangOpts;
   const SourceManager &SM;
   SmallVector<MacroList> Enums;
   SmallVector<FileState> Files;
+  std::vector<std::string> ExpressionNames;
   FileState *CurrentFile = nullptr;
 };
 
@@ -284,13 +275,30 @@ void MacroToEnumCallbacks::checkCondition(SourceRange Range) {
 }
 
 void MacroToEnumCallbacks::checkName(const Token &MacroNameTok) {
-  StringRef Id = getTokenName(MacroNameTok);
+  rememberExpressionName(MacroNameTok);
 
+  StringRef Id = getTokenName(MacroNameTok);
   llvm::erase_if(Enums, [&Id](const MacroList &MacroList) {
     return llvm::any_of(MacroList, [&Id](const EnumMacro &Macro) {
       return getTokenName(Macro.Name) == Id;
     });
   });
+}
+
+void MacroToEnumCallbacks::rememberExpressionName(const Token &Tok) {
+  std::string Id = getTokenName(Tok).str();
+  auto Pos = llvm::lower_bound(ExpressionNames, Id);
+  if (Pos == ExpressionNames.end() || *Pos != Id) {
+    ExpressionNames.insert(Pos, Id);
+  }
+}
+
+void MacroToEnumCallbacks::rememberExpressionTokens(
+    ArrayRef<Token> MacroTokens) {
+  for (Token Tok : MacroTokens) {
+    if (Tok.isAnyIdentifier())
+      rememberExpressionName(Tok);
+  }
 }
 
 void MacroToEnumCallbacks::FileChanged(SourceLocation Loc,
@@ -309,6 +317,21 @@ void MacroToEnumCallbacks::FileChanged(SourceLocation Loc,
   CurrentFile = &Files.back();
 }
 
+bool MacroToEnumCallbacks::isInitializer(ArrayRef<Token> MacroTokens)
+{
+  IntegralLiteralExpressionMatcher Matcher(MacroTokens, LangOpts.C99 == 0);
+  bool Matched = Matcher.match();
+  bool isC = !LangOpts.CPlusPlus;
+  if (isC && (Matcher.largestLiteralSize() != LiteralSize::Int &&
+              Matcher.largestLiteralSize() != LiteralSize::UnsignedInt))
+    return false;
+
+  return Matched;
+}
+
+
+// Any defined but rejected macro is scanned for identifiers that
+// are to be excluded as enums.
 void MacroToEnumCallbacks::MacroDefined(const Token &MacroNameTok,
                                         const MacroDirective *MD) {
   // Include guards are never candidates for becoming an enum.
@@ -324,20 +347,15 @@ void MacroToEnumCallbacks::MacroDefined(const Token &MacroNameTok,
     return;
 
   const MacroInfo *Info = MD->getMacroInfo();
-  if (Info->isFunctionLike() || Info->isBuiltinMacro() ||
-      Info->tokens().empty() || Info->tokens().size() > 2)
+  ArrayRef<Token> MacroTokens = Info->tokens();
+  if (Info->isBuiltinMacro() || MacroTokens.empty())
     return;
-
-  // It can be +Lit, -Lit or just Lit.
-  Token Tok = Info->tokens().front();
-  if (Info->tokens().size() == 2) {
-    if (!Tok.isOneOf(tok::TokenKind::minus, tok::TokenKind::plus,
-                     tok::TokenKind::tilde))
-      return;
-    Tok = Info->tokens().back();
+  if (Info->isFunctionLike()) {
+    rememberExpressionTokens(MacroTokens);
+    return;
   }
-  if (!Tok.isLiteral() || isStringLiteral(Tok.getKind()) ||
-      !isIntegralConstant(Tok))
+
+  if (!isInitializer(MacroTokens))
     return;
 
   if (!isConsecutiveMacro(MD))
@@ -351,6 +369,8 @@ void MacroToEnumCallbacks::MacroDefined(const Token &MacroNameTok,
 void MacroToEnumCallbacks::MacroUndefined(const Token &MacroNameTok,
                                           const MacroDefinition &MD,
                                           const MacroDirective *Undef) {
+  rememberExpressionName(MacroNameTok);
+
   auto MatchesToken = [&MacroNameTok](const EnumMacro &Macro) {
     return getTokenName(Macro.Name) == getTokenName(MacroNameTok);
   };
@@ -414,7 +434,31 @@ void MacroToEnumCallbacks::PragmaDirective(SourceLocation Loc,
     CurrentFile->GuardScanner = IncludeGuard::IfGuard;
 }
 
+void MacroToEnumCallbacks::invalidateExpressionNames() {
+  for (const std::string &Id : ExpressionNames) {
+    llvm::erase_if(Enums, [Id](const MacroList &MacroList) {
+      return llvm::any_of(MacroList, [&Id](const EnumMacro &Macro) {
+        return getTokenName(Macro.Name) == Id;
+      });
+    });
+  }
+}
+
 void MacroToEnumCallbacks::EndOfMainFile() {
+    invalidateExpressionNames();
+    issueDiagnostics();
+}
+
+void MacroToEnumCallbacks::invalidateRange(SourceRange Range) {
+  llvm::erase_if(Enums, [Range](const MacroList &MacroList) {
+    return llvm::any_of(MacroList, [Range](const EnumMacro &Macro) {
+      return Macro.Directive->getLocation() >= Range.getBegin() &&
+             Macro.Directive->getLocation() <= Range.getEnd();
+    });
+  });
+}
+
+void MacroToEnumCallbacks::issueDiagnostics() {
   for (const MacroList &MacroList : Enums) {
     if (MacroList.empty())
       continue;
@@ -441,7 +485,7 @@ void MacroToEnumCallbacks::fixEnumMacro(const MacroList &MacroList) const {
       Check->diag(Begin, "replace macro with enum")
       << FixItHint::CreateInsertion(Begin, "enum {\n");
 
-  for (size_t I = 0u; I < MacroList.size(); ++I) {
+  for (size_t I = 0U; I < MacroList.size(); ++I) {
     const EnumMacro &Macro = MacroList[I];
     SourceLocation DefineEnd =
         Macro.Directive->getMacroInfo()->getDefinitionLoc();
@@ -471,15 +515,43 @@ void MacroToEnumCallbacks::fixEnumMacro(const MacroList &MacroList) const {
   Diagnostic << FixItHint::CreateInsertion(End, "};\n");
 }
 
-} // namespace
-
 void MacroToEnumCheck::registerPPCallbacks(const SourceManager &SM,
                                            Preprocessor *PP,
                                            Preprocessor *ModuleExpanderPP) {
-  PP->addPPCallbacks(
-      std::make_unique<MacroToEnumCallbacks>(this, getLangOpts(), SM));
+  auto Callback = std::make_unique<MacroToEnumCallbacks>(this, getLangOpts(), SM);
+  PPCallback = Callback.get();
+  PP->addPPCallbacks(std::move(Callback));
 }
 
-} // namespace modernize
-} // namespace tidy
-} // namespace clang
+void MacroToEnumCheck::registerMatchers(ast_matchers::MatchFinder *Finder) {
+  using namespace ast_matchers;
+  auto TopLevelDecl = hasParent(translationUnitDecl());
+  Finder->addMatcher(decl(TopLevelDecl).bind("top"), this);
+}
+
+static bool isValid(SourceRange Range) {
+  return Range.getBegin().isValid() && Range.getEnd().isValid();
+}
+
+static bool empty(SourceRange Range) {
+  return Range.getBegin() == Range.getEnd();
+}
+
+void MacroToEnumCheck::check(
+    const ast_matchers::MatchFinder::MatchResult &Result) {
+  auto *TLDecl = Result.Nodes.getNodeAs<Decl>("top");
+  if (TLDecl == nullptr)
+      return;
+
+  SourceRange Range = TLDecl->getSourceRange();
+  if (auto *TemplateFn = Result.Nodes.getNodeAs<FunctionTemplateDecl>("top")) {
+    if (TemplateFn->isThisDeclarationADefinition() && TemplateFn->hasBody())
+      Range = SourceRange{TemplateFn->getBeginLoc(),
+                          TemplateFn->getUnderlyingDecl()->getBodyRBrace()};
+  }
+
+  if (isValid(Range) && !empty(Range))
+    PPCallback->invalidateRange(Range);
+}
+
+} // namespace clang::tidy::modernize

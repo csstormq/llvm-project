@@ -77,9 +77,12 @@ class FrameOptimizerPass : public BinaryFunctionPass {
   /// Stats aggregating variables
   uint64_t NumRedundantLoads{0};
   uint64_t NumRedundantStores{0};
-  uint64_t NumLoadsChangedToReg{0};
-  uint64_t NumLoadsChangedToImm{0};
+  uint64_t FreqRedundantLoads{0};
+  uint64_t FreqRedundantStores{0};
+  uint64_t FreqLoadsChangedToReg{0};
+  uint64_t FreqLoadsChangedToImm{0};
   uint64_t NumLoadsDeleted{0};
+  uint64_t FreqLoadsDeleted{0};
 
   DenseSet<const BinaryFunction *> FuncsChanged;
 
@@ -95,8 +98,8 @@ class FrameOptimizerPass : public BinaryFunctionPass {
   void removeUnusedStores(const FrameAnalysis &FA, BinaryFunction &BF);
 
   /// Perform shrinkwrapping step
-  void performShrinkWrapping(const RegAnalysis &RA, const FrameAnalysis &FA,
-                             BinaryContext &BC);
+  Error performShrinkWrapping(const RegAnalysis &RA, const FrameAnalysis &FA,
+                              BinaryContext &BC);
 
 public:
   explicit FrameOptimizerPass(const cl::opt<bool> &PrintPass)
@@ -105,7 +108,7 @@ public:
   const char *getName() const override { return "frame-optimizer"; }
 
   /// Pass entry point
-  void runOnFunctions(BinaryContext &BC) override;
+  Error runOnFunctions(BinaryContext &BC) override;
 
   bool shouldPrint(const BinaryFunction &BF) const override {
     return BinaryFunctionPass::shouldPrint(BF) && FuncsChanged.count(&BF) > 0;

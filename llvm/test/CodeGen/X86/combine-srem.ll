@@ -296,7 +296,7 @@ define <4 x i32> @combine_vec_srem_by_pow2b(<4 x i32> %x) {
 ; AVX2-NEXT:    vpsrad $31, %xmm0, %xmm1
 ; AVX2-NEXT:    vpsrlvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm1, %xmm1
 ; AVX2-NEXT:    vpaddd %xmm1, %xmm0, %xmm1
-; AVX2-NEXT:    vmovdqa {{.*#+}} xmm2 = [0,1,2,3]
+; AVX2-NEXT:    vpmovsxbd {{.*#+}} xmm2 = [0,1,2,3]
 ; AVX2-NEXT:    vpsravd %xmm2, %xmm1, %xmm1
 ; AVX2-NEXT:    vpblendd {{.*#+}} xmm1 = xmm0[0],xmm1[1,2,3]
 ; AVX2-NEXT:    vpsllvd %xmm2, %xmm1, %xmm1
@@ -329,7 +329,7 @@ define <4 x i32> @combine_vec_srem_by_pow2b_neg(<4 x i32> %x) {
 ; SSE-NEXT:    pblendw {{.*#+}} xmm3 = xmm3[0,1,2,3],xmm2[4,5,6,7]
 ; SSE-NEXT:    movdqa %xmm1, %xmm2
 ; SSE-NEXT:    psrad $3, %xmm2
-; SSE-NEXT:    psrad $1, %xmm1
+; SSE-NEXT:    psrld $1, %xmm1
 ; SSE-NEXT:    pblendw {{.*#+}} xmm1 = xmm1[0,1,2,3],xmm2[4,5,6,7]
 ; SSE-NEXT:    pblendw {{.*#+}} xmm1 = xmm1[0,1],xmm3[2,3],xmm1[4,5],xmm3[6,7]
 ; SSE-NEXT:    pmulld {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm1
@@ -351,7 +351,7 @@ define <4 x i32> @combine_vec_srem_by_pow2b_neg(<4 x i32> %x) {
 ; AVX1-NEXT:    vpsrad $2, %xmm1, %xmm3
 ; AVX1-NEXT:    vpblendw {{.*#+}} xmm2 = xmm3[0,1,2,3],xmm2[4,5,6,7]
 ; AVX1-NEXT:    vpsrad $3, %xmm1, %xmm3
-; AVX1-NEXT:    vpsrad $1, %xmm1, %xmm1
+; AVX1-NEXT:    vpsrld $1, %xmm1, %xmm1
 ; AVX1-NEXT:    vpblendw {{.*#+}} xmm1 = xmm1[0,1,2,3],xmm3[4,5,6,7]
 ; AVX1-NEXT:    vpblendw {{.*#+}} xmm1 = xmm1[0,1],xmm2[2,3],xmm1[4,5],xmm2[6,7]
 ; AVX1-NEXT:    vpmulld {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm1, %xmm1
@@ -370,6 +370,18 @@ define <4 x i32> @combine_vec_srem_by_pow2b_neg(<4 x i32> %x) {
   %1 = srem <4 x i32> %x, <i32 -2, i32 -4, i32 -8, i32 -16>
   ret <4 x i32> %1
 }
+
+; FIXME: PR55271 - srem(undef, 3) != undef
+; Use PSLLI intrinsic to postpone the undef creation until after urem-by-constant expansion
+define <4 x i32> @combine_vec_srem_undef_by_3(<4 x i32> %in) {
+; CHECK-LABEL: combine_vec_srem_undef_by_3:
+; CHECK:       # %bb.0:
+; CHECK-NEXT:    retq
+  %x = call <4 x i32> @llvm.x86.sse2.pslli.d(<4 x i32> undef, i32 0)
+  %y = srem <4 x i32> %x, <i32 3, i32 3, i32 3, i32 3>
+  ret <4 x i32> %y
+}
+declare <4 x i32> @llvm.x86.sse2.pslli.d(<4 x i32>, i32)
 
 ; OSS-Fuzz #6883
 ; https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=6883
@@ -399,7 +411,7 @@ define i32 @ossfuzz6883() {
 ; CHECK-NEXT:    andl %edi, %eax
 ; CHECK-NEXT:    retq
   %B17 = or i32 0, 2147483647
-  %L6 = load i32, i32* undef
+  %L6 = load i32, ptr undef
   %B11 = sdiv i32 %B17, %L6
   %B13 = udiv i32 %B17, %L6
   %B14 = srem i32 %B11, %B13

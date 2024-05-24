@@ -1,4 +1,4 @@
-! RUN: bbc -emit-fir %s -o - | FileCheck %s
+! RUN: bbc --use-desc-for-alloc=false -emit-fir -hlfir=false %s -o - | FileCheck %s
 
 ! Test lowering of allocatables using runtime for allocate/deallcoate statements.
 ! CHECK-LABEL: _QPfooscalar
@@ -42,7 +42,9 @@ subroutine foodim1()
   ! CHECK-DAG: %[[c42:.*]] = fir.convert %c42{{.*}} : (i32) -> index
   ! CHECK-DAG: %[[c100:.*]] = fir.convert %c100_i32 : (i32) -> index
   ! CHECK-DAG: %[[diff:.*]] = arith.subi %[[c100]], %[[c42]] : index
-  ! CHECK: %[[extent:.*]] = arith.addi %[[diff]], %c1{{.*}} : index
+  ! CHECK: %[[rawExtent:.*]] = arith.addi %[[diff]], %c1{{.*}} : index
+  ! CHECK: %[[extentPositive:.*]] = arith.cmpi sgt, %[[rawExtent]], %c0{{.*}} : index
+  ! CHECK: %[[extent:.*]] = arith.select %[[extentPositive]], %[[rawExtent]], %c0{{.*}} : index
   ! CHECK: %[[alloc:.*]] = fir.allocmem !fir.array<?xf32>, %[[extent]] {{{.*}}uniq_name = "_QFfoodim1Ex.alloc"}
   ! CHECK-DAG: fir.store %[[alloc]] to %[[xAddrVar]] : !fir.ref<!fir.heap<!fir.array<?xf32>>>
   ! CHECK-DAG: fir.store %[[extent]] to %[[xExtVar]] : !fir.ref<index>
@@ -86,15 +88,16 @@ subroutine char_deferred(n)
   ! CHECK: fir.freemem %{{.*}}
   allocate(character(n):: c)
   ! CHECK: %[[n:.*]] = fir.load %arg0 : !fir.ref<i32>
-  ! CHECK: %[[ni:.*]] = fir.convert %[[n]] : (i32) -> index
+  ! CHECK: %[[nPositive:.*]] = arith.cmpi sgt, %[[n]], %c0{{.*}} : i32
+  ! CHECK: %[[ns:.*]] = arith.select %[[nPositive]], %[[n]], %c0{{.*}} : i32
+  ! CHECK: %[[ni:.*]] = fir.convert %[[ns]] : (i32) -> index
   ! CHECK: fir.allocmem !fir.char<1,?>(%[[ni]] : index) {{{.*}}uniq_name = "_QFchar_deferredEc.alloc"}
   ! CHECK: fir.store %[[ni]] to %[[cLenVar]] : !fir.ref<index>
 
   call bar(c)
   ! CHECK-DAG: %[[cLen:.*]] = fir.load %[[cLenVar]] : !fir.ref<index>
   ! CHECK-DAG: %[[cAddr:.*]] = fir.load %[[cAddrVar]] : !fir.ref<!fir.heap<!fir.char<1,?>>>
-  ! CHECK-DAG: %[[cAddrcast:.*]] = fir.convert %[[cAddr]] : (!fir.heap<!fir.char<1,?>>) -> !fir.ref<!fir.char<1,?>>
-  ! CHECK: fir.emboxchar %[[cAddrcast]], %[[cLen]] : (!fir.ref<!fir.char<1,?>>, index) -> !fir.boxchar<1>
+  ! CHECK: fir.emboxchar %[[cAddr]], %[[cLen]] : (!fir.heap<!fir.char<1,?>>, index) -> !fir.boxchar<1>
 end subroutine
 
 ! CHECK-LABEL: _QPchar_explicit_cst(
@@ -116,8 +119,7 @@ subroutine char_explicit_cst(n)
   ! CHECK: fir.allocmem !fir.char<1,10> {{{.*}}uniq_name = "_QFchar_explicit_cstEc.alloc"}
   call bar(c)
   ! CHECK: %[[cAddr:.*]] = fir.load %[[cAddrVar]] : !fir.ref<!fir.heap<!fir.char<1,10>>>
-  ! CHECK: %[[cAddrcast:.*]] = fir.convert %[[cAddr]] : (!fir.heap<!fir.char<1,10>>) -> !fir.ref<!fir.char<1,?>>
-  ! CHECK: fir.emboxchar %[[cAddrcast]], %[[cLen]] : (!fir.ref<!fir.char<1,?>>, index) -> !fir.boxchar<1>
+  ! CHECK: fir.emboxchar %[[cAddr]], %[[cLen]] : (!fir.heap<!fir.char<1,10>>, index) -> !fir.boxchar<1>
 end subroutine
 
 ! CHECK-LABEL: _QPchar_explicit_dyn(
@@ -146,8 +148,7 @@ subroutine char_explicit_dyn(l1, l2)
   call bar(c)
   ! CHECK-DAG: %[[cLenCast4:.*]] = fir.convert %[[cLen]] : (i32) -> index
   ! CHECK-DAG: %[[cAddr:.*]] = fir.load %[[cAddrVar]] : !fir.ref<!fir.heap<!fir.char<1,?>>>
-  ! CHECK-DAG: %[[cAddrcast:.*]] = fir.convert %[[cAddr]] : (!fir.heap<!fir.char<1,?>>) -> !fir.ref<!fir.char<1,?>>
-  ! CHECK: fir.emboxchar %[[cAddrcast]], %[[cLenCast4]] : (!fir.ref<!fir.char<1,?>>, index) -> !fir.boxchar<1>
+  ! CHECK: fir.emboxchar %[[cAddr]], %[[cLenCast4]] : (!fir.heap<!fir.char<1,?>>, index) -> !fir.boxchar<1>
 end subroutine
 
 ! CHECK-LABEL: _QPspecifiers(

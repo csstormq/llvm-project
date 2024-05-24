@@ -15,20 +15,46 @@
 
 #include "mlir/IR/OpDefinition.h"
 
+namespace mlir {
+class RewriterBase;
+
+/// A function that returns the additional yielded values during
+/// `replaceWithAdditionalYields`. `newBbArgs` are the newly added region
+/// iter_args. This function should return as many values as there are block
+/// arguments in `newBbArgs`.
+using NewYieldValuesFn = std::function<SmallVector<Value>(
+    OpBuilder &b, Location loc, ArrayRef<BlockArgument> newBbArgs)>;
+
+namespace detail {
+/// Verify invariants of the LoopLikeOpInterface.
+LogicalResult verifyLoopLikeOpInterface(Operation *op);
+} // namespace detail
+
 //===----------------------------------------------------------------------===//
-// LoopLike Interfaces
+// Traits
+//===----------------------------------------------------------------------===//
+
+namespace OpTrait {
+// A trait indicating that the single region contained in the operation has
+// parallel execution semantics. This may have implications in a certain pass.
+// For example, buffer hoisting is illegal in parallel loops, and local buffers
+// may be accessed by parallel threads simultaneously.
+template <typename ConcreteType>
+class HasParallelRegion : public TraitBase<ConcreteType, HasParallelRegion> {
+public:
+  static LogicalResult verifyTrait(Operation *op) {
+    return impl::verifyOneRegion(op);
+  }
+};
+
+} // namespace OpTrait
+} // namespace mlir
+
+//===----------------------------------------------------------------------===//
+// Interfaces
 //===----------------------------------------------------------------------===//
 
 /// Include the generated interface declarations.
 #include "mlir/Interfaces/LoopLikeInterface.h.inc"
-
-//===----------------------------------------------------------------------===//
-// LoopLike Utilities
-//===----------------------------------------------------------------------===//
-
-namespace mlir {
-/// Move loop invariant code out of a `looplike` operation.
-void moveLoopInvariantCode(LoopLikeOpInterface looplike);
-} // namespace mlir
 
 #endif // MLIR_INTERFACES_LOOPLIKEINTERFACE_H_

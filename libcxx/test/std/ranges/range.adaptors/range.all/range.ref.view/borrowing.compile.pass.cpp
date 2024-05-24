@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
-// UNSUPPORTED: libcpp-has-no-incomplete-ranges
 
 // template<class T>
 //   inline constexpr bool enable_borrowed_range<ref_view<T>> = true;
@@ -16,6 +15,6 @@
 
 #include "test_range.h"
 
-static_assert(std::ranges::borrowed_range<std::ranges::ref_view<BorrowedRange>>);
+static_assert(std::ranges::borrowed_range<std::ranges::ref_view<BorrowedRange<>>>);
 static_assert(std::ranges::borrowed_range<std::ranges::ref_view<BorrowedView>>);
 static_assert(std::ranges::borrowed_range<std::ranges::ref_view<NonBorrowedView>>);

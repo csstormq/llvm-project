@@ -1,13 +1,14 @@
 # Exclude tests from libMLIR.so
 add_mlir_library(MLIRTestFuncToLLVM
   TestConvertCallOp.cpp
+  TestConvertFuncOp.cpp
 
   EXCLUDE_FROM_LIBMLIR
 
   LINK_LIBS PUBLIC
   MLIRFuncToLLVM
   MLIRLLVMCommonConversion
-  MLIRLLVMIR
+  MLIRLLVMDialect
   MLIRLLVMIRTransforms
   MLIRPass
   MLIRTestDialect

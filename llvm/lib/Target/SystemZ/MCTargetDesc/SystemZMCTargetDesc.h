@@ -85,7 +85,9 @@ MCAsmBackend *createSystemZMCAsmBackend(const Target &T,
                                         const MCRegisterInfo &MRI,
                                         const MCTargetOptions &Options);
 
-std::unique_ptr<MCObjectTargetWriter> createSystemZObjectWriter(uint8_t OSABI);
+std::unique_ptr<MCObjectTargetWriter>
+createSystemZELFObjectWriter(uint8_t OSABI);
+std::unique_ptr<MCObjectTargetWriter> createSystemZGOFFObjectWriter();
 } // end namespace llvm
 
 // Defines symbolic names for SystemZ registers.
@@ -95,6 +97,7 @@ std::unique_ptr<MCObjectTargetWriter> createSystemZObjectWriter(uint8_t OSABI);
 
 // Defines symbolic names for the SystemZ instructions.
 #define GET_INSTRINFO_ENUM
+#define GET_INSTRINFO_MC_HELPER_DECLS
 #include "SystemZGenInstrInfo.inc"
 
 #define GET_SUBTARGETINFO_ENUM

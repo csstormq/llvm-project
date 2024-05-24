@@ -83,9 +83,8 @@ Please use the tag "libunwind" for new threads.
 
 **Patches**
 
-If you want to contribute a patch to libunwind, the best place for that is
-`Phabricator <https://llvm.org/docs/Phabricator.html>`_. Please include [libunwind] in the subject and
-add `cfe-commits` as a subscriber. Also make sure you are subscribed to the `cfe-commits mailing list`_.
+If you want to contribute a patch to libunwind, please start by reading the LLVM
+`documentation about contributing <https://www.llvm.org/docs/Contributing.html>`__.
 
 **Discussion and Questions**
 
@@ -96,7 +95,7 @@ Quick Links
 ===========
 * `LLVM Homepage <https://llvm.org/>`_
 * `LLVM Bug Tracker <https://github.com/llvm/llvm-project/labels/libunwind/>`_
-* `cfe-dev Mailing List <http://lists.llvm.org/mailman/listinfo/cfe-dev>`_
+* `Clang Discourse Forums <https://discourse.llvm.org/c/clang/6>`_
 * `cfe-commits Mailing List <http://lists.llvm.org/mailman/listinfo/cfe-commits>`_
 * `Runtimes Forum <https://discourse.llvm.org/tags/c/runtimes>`_
 * `Browse libunwind Sources <https://github.com/llvm/llvm-project/blob/main/libunwind/>`_

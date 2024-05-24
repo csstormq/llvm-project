@@ -19,7 +19,7 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/EndianStream.h"
-#include "llvm/Support/TargetParser.h"
+#include "llvm/TargetParser/TargetParser.h"
 
 using namespace llvm;
 using namespace llvm::AMDGPU;
@@ -28,7 +28,7 @@ namespace {
 
 class AMDGPUAsmBackend : public MCAsmBackend {
 public:
-  AMDGPUAsmBackend(const Target &T) : MCAsmBackend(support::little) {}
+  AMDGPUAsmBackend(const Target &T) : MCAsmBackend(llvm::endianness::little) {}
 
   unsigned getNumFixupKinds() const override { return AMDGPU::NumTargetFixupKinds; };
 
@@ -50,7 +50,11 @@ public:
   bool writeNopData(raw_ostream &OS, uint64_t Count,
                     const MCSubtargetInfo *STI) const override;
 
+  std::optional<MCFixupKind> getFixupKind(StringRef Name) const override;
   const MCFixupKindInfo &getFixupKindInfo(MCFixupKind Kind) const override;
+  bool shouldForceRelocation(const MCAssembler &Asm, const MCFixup &Fixup,
+                             const MCValue &Target,
+                             const MCSubtargetInfo *STI) override;
 };
 
 } //End anonymous namespace
@@ -76,7 +80,7 @@ bool AMDGPUAsmBackend::fixupNeedsRelaxation(const MCFixup &Fixup,
 
 bool AMDGPUAsmBackend::mayNeedRelaxation(const MCInst &Inst,
                        const MCSubtargetInfo &STI) const {
-  if (!STI.getFeatureBits()[AMDGPU::FeatureOffset3fBug])
+  if (!STI.hasFeature(AMDGPU::FeatureOffset3fBug))
     return false;
 
   if (AMDGPU::getSOPPWithRelaxation(Inst.getOpcode()) >= 0)
@@ -137,6 +141,9 @@ void AMDGPUAsmBackend::applyFixup(const MCAssembler &Asm, const MCFixup &Fixup,
                                   MutableArrayRef<char> Data, uint64_t Value,
                                   bool IsResolved,
                                   const MCSubtargetInfo *STI) const {
+  if (Fixup.getKind() >= FirstLiteralRelocationKind)
+    return;
+
   Value = adjustFixupValue(Fixup, Value, &Asm.getContext());
   if (!Value)
     return; // Doesn't change encoding.
@@ -156,6 +163,16 @@ void AMDGPUAsmBackend::applyFixup(const MCAssembler &Asm, const MCFixup &Fixup,
     Data[Offset + i] |= static_cast<uint8_t>((Value >> (i * 8)) & 0xff);
 }
 
+std::optional<MCFixupKind>
+AMDGPUAsmBackend::getFixupKind(StringRef Name) const {
+  return StringSwitch<std::optional<MCFixupKind>>(Name)
+#define ELF_RELOC(Name, Value)                                                 \
+  .Case(#Name, MCFixupKind(FirstLiteralRelocationKind + Value))
+#include "llvm/BinaryFormat/ELFRelocs/AMDGPU.def"
+#undef ELF_RELOC
+      .Default(std::nullopt);
+}
+
 const MCFixupKindInfo &AMDGPUAsmBackend::getFixupKindInfo(
                                                        MCFixupKind Kind) const {
   const static MCFixupKindInfo Infos[AMDGPU::NumTargetFixupKinds] = {
@@ -163,10 +180,22 @@ const MCFixupKindInfo &AMDGPUAsmBackend::getFixupKindInfo(
     { "fixup_si_sopp_br",     0,     16,   MCFixupKindInfo::FKF_IsPCRel },
   };
 
+  if (Kind >= FirstLiteralRelocationKind)
+    return MCAsmBackend::getFixupKindInfo(FK_NONE);
+
   if (Kind < FirstTargetFixupKind)
     return MCAsmBackend::getFixupKindInfo(Kind);
 
+  assert(unsigned(Kind - FirstTargetFixupKind) < getNumFixupKinds() &&
+         "Invalid kind!");
   return Infos[Kind - FirstTargetFixupKind];
+}
+
+bool AMDGPUAsmBackend::shouldForceRelocation(const MCAssembler &,
+                                             const MCFixup &Fixup,
+                                             const MCValue &,
+                                             const MCSubtargetInfo *STI) {
+  return Fixup.getKind() >= FirstLiteralRelocationKind;
 }
 
 unsigned AMDGPUAsmBackend::getMinimumNopSize() const {
@@ -203,13 +232,11 @@ class ELFAMDGPUAsmBackend : public AMDGPUAsmBackend {
   bool Is64Bit;
   bool HasRelocationAddend;
   uint8_t OSABI = ELF::ELFOSABI_NONE;
-  uint8_t ABIVersion = 0;
 
 public:
-  ELFAMDGPUAsmBackend(const Target &T, const Triple &TT, uint8_t ABIVersion) :
-      AMDGPUAsmBackend(T), Is64Bit(TT.getArch() == Triple::amdgcn),
-      HasRelocationAddend(TT.getOS() == Triple::AMDHSA),
-      ABIVersion(ABIVersion) {
+  ELFAMDGPUAsmBackend(const Target &T, const Triple &TT)
+      : AMDGPUAsmBackend(T), Is64Bit(TT.getArch() == Triple::amdgcn),
+        HasRelocationAddend(TT.getOS() == Triple::AMDHSA) {
     switch (TT.getOS()) {
     case Triple::AMDHSA:
       OSABI = ELF::ELFOSABI_AMDGPU_HSA;
@@ -227,8 +254,7 @@ public:
 
   std::unique_ptr<MCObjectTargetWriter>
   createObjectTargetWriter() const override {
-    return createAMDGPUELFObjectWriter(Is64Bit, OSABI, HasRelocationAddend,
-                                       ABIVersion);
+    return createAMDGPUELFObjectWriter(Is64Bit, OSABI, HasRelocationAddend);
   }
 };
 
@@ -238,6 +264,5 @@ MCAsmBackend *llvm::createAMDGPUAsmBackend(const Target &T,
                                            const MCSubtargetInfo &STI,
                                            const MCRegisterInfo &MRI,
                                            const MCTargetOptions &Options) {
-  return new ELFAMDGPUAsmBackend(T, STI.getTargetTriple(),
-                                 getHsaAbiVersion(&STI).getValueOr(0));
+  return new ELFAMDGPUAsmBackend(T, STI.getTargetTriple());
 }

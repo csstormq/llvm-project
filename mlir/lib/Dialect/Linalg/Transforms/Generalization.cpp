@@ -11,9 +11,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
+
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Attributes.h"
@@ -24,18 +25,28 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 
+namespace mlir {
+#define GEN_PASS_DEF_LINALGGENERALIZENAMEDOPSPASS
+#include "mlir/Dialect/Linalg/Passes.h.inc"
+} // namespace mlir
+
 #define DEBUG_TYPE "linalg-generalization"
 
 using namespace mlir;
 using namespace mlir::linalg;
 
 static LogicalResult generalizeNamedOpPrecondition(LinalgOp linalgOp) {
-  // Check if the operation is a LinalgOp but not a GenericOp.
-  if (isa<GenericOp>(linalgOp))
+  // Bailout if `linalgOp` is already a generic or a linalg.map. We cannot
+  // trivially generalize a `linalg.map`, as it does not use the output as
+  // region arguments in the block.
+  if (isa<GenericOp>(linalgOp) || isa<MapOp>(linalgOp))
     return failure();
-  // Check if the operation has a region builder.
-  if (!linalgOp.getRegionBuilder())
+  // Check if the operation has exactly one region.
+  if (linalgOp->getNumRegions() != 1) {
+    assert(linalgOp->getNumRegions() == 0 && "op with multiple regions");
+    // TOD: Otherwise it needs to be built explicitly from the region builder.
     return failure();
+  }
   return success();
 }
 
@@ -44,47 +55,44 @@ FailureOr<GenericOp> mlir::linalg::generalizeNamedOp(RewriterBase &rewriter,
   if (failed(generalizeNamedOpPrecondition(linalgOp)))
     return rewriter.notifyMatchFailure(linalgOp, "preconditions not met");
 
-  SmallVector<Value> inputOperands = linalgOp.getInputOperands();
-  SmallVector<Value> outputOperands = linalgOp.getOutputOperands();
-  SmallVector<AffineMap> indexingMaps = linalgOp.getIndexingMaps();
-  SmallVector<StringRef> iterators = llvm::to_vector<4>(
-      linalgOp.iterator_types().getAsValueRange<StringAttr>());
-  SmallVector<RankedTensorType> resultTypes = linalgOp.getOutputTensorTypes();
-  SmallVector<Type> types(resultTypes.begin(), resultTypes.end());
+  SmallVector<Value> inputs = linalgOp.getDpsInputs();
+  ValueRange outputs = linalgOp.getDpsInits();
+  SmallVector<AffineMap> indexingMaps = linalgOp.getIndexingMapsArray();
+  SmallVector<utils::IteratorType> iterators = linalgOp.getIteratorTypesArray();
+  SmallVector<Type> resultTypes = linalgOp.hasPureTensorSemantics()
+                                      ? TypeRange(ValueRange(outputs))
+                                      : TypeRange{};
 
   // All named ops have a region attached that can be inlined.
   assert(linalgOp->getNumRegions() == 1 &&
          "expect named op to have one region attached");
-  GenericOp genericOp =
-      rewriter.create<GenericOp>(linalgOp.getLoc(), types, inputOperands,
-                                 outputOperands, indexingMaps, iterators);
-  rewriter.inlineRegionBefore(linalgOp->getRegion(0), genericOp.region(),
-                              genericOp.region().begin());
+  GenericOp genericOp = rewriter.create<GenericOp>(
+      linalgOp.getLoc(), resultTypes, inputs, outputs, indexingMaps, iterators);
+  rewriter.inlineRegionBefore(linalgOp->getRegion(0), genericOp.getRegion(),
+                              genericOp.getRegion().begin());
   rewriter.replaceOp(linalgOp, genericOp->getResults());
   return genericOp;
 }
 
 namespace {
 
-struct LinalgGeneralizationPass
-    : public LinalgGeneralizationBase<LinalgGeneralizationPass> {
+struct LinalgGeneralizeNamedOpsPass
+    : public impl::LinalgGeneralizeNamedOpsPassBase<
+          LinalgGeneralizeNamedOpsPass> {
+  using impl::LinalgGeneralizeNamedOpsPassBase<
+      LinalgGeneralizeNamedOpsPass>::LinalgGeneralizeNamedOpsPassBase;
   void runOnOperation() override;
 };
 
 } // namespace
 
-void LinalgGeneralizationPass::runOnOperation() {
-  FuncOp func = getOperation();
+void LinalgGeneralizeNamedOpsPass::runOnOperation() {
   RewritePatternSet patterns(&getContext());
   populateLinalgNamedOpsGeneralizationPatterns(patterns);
-  (void)applyPatternsAndFoldGreedily(func.getBody(), std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
 }
 
 void mlir::linalg::populateLinalgNamedOpsGeneralizationPatterns(
-    RewritePatternSet &patterns, const LinalgTransformationFilter &marker) {
-  patterns.add<LinalgGeneralizationPattern>(patterns.getContext(), marker);
-}
-
-std::unique_ptr<OperationPass<FuncOp>> mlir::createLinalgGeneralizationPass() {
-  return std::make_unique<LinalgGeneralizationPass>();
+    RewritePatternSet &patterns) {
+  patterns.add<LinalgGeneralizationPattern>(patterns.getContext());
 }

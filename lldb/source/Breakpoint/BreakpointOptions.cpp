@@ -88,10 +88,9 @@ BreakpointOptions::CommandData::CreateFromStructuredData(
   if (success) {
     size_t num_elems = user_source->GetSize();
     for (size_t i = 0; i < num_elems; i++) {
-      llvm::StringRef elem_string;
-      success = user_source->GetItemAtIndexAsString(i, elem_string);
-      if (success)
-        data_up->user_source.AppendString(elem_string);
+      if (std::optional<llvm::StringRef> maybe_elem_string =
+              user_source->GetItemAtIndexAsString(i))
+        data_up->user_source.AppendString(*maybe_elem_string);
     }
   }
 
@@ -115,7 +114,8 @@ BreakpointOptions::BreakpointOptions(bool all_flags_set)
     : m_callback(BreakpointOptions::NullCallback),
       m_baton_is_command_baton(false), m_callback_is_synchronous(false),
       m_enabled(true), m_one_shot(false), m_ignore_count(0),
-      m_condition_text_hash(0), m_auto_continue(false), m_set_flags(0) {
+      m_condition_text_hash(0), m_inject_condition(false),
+      m_auto_continue(false), m_set_flags(0) {
   if (all_flags_set)
     m_set_flags.Set(~((Flags::ValueType)0));
 }
@@ -125,11 +125,9 @@ BreakpointOptions::BreakpointOptions(const char *condition, bool enabled,
                                      bool auto_continue)
     : m_callback(nullptr), m_baton_is_command_baton(false),
       m_callback_is_synchronous(false), m_enabled(enabled),
-      m_one_shot(one_shot), m_ignore_count(ignore),
-      m_condition_text_hash(0), m_auto_continue(auto_continue)
-{
-    m_set_flags.Set(eEnabled | eIgnoreCount | eOneShot 
-                   | eAutoContinue);
+      m_one_shot(one_shot), m_ignore_count(ignore), m_condition_text_hash(0),
+      m_inject_condition(false), m_auto_continue(auto_continue) {
+  m_set_flags.Set(eEnabled | eIgnoreCount | eOneShot | eAutoContinue);
     if (condition && *condition != '\0') {
       SetCondition(condition);
     }
@@ -141,8 +139,8 @@ BreakpointOptions::BreakpointOptions(const BreakpointOptions &rhs)
       m_baton_is_command_baton(rhs.m_baton_is_command_baton),
       m_callback_is_synchronous(rhs.m_callback_is_synchronous),
       m_enabled(rhs.m_enabled), m_one_shot(rhs.m_one_shot),
-      m_ignore_count(rhs.m_ignore_count), m_auto_continue(rhs.m_auto_continue),
-      m_set_flags(rhs.m_set_flags) {
+      m_ignore_count(rhs.m_ignore_count), m_inject_condition(false),
+      m_auto_continue(rhs.m_auto_continue), m_set_flags(rhs.m_set_flags) {
   if (rhs.m_thread_spec_up != nullptr)
     m_thread_spec_up = std::make_unique<ThreadSpec>(*rhs.m_thread_spec_up);
   m_condition_text = rhs.m_condition_text;
@@ -163,6 +161,7 @@ operator=(const BreakpointOptions &rhs) {
     m_thread_spec_up = std::make_unique<ThreadSpec>(*rhs.m_thread_spec_up);
   m_condition_text = rhs.m_condition_text;
   m_condition_text_hash = rhs.m_condition_text_hash;
+  m_inject_condition = rhs.m_inject_condition;
   m_auto_continue = rhs.m_auto_continue;
   m_set_flags = rhs.m_set_flags;
   return *this;
@@ -230,7 +229,7 @@ std::unique_ptr<BreakpointOptions> BreakpointOptions::CreateFromStructuredData(
   bool enabled = true;
   bool one_shot = false;
   bool auto_continue = false;
-  int32_t ignore_count = 0;
+  uint32_t ignore_count = 0;
   llvm::StringRef condition_ref("");
   Flags set_options;
 

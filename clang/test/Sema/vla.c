@@ -22,11 +22,11 @@ void f2(unsigned int m)
   extern int e1[2][m]; // expected-error {{variable length array declaration cannot have 'extern' linkage}}
 
   e1[0][0] = 0;
-  
+
 }
 
 // PR2361
-int i; 
+int i;
 int c[][i]; // expected-error {{variably modified type declaration not allowed at file scope}}
 int d[i]; // expected-error {{variable length array declaration not allowed at file scope}}
 
@@ -72,7 +72,7 @@ int TransformBug(int a) {
 // PR36157
 struct {
   int a[ // expected-error {{variable length array in struct}}
-    implicitly_declared() // expected-warning {{implicit declaration}}
+    implicitly_declared() // expected-error {{call to undeclared function 'implicitly_declared'; ISO C99 and later do not support implicit function declarations}}
   ];
 };
 int (*use_implicitly_declared)(void) = implicitly_declared; // ok, was implicitly declared at file scope
@@ -113,14 +113,14 @@ void test_fold_to_constant_array(void) {
  jump_over_a2:;
 
   goto jump_over_a3;
-  char a3[ksize] = {}; // expected-warning {{variable length array folded to constant array as an extension}} expected-warning{{use of GNU empty initializer}}
+  char a3[ksize] = {}; // expected-warning {{variable length array folded to constant array as an extension}} expected-warning{{use of an empty initializer is a C23 extension}}
  jump_over_a3:;
 
   goto jump_over_a4; // expected-error{{cannot jump from this goto statement to its label}}
   char a4[ksize][2]; // expected-note{{variable length array}}
  jump_over_a4:;
 
-  char a5[ksize][2] = {}; // expected-warning {{variable length array folded to constant array as an extension}} expected-warning{{use of GNU empty initializer}}
+  char a5[ksize][2] = {}; // expected-warning {{variable length array folded to constant array as an extension}} expected-warning{{use of an empty initializer is a C23 extension}}
 
   int a6[ksize] = {1,2,3,4}; // expected-warning{{variable length array folded to constant array as an extension}}
 

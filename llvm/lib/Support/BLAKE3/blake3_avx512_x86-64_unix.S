@@ -1,4 +1,8 @@
-#if defined(__ELF__) && defined(__linux__)
+#if defined(__x86_64__)
+
+#include "llvm_blake3_prefix.h"
+
+#if defined(__ELF__) && !(defined(__sun__) && defined(__svr4__))
 .section .note.GNU-stack,"",%progbits
 #endif
 
@@ -2595,3 +2599,5 @@ BLAKE3_IV_2:
         .long   0x3C6EF372
 BLAKE3_IV_3:
         .long   0xA54FF53A
+
+#endif

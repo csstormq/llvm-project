@@ -33,7 +33,6 @@ bool CSKYTargetInfo::setCPU(const std::string &Name) {
 
 void CSKYTargetInfo::getTargetDefines(const LangOptions &Opts,
                                       MacroBuilder &Builder) const {
-  Builder.defineMacro("__ELF__");
   Builder.defineMacro("__csky__", "2");
   Builder.defineMacro("__CSKY__", "2");
   Builder.defineMacro("__ckcore__", "2");
@@ -52,8 +51,10 @@ void CSKYTargetInfo::getTargetDefines(const LangOptions &Opts,
 
   Builder.defineMacro("__" + ArchName.upper() + "__");
   Builder.defineMacro("__" + ArchName.lower() + "__");
-  Builder.defineMacro("__" + CPUName.upper() + "__");
-  Builder.defineMacro("__" + CPUName.lower() + "__");
+  if (ArchName != CPUName) {
+    Builder.defineMacro("__" + CPUName.upper() + "__");
+    Builder.defineMacro("__" + CPUName.lower() + "__");
+  }
 
   // TODO: Add support for BE if BE was supported later
   StringRef endian = "__cskyLE__";
@@ -95,17 +96,36 @@ void CSKYTargetInfo::getTargetDefines(const LangOptions &Opts,
   }
 }
 
+bool CSKYTargetInfo::hasFeature(StringRef Feature) const {
+  return llvm::StringSwitch<bool>(Feature)
+      .Case("hard-float", HardFloat)
+      .Case("hard-float-abi", HardFloatABI)
+      .Case("fpuv2_sf", FPUV2_SF)
+      .Case("fpuv2_df", FPUV2_DF)
+      .Case("fpuv3_sf", FPUV3_SF)
+      .Case("fpuv3_df", FPUV3_DF)
+      .Case("vdspv2", VDSPV2)
+      .Case("dspv2", DSPV2)
+      .Case("vdspv1", VDSPV1)
+      .Case("3e3r1", is3E3R1)
+      .Default(false);
+}
+
 bool CSKYTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
                                           DiagnosticsEngine &Diags) {
-  HardFloat = false;
-  VDSPV2 = false;
-  VDSPV1 = false;
-  DSPV2 = false;
-  is3E3R1 = false;
-
   for (const auto &Feature : Features) {
     if (Feature == "+hard-float")
       HardFloat = true;
+    if (Feature == "+hard-float-abi")
+      HardFloatABI = true;
+    if (Feature == "+fpuv2_sf")
+      FPUV2_SF = true;
+    if (Feature == "+fpuv2_df")
+      FPUV2_DF = true;
+    if (Feature == "+fpuv3_sf")
+      FPUV3_SF = true;
+    if (Feature == "+fpuv3_df")
+      FPUV3_DF = true;
     if (Feature == "+vdspv2")
       VDSPV2 = true;
     if (Feature == "+dspv2")
@@ -194,7 +214,7 @@ ArrayRef<const char *> CSKYTargetInfo::getGCCRegNames() const {
       "fr31",
 
   };
-  return llvm::makeArrayRef(GCCRegNames);
+  return llvm::ArrayRef(GCCRegNames);
 }
 
 ArrayRef<TargetInfo::GCCRegAlias> CSKYTargetInfo::getGCCRegAliases() const {
@@ -266,7 +286,7 @@ ArrayRef<TargetInfo::GCCRegAlias> CSKYTargetInfo::getGCCRegAliases() const {
       {{"vr31"}, "fr31"},
 
   };
-  return llvm::makeArrayRef(GCCRegAliases);
+  return llvm::ArrayRef(GCCRegAliases);
 }
 
 bool CSKYTargetInfo::validateAsmConstraint(
@@ -288,7 +308,8 @@ bool CSKYTargetInfo::validateAsmConstraint(
   }
 }
 
-unsigned CSKYTargetInfo::getMinGlobalAlign(uint64_t Size) const {
+unsigned CSKYTargetInfo::getMinGlobalAlign(uint64_t Size,
+                                           bool HasNonWeakDef) const {
   if (Size >= 32)
     return 32;
   return 0;

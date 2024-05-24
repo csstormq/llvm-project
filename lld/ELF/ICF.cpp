@@ -165,7 +165,7 @@ static bool isEligible(InputSection *s) {
   // Don't merge writable sections. .data.rel.ro sections are marked as writable
   // but are semantically read-only.
   if ((s->flags & SHF_WRITE) && s->name != ".data.rel.ro" &&
-      !s->name.startswith(".data.rel.ro."))
+      !s->name.starts_with(".data.rel.ro."))
     return false;
 
   // SHF_LINK_ORDER sections are ICF'd as a unit with their dependent sections,
@@ -239,16 +239,17 @@ bool ICF<ELFT>::constantEq(const InputSection *secA, ArrayRef<RelTy> ra,
                            const InputSection *secB, ArrayRef<RelTy> rb) {
   if (ra.size() != rb.size())
     return false;
-  for (size_t i = 0; i < ra.size(); ++i) {
-    if (ra[i].r_offset != rb[i].r_offset ||
-        ra[i].getType(config->isMips64EL) != rb[i].getType(config->isMips64EL))
+  auto rai = ra.begin(), rae = ra.end(), rbi = rb.begin();
+  for (; rai != rae; ++rai, ++rbi) {
+    if (rai->r_offset != rbi->r_offset ||
+        rai->getType(config->isMips64EL) != rbi->getType(config->isMips64EL))
       return false;
 
-    uint64_t addA = getAddend<ELFT>(ra[i]);
-    uint64_t addB = getAddend<ELFT>(rb[i]);
+    uint64_t addA = getAddend<ELFT>(*rai);
+    uint64_t addB = getAddend<ELFT>(*rbi);
 
-    Symbol &sa = secA->template getFile<ELFT>()->getRelocTargetSym(ra[i]);
-    Symbol &sb = secB->template getFile<ELFT>()->getRelocTargetSym(rb[i]);
+    Symbol &sa = secA->file->getRelocTargetSym(*rai);
+    Symbol &sb = secB->file->getRelocTargetSym(*rbi);
     if (&sa == &sb) {
       if (addA == addB)
         continue;
@@ -313,7 +314,7 @@ bool ICF<ELFT>::constantEq(const InputSection *secA, ArrayRef<RelTy> ra,
 template <class ELFT>
 bool ICF<ELFT>::equalsConstant(const InputSection *a, const InputSection *b) {
   if (a->flags != b->flags || a->getSize() != b->getSize() ||
-      a->rawData != b->rawData)
+      a->content() != b->content())
     return false;
 
   // If two sections have different output sections, we cannot merge them.
@@ -323,8 +324,9 @@ bool ICF<ELFT>::equalsConstant(const InputSection *a, const InputSection *b) {
 
   const RelsOrRelas<ELFT> ra = a->template relsOrRelas<ELFT>();
   const RelsOrRelas<ELFT> rb = b->template relsOrRelas<ELFT>();
-  return ra.areRelocsRel() ? constantEq(a, ra.rels, b, rb.rels)
-                           : constantEq(a, ra.relas, b, rb.relas);
+  return ra.areRelocsRel() || rb.areRelocsRel()
+             ? constantEq(a, ra.rels, b, rb.rels)
+             : constantEq(a, ra.relas, b, rb.relas);
 }
 
 // Compare two lists of relocations. Returns true if all pairs of
@@ -335,10 +337,11 @@ bool ICF<ELFT>::variableEq(const InputSection *secA, ArrayRef<RelTy> ra,
                            const InputSection *secB, ArrayRef<RelTy> rb) {
   assert(ra.size() == rb.size());
 
-  for (size_t i = 0; i < ra.size(); ++i) {
+  auto rai = ra.begin(), rae = ra.end(), rbi = rb.begin();
+  for (; rai != rae; ++rai, ++rbi) {
     // The two sections must be identical.
-    Symbol &sa = secA->template getFile<ELFT>()->getRelocTargetSym(ra[i]);
-    Symbol &sb = secB->template getFile<ELFT>()->getRelocTargetSym(rb[i]);
+    Symbol &sa = secA->file->getRelocTargetSym(*rai);
+    Symbol &sb = secB->file->getRelocTargetSym(*rbi);
     if (&sa == &sb)
       continue;
 
@@ -371,8 +374,9 @@ template <class ELFT>
 bool ICF<ELFT>::equalsVariable(const InputSection *a, const InputSection *b) {
   const RelsOrRelas<ELFT> ra = a->template relsOrRelas<ELFT>();
   const RelsOrRelas<ELFT> rb = b->template relsOrRelas<ELFT>();
-  return ra.areRelocsRel() ? variableEq(a, ra.rels, b, rb.rels)
-                           : variableEq(a, ra.relas, b, rb.relas);
+  return ra.areRelocsRel() || rb.areRelocsRel()
+             ? variableEq(a, ra.rels, b, rb.rels)
+             : variableEq(a, ra.relas, b, rb.relas);
 }
 
 template <class ELFT> size_t ICF<ELFT>::findBoundary(size_t begin, size_t end) {
@@ -422,11 +426,11 @@ void ICF<ELFT>::forEachClass(llvm::function_ref<void(size_t, size_t)> fn) {
   boundaries[0] = 0;
   boundaries[numShards] = sections.size();
 
-  parallelForEachN(1, numShards, [&](size_t i) {
+  parallelFor(1, numShards, [&](size_t i) {
     boundaries[i] = findBoundary((i - 1) * step, sections.size());
   });
 
-  parallelForEachN(1, numShards + 1, [&](size_t i) {
+  parallelFor(1, numShards + 1, [&](size_t i) {
     if (boundaries[i - 1] < boundaries[i])
       forEachClassRange(boundaries[i - 1], boundaries[i], fn);
   });
@@ -435,12 +439,12 @@ void ICF<ELFT>::forEachClass(llvm::function_ref<void(size_t, size_t)> fn) {
 
 // Combine the hashes of the sections referenced by the given section into its
 // hash.
-template <class ELFT, class RelTy>
+template <class RelTy>
 static void combineRelocHashes(unsigned cnt, InputSection *isec,
                                ArrayRef<RelTy> rels) {
   uint32_t hash = isec->eqClass[cnt % 2];
   for (RelTy rel : rels) {
-    Symbol &s = isec->template getFile<ELFT>()->getRelocTargetSym(rel);
+    Symbol &s = isec->file->getRelocTargetSym(rel);
     if (auto *d = dyn_cast<Defined>(&s))
       if (auto *relSec = dyn_cast_or_null<InputSection>(d->section))
         hash += relSec->eqClass[cnt % 2];
@@ -460,7 +464,7 @@ template <class ELFT> void ICF<ELFT>::run() {
   // cannot be merged with the later computeIsPreemptible() pass which is used
   // by scanRelocations().
   if (config->hasDynSymTab)
-    for (Symbol *sym : symtab->symbols())
+    for (Symbol *sym : symtab.getSymbols())
       sym->isPreemptible = computeIsPreemptible(*sym);
 
   // Two text sections may have identical content and relocations but different
@@ -477,9 +481,9 @@ template <class ELFT> void ICF<ELFT>::run() {
         [&](InputSection &s) { s.eqClass[0] = s.eqClass[1] = ++uniqueId; });
 
   // Collect sections to merge.
-  for (InputSectionBase *sec : inputSections) {
-    auto *s = cast<InputSection>(sec);
-    if (s->eqClass[0] == 0) {
+  for (InputSectionBase *sec : ctx.inputSections) {
+    auto *s = dyn_cast<InputSection>(sec);
+    if (s && s->eqClass[0] == 0) {
       if (isEligible(s))
         sections.push_back(s);
       else
@@ -492,7 +496,7 @@ template <class ELFT> void ICF<ELFT>::run() {
   // Initially, we use hash values to partition sections.
   parallelForEach(sections, [&](InputSection *s) {
     // Set MSB to 1 to avoid collisions with unique IDs.
-    s->eqClass[0] = xxHash64(s->rawData) | (1U << 31);
+    s->eqClass[0] = xxh3_64bits(s->content()) | (1U << 31);
   });
 
   // Perform 2 rounds of relocation hash propagation. 2 is an empirical value to
@@ -502,9 +506,9 @@ template <class ELFT> void ICF<ELFT>::run() {
     parallelForEach(sections, [&](InputSection *s) {
       const RelsOrRelas<ELFT> rels = s->template relsOrRelas<ELFT>();
       if (rels.areRelocsRel())
-        combineRelocHashes<ELFT>(cnt, s, rels.rels);
+        combineRelocHashes(cnt, s, rels.rels);
       else
-        combineRelocHashes<ELFT>(cnt, s, rels.relas);
+        combineRelocHashes(cnt, s, rels.relas);
     });
   }
 
@@ -558,9 +562,9 @@ template <class ELFT> void ICF<ELFT>::run() {
           d->folded = true;
         }
   };
-  for (Symbol *sym : symtab->symbols())
+  for (Symbol *sym : symtab.getSymbols())
     fold(sym);
-  parallelForEach(objectFiles, [&](ELFFileBase *file) {
+  parallelForEach(ctx.objectFiles, [&](ELFFileBase *file) {
     for (Symbol *sym : file->getLocalSymbols())
       fold(sym);
   });

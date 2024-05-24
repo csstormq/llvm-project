@@ -9,7 +9,7 @@ void bar(_AS2 int a); // expected-error {{parameter may not be qualified with an
 void foo(_AS3 float *a,
          _AS1 float b) // expected-error {{parameter may not be qualified with an address space}}
 {
-  _AS2 *x;// expected-warning {{type specifier missing, defaults to 'int'}}
+  _AS2 *x;// expected-error {{type specifier missing, defaults to 'int'}}
   _AS1 float * _AS2 *B;
 
   int _AS1 _AS2 *Y;   // expected-error {{multiple address spaces specified for type}}
@@ -33,8 +33,6 @@ struct _st {
  int x, y;
 } s __attribute ((address_space(1))) = {1, 1};
 
-
-// rdar://6774906
 __attribute__((address_space(256))) void * * const base = 0;
 void * get_0(void) {
   return base[0];  // expected-error {{returning '__attribute__((address_space(256))) void *' from a function with result type 'void *' changes address space of pointer}}

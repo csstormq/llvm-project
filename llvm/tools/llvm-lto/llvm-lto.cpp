@@ -52,7 +52,6 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
-#include <list>
 #include <map>
 #include <memory>
 #include <string>
@@ -71,7 +70,7 @@ static cl::opt<char>
     OptLevel("O",
              cl::desc("Optimization level. [-O0, -O1, -O2, or -O3] "
                       "(default = '-O2')"),
-             cl::Prefix, cl::ZeroOrMore, cl::init('2'), cl::cat(LTOCategory));
+             cl::Prefix, cl::init('2'), cl::cat(LTOCategory));
 
 static cl::opt<bool>
     IndexStats("thinlto-index-stats",
@@ -210,12 +209,12 @@ static cl::opt<std::string> OutputFilename("o", cl::init(""),
 static cl::list<std::string> ExportedSymbols(
     "exported-symbol",
     cl::desc("List of symbols to export from the resulting object file"),
-    cl::ZeroOrMore, cl::cat(LTOCategory));
+    cl::cat(LTOCategory));
 
 static cl::list<std::string>
     DSOSymbols("dso-symbol",
                cl::desc("Symbol to put in the symtab in the resulting dso"),
-               cl::ZeroOrMore, cl::cat(LTOCategory));
+               cl::cat(LTOCategory));
 
 static cl::opt<bool> ListSymbolsOnly(
     "list-symbols-only", cl::init(false),
@@ -257,14 +256,22 @@ static cl::opt<bool> PrintMachOCPUOnly(
     cl::cat(LTOCategory));
 
 static cl::opt<bool>
-    UseNewPM("use-new-pm",
-             cl::desc("Run LTO passes using the new pass manager"),
-             cl::init(true), cl::Hidden, cl::cat(LTOCategory));
-
-static cl::opt<bool>
     DebugPassManager("debug-pass-manager", cl::init(false), cl::Hidden,
                      cl::desc("Print pass management debugging information"),
                      cl::cat(LTOCategory));
+
+static cl::opt<bool>
+    LTOSaveBeforeOpt("lto-save-before-opt", cl::init(false),
+                     cl::desc("Save the IR before running optimizations"));
+
+static cl::opt<bool> TryUseNewDbgInfoFormat(
+    "try-experimental-debuginfo-iterators",
+    cl::desc("Enable debuginfo iterator positions, if they're built in"),
+    cl::init(false), cl::Hidden);
+
+extern cl::opt<bool> UseNewDbgInfoFormat;
+extern cl::opt<cl::boolOrDefault> LoadBitcodeIntoNewDbgInfoFormat;
+extern cl::opt<cl::boolOrDefault> PreserveInputDbgFormat;
 
 namespace {
 
@@ -318,11 +325,11 @@ namespace {
       if (!CurrentActivity.empty())
         OS << ' ' << CurrentActivity;
       OS << ": ";
-  
+
       DiagnosticPrinterRawOStream DP(OS);
       DI.print(DP);
       OS << '\n';
-  
+
       if (DI.getSeverity() == DS_Error)
         exit(1);
       return true;
@@ -482,12 +489,11 @@ static void printMachOCPUOnly() {
 /// currently available via the gold plugin via -thinlto.
 static void createCombinedModuleSummaryIndex() {
   ModuleSummaryIndex CombinedIndex(/*HaveGVs=*/false);
-  uint64_t NextModuleId = 0;
   for (auto &Filename : InputFilenames) {
     ExitOnError ExitOnErr("llvm-lto: error loading file '" + Filename + "': ");
     std::unique_ptr<MemoryBuffer> MB =
         ExitOnErr(errorOrToExpected(MemoryBuffer::getFileOrSTDIN(Filename)));
-    ExitOnErr(readModuleSummaryIndex(*MB, CombinedIndex, NextModuleId++));
+    ExitOnErr(readModuleSummaryIndex(*MB, CombinedIndex));
   }
   // In order to use this index for testing, specifically import testing, we
   // need to update any indirect call edges created from SamplePGO, so that they
@@ -517,11 +523,10 @@ static void getThinLTOOldAndNewPrefix(std::string &OldPrefix,
 /// Given the original \p Path to an output file, replace any path
 /// prefix matching \p OldPrefix with \p NewPrefix. Also, create the
 /// resulting directory if it does not yet exist.
-static std::string getThinLTOOutputFile(const std::string &Path,
-                                        const std::string &OldPrefix,
-                                        const std::string &NewPrefix) {
+static std::string getThinLTOOutputFile(StringRef Path, StringRef OldPrefix,
+                                        StringRef NewPrefix) {
   if (OldPrefix.empty() && NewPrefix.empty())
-    return Path;
+    return std::string(Path);
   SmallString<128> NewPath(Path);
   llvm::sys::path::replace_path_prefix(NewPath, OldPrefix, NewPrefix);
   StringRef ParentPath = llvm::sys::path::parent_path(NewPath.str());
@@ -530,7 +535,7 @@ static std::string getThinLTOOutputFile(const std::string &Path,
     if (std::error_code EC = llvm::sys::fs::create_directories(ParentPath))
       error(EC, "error creating the directory '" + ParentPath + "'");
   }
-  return std::string(NewPath.str());
+  return std::string(NewPath);
 }
 
 namespace thinlto {
@@ -605,7 +610,6 @@ public:
     ThinGenerator.setCacheMaxSizeFiles(ThinLTOCacheMaxSizeFiles);
     ThinGenerator.setCacheMaxSizeBytes(ThinLTOCacheMaxSizeBytes);
     ThinGenerator.setFreestanding(EnableFreestanding);
-    ThinGenerator.setUseNewPM(UseNewPM);
     ThinGenerator.setDebugPassManager(DebugPassManager);
 
     // Add all the exported symbols to the table of symbols to preserve.
@@ -688,8 +692,9 @@ private:
       // Build a map of module to the GUIDs and summary objects that should
       // be written to its index.
       std::map<std::string, GVSummaryMapTy> ModuleToSummariesForIndex;
+      GVSummaryPtrSet DecSummaries;
       ThinGenerator.gatherImportedSummariesForModule(
-          *TheModule, *Index, ModuleToSummariesForIndex, *Input);
+          *TheModule, *Index, ModuleToSummariesForIndex, DecSummaries, *Input);
 
       std::string OutputName = OutputFilename;
       if (OutputName.empty()) {
@@ -699,7 +704,7 @@ private:
       std::error_code EC;
       raw_fd_ostream OS(OutputName, EC, sys::fs::OpenFlags::OF_None);
       error(EC, "error opening the file '" + OutputName + "'");
-      writeIndexToFile(*Index, OS, &ModuleToSummariesForIndex);
+      writeIndexToFile(*Index, OS, &ModuleToSummariesForIndex, &DecSummaries);
     }
   }
 
@@ -941,6 +946,20 @@ int main(int argc, char **argv) {
   InitLLVM X(argc, argv);
   cl::HideUnrelatedOptions({&LTOCategory, &getColorCategory()});
   cl::ParseCommandLineOptions(argc, argv, "llvm LTO linker\n");
+  // Load bitcode into the new debug info format by default.
+  if (LoadBitcodeIntoNewDbgInfoFormat == cl::boolOrDefault::BOU_UNSET)
+    LoadBitcodeIntoNewDbgInfoFormat = cl::boolOrDefault::BOU_TRUE;
+
+  // RemoveDIs debug-info transition: tests may request that we /try/ to use the
+  // new debug-info format.
+  if (TryUseNewDbgInfoFormat) {
+    // Turn the new debug-info format on.
+    UseNewDbgInfoFormat = true;
+  }
+  // Since llvm-lto collects multiple IR modules together, for simplicity's sake
+  // we disable the "PreserveInputDbgFormat" flag to enforce a single debug info
+  // format.
+  PreserveInputDbgFormat = cl::boolOrDefault::BOU_FALSE;
 
   if (OptLevel < '0' || OptLevel > '3')
     error("optimization level must be between 0 and 3");
@@ -1016,6 +1035,7 @@ int main(int argc, char **argv) {
 
   CodeGen.setCodePICModel(codegen::getExplicitRelocModel());
   CodeGen.setFreestanding(EnableFreestanding);
+  CodeGen.setDebugPassManager(DebugPassManager);
 
   CodeGen.setDebugInfo(LTO_DEBUG_MODEL_DWARF);
   CodeGen.setTargetOptions(Options);
@@ -1070,12 +1090,13 @@ int main(int argc, char **argv) {
   CodeGen.setOptLevel(OptLevel - '0');
   CodeGen.setAttrs(codegen::getMAttrs());
 
-  CodeGen.setUseNewPM(UseNewPM);
-
   if (auto FT = codegen::getExplicitFileType())
-    CodeGen.setFileType(FT.getValue());
+    CodeGen.setFileType(*FT);
 
   if (!OutputFilename.empty()) {
+    if (LTOSaveBeforeOpt)
+      CodeGen.setSaveIRBeforeOptPath(OutputFilename + ".0.preopt.bc");
+
     if (SaveLinkedModuleFile) {
       std::string ModuleFilename = OutputFilename;
       ModuleFilename += ".linked.bc";
@@ -1099,7 +1120,9 @@ int main(int argc, char **argv) {
         error("writing merged module failed.");
     }
 
-    auto AddStream = [&](size_t Task) -> std::unique_ptr<CachedFileStream> {
+    auto AddStream =
+        [&](size_t Task,
+            const Twine &ModuleName) -> std::unique_ptr<CachedFileStream> {
       std::string PartFilename = OutputFilename;
       if (Parallelism != 1)
         PartFilename += "." + utostr(Task);

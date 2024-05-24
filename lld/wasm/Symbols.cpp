@@ -13,9 +13,10 @@
 #include "InputFiles.h"
 #include "OutputSections.h"
 #include "OutputSegment.h"
+#include "SymbolTable.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
-#include "lld/Common/Strings.h"
+#include "llvm/Demangle/Demangle.h"
 
 #define DEBUG_TYPE "lld"
 
@@ -34,8 +35,9 @@ std::string maybeDemangleSymbol(StringRef name) {
   // `main` in the case where we need to pass it arguments.
   if (name == "__main_argc_argv")
     return "main";
-
-  return demangle(name, config->demangle);
+  if (wasm::config->demangle)
+    return demangle(name);
+  return name.str();
 }
 
 std::string toString(wasm::Symbol::Kind kind) {
@@ -76,6 +78,7 @@ DefinedFunction *WasmSym::callDtors;
 DefinedFunction *WasmSym::initMemory;
 DefinedFunction *WasmSym::applyDataRelocs;
 DefinedFunction *WasmSym::applyGlobalRelocs;
+DefinedFunction *WasmSym::applyTLSRelocs;
 DefinedFunction *WasmSym::applyGlobalTLSRelocs;
 DefinedFunction *WasmSym::initTLS;
 DefinedFunction *WasmSym::startFunction;
@@ -83,15 +86,16 @@ DefinedData *WasmSym::dsoHandle;
 DefinedData *WasmSym::dataEnd;
 DefinedData *WasmSym::globalBase;
 DefinedData *WasmSym::heapBase;
+DefinedData *WasmSym::heapEnd;
 DefinedData *WasmSym::initMemoryFlag;
 GlobalSymbol *WasmSym::stackPointer;
+DefinedData *WasmSym::stackLow;
+DefinedData *WasmSym::stackHigh;
 GlobalSymbol *WasmSym::tlsBase;
 GlobalSymbol *WasmSym::tlsSize;
 GlobalSymbol *WasmSym::tlsAlign;
 UndefinedGlobal *WasmSym::tableBase;
 DefinedData *WasmSym::definedTableBase;
-UndefinedGlobal *WasmSym::tableBase32;
-DefinedData *WasmSym::definedTableBase32;
 UndefinedGlobal *WasmSym::memoryBase;
 DefinedData *WasmSym::definedMemoryBase;
 TableSymbol *WasmSym::indirectFunctionTable;
@@ -216,15 +220,19 @@ void Symbol::setHidden(bool isHidden) {
     flags |= WASM_SYMBOL_VISIBILITY_DEFAULT;
 }
 
+bool Symbol::isImported() const {
+  return isUndefined() && (importName.has_value() || forceImport);
+}
+
 bool Symbol::isExported() const {
+  if (!isDefined() || isLocal())
+    return false;
+
   // Shared libraries must export all weakly defined symbols
   // in case they contain the version that will be chosen by
   // the dynamic linker.
-  if (config->shared && isLive() && isDefined() && isWeak())
+  if (config->shared && isLive() && isWeak() && !isHidden())
     return true;
-
-  if (!isDefined() || isLocal())
-    return false;
 
   if (config->exportAll || (config->exportDynamic && !isHidden()))
     return true;
@@ -304,7 +312,7 @@ uint64_t DefinedData::getVA() const {
   // output segment (__tls_base).  When building without shared memory, TLS
   // symbols absolute, just like non-TLS.
   if (isTLS() && config->sharedMemory)
-    return getOutputSegmentOffset() + value;
+    return getOutputSegmentOffset();
   if (segment)
     return segment->getVA(value);
   return value;
@@ -416,20 +424,15 @@ const OutputSectionSymbol *SectionSymbol::getOutputSectionSymbol() const {
   return section->outputSec->sectionSym;
 }
 
-void LazySymbol::fetch() { cast<ArchiveFile>(file)->addMember(&archiveSymbol); }
+void LazySymbol::extract() {
+  if (file->lazy) {
+    file->lazy = false;
+    symtab->addFile(file, name);
+  }
+}
 
 void LazySymbol::setWeak() {
   flags |= (flags & ~WASM_SYMBOL_BINDING_MASK) | WASM_SYMBOL_BINDING_WEAK;
-}
-
-MemoryBufferRef LazySymbol::getMemberBuffer() {
-  Archive::Child c =
-      CHECK(archiveSymbol.getMember(),
-            "could not get the member for symbol " + toString(*this));
-
-  return CHECK(c.getMemoryBufferRef(),
-               "could not get the buffer for the member defining symbol " +
-                   toString(*this));
 }
 
 void printTraceSymbolUndefined(StringRef name, const InputFile* file) {
@@ -453,6 +456,7 @@ void printTraceSymbol(Symbol *sym) {
 
 const char *defaultModule = "env";
 const char *functionTableName = "__indirect_function_table";
+const char *memoryName = "memory";
 
 } // namespace wasm
 } // namespace lld

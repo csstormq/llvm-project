@@ -2,17 +2,21 @@
 
 # RUN: llvm-ifs --input-format=IFS --output-ifs=- --exclude='exclude*' %s | FileCheck %s
 
+# Check that exclude excludes from elf files too.
+# RUN: llvm-ifs %s --output-elf - --exclude='exclude*' | llvm-ifs - --output-ifs - | FileCheck %s
+
 # RUN: llvm-ifs --input-format=IFS --output-ifs=- --exclude='exclude*' \
 # RUN: --strip-undefined %s | FileCheck %s --check-prefix=BOTH
 
 # RUN: not llvm-ifs --input-format=IFS --output-ifs=- --exclude='[' %s 2>&1 | \
 # RUN: FileCheck %s --check-prefix=BAD-GLOB
 
-# BAD-GLOB: error: invalid glob pattern: [
+# BAD-GLOB: error: invalid glob pattern, unmatched '['
 
 --- !ifs-v1
 SoName: somelib.so
 IfsVersion: 3.0
+Target: x86_64-unknown-linux-gnu
 Symbols:
   - { Name: dont_exclude, Type: Func, Undefined: true }
   - { Name: exclude_1, Type: Func }

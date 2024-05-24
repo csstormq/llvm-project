@@ -27,7 +27,6 @@
 #include "bolt/Passes/Inliner.h"
 #include "bolt/Core/MCPlus.h"
 #include "llvm/Support/CommandLine.h"
-#include <map>
 
 #define DEBUG_TYPE "bolt-inliner"
 
@@ -38,10 +37,9 @@ namespace opts {
 extern cl::OptionCategory BoltOptCategory;
 
 static cl::opt<bool>
-AdjustProfile("inline-ap",
-  cl::desc("adjust function profile after inlining"),
-  cl::ZeroOrMore,
-  cl::cat(BoltOptCategory));
+    AdjustProfile("inline-ap",
+                  cl::desc("adjust function profile after inlining"),
+                  cl::cat(BoltOptCategory));
 
 static cl::list<std::string>
 ForceInlineFunctions("force-inline",
@@ -51,68 +49,46 @@ ForceInlineFunctions("force-inline",
   cl::Hidden,
   cl::cat(BoltOptCategory));
 
-static cl::opt<bool>
-InlineAll("inline-all",
-  cl::desc("inline all functions"),
-  cl::init(false),
-  cl::ZeroOrMore,
-  cl::cat(BoltOptCategory));
+static cl::opt<bool> InlineAll("inline-all", cl::desc("inline all functions"),
+                               cl::cat(BoltOptCategory));
 
-static cl::opt<bool>
-InlineIgnoreLeafCFI("inline-ignore-leaf-cfi",
-  cl::desc("inline leaf functions with CFI programs (can break unwinding)"),
-  cl::init(true),
-  cl::ZeroOrMore,
-  cl::ReallyHidden,
-  cl::cat(BoltOptCategory));
+static cl::opt<bool> InlineIgnoreLeafCFI(
+    "inline-ignore-leaf-cfi",
+    cl::desc("inline leaf functions with CFI programs (can break unwinding)"),
+    cl::init(true), cl::ReallyHidden, cl::cat(BoltOptCategory));
 
-static cl::opt<bool>
-InlineIgnoreCFI("inline-ignore-cfi",
-  cl::desc("inline functions with CFI programs (can break exception handling)"),
-  cl::init(false),
-  cl::ZeroOrMore,
-  cl::ReallyHidden,
-  cl::cat(BoltOptCategory));
+static cl::opt<bool> InlineIgnoreCFI(
+    "inline-ignore-cfi",
+    cl::desc(
+        "inline functions with CFI programs (can break exception handling)"),
+    cl::ReallyHidden, cl::cat(BoltOptCategory));
 
 static cl::opt<unsigned>
-InlineLimit("inline-limit",
-  cl::desc("maximum number of call sites to inline"),
-  cl::init(0),
-  cl::ZeroOrMore,
-  cl::Hidden,
-  cl::cat(BoltOptCategory));
+    InlineLimit("inline-limit",
+                cl::desc("maximum number of call sites to inline"), cl::init(0),
+                cl::Hidden, cl::cat(BoltOptCategory));
 
 static cl::opt<unsigned>
-InlineMaxIters("inline-max-iters",
-  cl::desc("maximum number of inline iterations"),
-  cl::init(3),
-  cl::ZeroOrMore,
-  cl::Hidden,
-  cl::cat(BoltOptCategory));
+    InlineMaxIters("inline-max-iters",
+                   cl::desc("maximum number of inline iterations"), cl::init(3),
+                   cl::Hidden, cl::cat(BoltOptCategory));
 
-static cl::opt<bool>
-InlineSmallFunctions("inline-small-functions",
-  cl::desc("inline functions if increase in size is less than defined by "
-           "-inline-small-functions-bytes"),
-  cl::init(false),
-  cl::ZeroOrMore,
-  cl::cat(BoltOptCategory));
+static cl::opt<bool> InlineSmallFunctions(
+    "inline-small-functions",
+    cl::desc("inline functions if increase in size is less than defined by "
+             "-inline-small-functions-bytes"),
+    cl::cat(BoltOptCategory));
 
-static cl::opt<unsigned>
-InlineSmallFunctionsBytes("inline-small-functions-bytes",
-  cl::desc("max number of bytes for the function to be considered small for "
-           "inlining purposes"),
-  cl::init(4),
-  cl::ZeroOrMore,
-  cl::Hidden,
-  cl::cat(BoltOptCategory));
+static cl::opt<unsigned> InlineSmallFunctionsBytes(
+    "inline-small-functions-bytes",
+    cl::desc("max number of bytes for the function to be considered small for "
+             "inlining purposes"),
+    cl::init(4), cl::Hidden, cl::cat(BoltOptCategory));
 
-static cl::opt<bool>
-NoInline("no-inline",
-  cl::desc("disable all inlining (overrides other inlining options)"),
-  cl::init(false),
-  cl::ZeroOrMore,
-  cl::cat(BoltOptCategory));
+static cl::opt<bool> NoInline(
+    "no-inline",
+    cl::desc("disable all inlining (overrides other inlining options)"),
+    cl::cat(BoltOptCategory));
 
 /// This function returns true if any of inlining options are specified and the
 /// inlining pass should be executed. Whenever a new inlining option is added,
@@ -167,10 +143,7 @@ uint64_t Inliner::getSizeOfTailCallInst(const BinaryContext &BC) {
   return SizeOfTailCallInst;
 }
 
-Inliner::InliningInfo Inliner::getInliningInfo(const BinaryFunction &BF) const {
-  if (!shouldOptimize(BF))
-    return INL_NONE;
-
+InliningInfo getInliningInfo(const BinaryFunction &BF) {
   const BinaryContext &BC = BF.getBinaryContext();
   bool DirectSP = false;
   bool HasCFI = false;
@@ -191,8 +164,8 @@ Inliner::InliningInfo Inliner::getInliningInfo(const BinaryFunction &BF) const {
       return INL_NONE;
 
     const MCPhysReg SPReg = BC.MIB->getStackPointer();
-    for (const BinaryBasicBlock *BB : BF.layout()) {
-      for (const MCInst &Inst : *BB) {
+    for (const BinaryBasicBlock &BB : BF) {
+      for (const MCInst &Inst : BB) {
         // Tail calls are marked as implicitly using the stack pointer and they
         // could be inlined.
         if (BC.MIB->isTailCall(Inst))
@@ -250,6 +223,8 @@ Inliner::InliningInfo Inliner::getInliningInfo(const BinaryFunction &BF) const {
 void Inliner::findInliningCandidates(BinaryContext &BC) {
   for (const auto &BFI : BC.getBinaryFunctions()) {
     const BinaryFunction &Function = BFI.second;
+    if (!shouldOptimize(Function))
+      continue;
     const InliningInfo InlInfo = getInliningInfo(Function);
     if (InlInfo.Type != INL_NONE)
       InliningCandidates[&Function] = InlInfo;
@@ -274,7 +249,8 @@ Inliner::inlineCall(BinaryBasicBlock &CallerBB,
   const bool CSIsInvoke = BC.MIB->isInvoke(*CallInst);
   const bool CSIsTailCall = BC.MIB->isTailCall(*CallInst);
   const int64_t CSGNUArgsSize = BC.MIB->getGnuArgsSize(*CallInst);
-  const Optional<MCPlus::MCLandingPad> CSEHInfo = BC.MIB->getEHInfo(*CallInst);
+  const std::optional<MCPlus::MCLandingPad> CSEHInfo =
+      BC.MIB->getEHInfo(*CallInst);
 
   // Split basic block at the call site if there will be more incoming edges
   // coming from the callee.
@@ -312,12 +288,12 @@ Inliner::inlineCall(BinaryBasicBlock &CallerBB,
   // Copy basic blocks and maintain a map from their origin.
   std::unordered_map<const BinaryBasicBlock *, BinaryBasicBlock *> InlinedBBMap;
   InlinedBBMap[&Callee.front()] = FirstInlinedBB;
-  for (auto BBI = std::next(Callee.begin()); BBI != Callee.end(); ++BBI) {
-    BinaryBasicBlock *InlinedBB = CallerFunction.addBasicBlock(0);
-    InlinedBBMap[&*BBI] = InlinedBB;
+  for (const BinaryBasicBlock &BB : llvm::drop_begin(Callee)) {
+    BinaryBasicBlock *InlinedBB = CallerFunction.addBasicBlock();
+    InlinedBBMap[&BB] = InlinedBB;
     InlinedBB->setCFIState(FirstInlinedBB->getCFIState());
     if (Callee.hasValidProfile())
-      InlinedBB->setExecutionCount(BBI->getKnownExecutionCount());
+      InlinedBB->setExecutionCount(BB.getKnownExecutionCount());
     else
       InlinedBB->setExecutionCount(FirstInlinedBBCount);
   }
@@ -377,10 +353,12 @@ Inliner::inlineCall(BinaryBasicBlock &CallerBB,
 
     // Add CFG edges to the basic blocks of the inlined instance.
     std::vector<BinaryBasicBlock *> Successors(BB.succ_size());
-    std::transform(BB.succ_begin(), BB.succ_end(), Successors.begin(),
-                   [&InlinedBBMap](const BinaryBasicBlock *BB) {
-                     return InlinedBBMap.at(BB);
-                   });
+    llvm::transform(BB.successors(), Successors.begin(),
+                    [&InlinedBBMap](const BinaryBasicBlock *BB) {
+                      auto It = InlinedBBMap.find(BB);
+                      assert(It != InlinedBBMap.end());
+                      return It->second;
+                    });
 
     if (CallerFunction.hasValidProfile() && Callee.hasValidProfile())
       InlinedBB->addSuccessors(Successors.begin(), Successors.end(),
@@ -419,13 +397,12 @@ Inliner::inlineCall(BinaryBasicBlock &CallerBB,
 
 bool Inliner::inlineCallsInFunction(BinaryFunction &Function) {
   BinaryContext &BC = Function.getBinaryContext();
-  std::vector<BinaryBasicBlock *> Blocks(Function.layout().begin(),
-                                         Function.layout().end());
-  std::sort(Blocks.begin(), Blocks.end(),
-            [](const BinaryBasicBlock *BB1, const BinaryBasicBlock *BB2) {
-              return BB1->getKnownExecutionCount() >
-                     BB2->getKnownExecutionCount();
-            });
+  std::vector<BinaryBasicBlock *> Blocks(Function.getLayout().block_begin(),
+                                         Function.getLayout().block_end());
+  llvm::sort(
+      Blocks, [](const BinaryBasicBlock *BB1, const BinaryBasicBlock *BB2) {
+        return BB1->getKnownExecutionCount() > BB2->getKnownExecutionCount();
+      });
 
   bool DidInlining = false;
   for (BinaryBasicBlock *BB : Blocks) {
@@ -520,11 +497,11 @@ bool Inliner::inlineCallsInFunction(BinaryFunction &Function) {
   return DidInlining;
 }
 
-void Inliner::runOnFunctions(BinaryContext &BC) {
+Error Inliner::runOnFunctions(BinaryContext &BC) {
   opts::syncOptions();
 
   if (!opts::inliningEnabled())
-    return;
+    return Error::success();
 
   bool InlinedOnce;
   unsigned NumIters = 0;
@@ -544,11 +521,10 @@ void Inliner::runOnFunctions(BinaryContext &BC) {
         continue;
       ConsideredFunctions.push_back(&Function);
     }
-    std::sort(ConsideredFunctions.begin(), ConsideredFunctions.end(),
-              [](const BinaryFunction *A, const BinaryFunction *B) {
-                return B->getKnownExecutionCount() <
-                       A->getKnownExecutionCount();
-              });
+    llvm::sort(ConsideredFunctions, [](const BinaryFunction *A,
+                                       const BinaryFunction *B) {
+      return B->getKnownExecutionCount() < A->getKnownExecutionCount();
+    });
     for (BinaryFunction *Function : ConsideredFunctions) {
       if (opts::InlineLimit && NumInlinedCallSites >= opts::InlineLimit)
         break;
@@ -565,10 +541,11 @@ void Inliner::runOnFunctions(BinaryContext &BC) {
   } while (InlinedOnce && NumIters < opts::InlineMaxIters);
 
   if (NumInlinedCallSites)
-    outs() << "BOLT-INFO: inlined " << NumInlinedDynamicCalls << " calls at "
-           << NumInlinedCallSites << " call sites in " << NumIters
-           << " iteration(s). Change in binary size: " << TotalInlinedBytes
-           << " bytes.\n";
+    BC.outs() << "BOLT-INFO: inlined " << NumInlinedDynamicCalls << " calls at "
+              << NumInlinedCallSites << " call sites in " << NumIters
+              << " iteration(s). Change in binary size: " << TotalInlinedBytes
+              << " bytes.\n";
+  return Error::success();
 }
 
 } // namespace bolt

@@ -1,7 +1,4 @@
-// FIXME -Wno-aix-compat added temporarily while the diagnostic is being
-// refined.
-
-// RUN: %clang_cc1 -fsyntax-only -verify -Wno-aix-compat %s
+// RUN: %clang_cc1 -fsyntax-only -verify %s
 // expected-no-diagnostics
 template <typename T>
 struct A {
@@ -15,7 +12,6 @@ struct A {
 int a[sizeof(A<int>) == 16 ? 1 : -1];
 int a2[sizeof(A<int>::B) == 16 ? 1 : -1];
 
-// rdar://problem/8243419
 namespace test1 {
   template <typename T> struct A {
     int a;

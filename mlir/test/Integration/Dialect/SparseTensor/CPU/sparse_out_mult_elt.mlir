@@ -1,11 +1,37 @@
-// RUN: mlir-opt %s --sparse-compiler | \
-// RUN: mlir-cpu-runner \
-// RUN:  -e entry -entry-point-result=void  \
-// RUN:  -shared-libs=%mlir_integration_test_dir/libmlir_c_runner_utils%shlibext | \
-// RUN: FileCheck %s
+//--------------------------------------------------------------------------------------------------
+// WHEN CREATING A NEW TEST, PLEASE JUST COPY & PASTE WITHOUT EDITS.
+//
+// Set-up that's shared across all tests in this directory. In principle, this
+// config could be moved to lit.local.cfg. However, there are downstream users that
+//  do not use these LIT config files. Hence why this is kept inline.
+//
+// DEFINE: %{sparsifier_opts} = enable-runtime-library=true
+// DEFINE: %{sparsifier_opts_sve} = enable-arm-sve=true %{sparsifier_opts}
+// DEFINE: %{compile} = mlir-opt %s --sparsifier="%{sparsifier_opts}"
+// DEFINE: %{compile_sve} = mlir-opt %s --sparsifier="%{sparsifier_opts_sve}"
+// DEFINE: %{run_libs} = -shared-libs=%mlir_c_runner_utils,%mlir_runner_utils
+// DEFINE: %{run_opts} = -e main -entry-point-result=void
+// DEFINE: %{run} = mlir-cpu-runner %{run_opts} %{run_libs}
+// DEFINE: %{run_sve} = %mcr_aarch64_cmd --march=aarch64 --mattr="+sve" %{run_opts} %{run_libs}
+//
+// DEFINE: %{env} =
+//--------------------------------------------------------------------------------------------------
+
+// RUN: %{compile} | %{run} | FileCheck %s
+//
+// Do the same run, but now with direct IR generation.
+// REDEFINE: %{sparsifier_opts} = enable-runtime-library=false enable-buffer-initialization=true
+// RUN: %{compile} | %{run} | FileCheck %s
+//
+// Do the same run, but now with direct IR generation and vectorization.
+// REDEFINE: %{sparsifier_opts} = enable-runtime-library=false enable-buffer-initialization=true vl=2 reassociate-fp-reductions=true enable-index-optimizations=true
+// RUN: %{compile} | %{run} | FileCheck %s
+//
+// Do the same run, but now with direct IR generation and VLA vectorization.
+// RUN: %if mlir_arm_sve_tests %{ %{compile_sve} | %{run_sve} | FileCheck %s %}
 
 #DCSR = #sparse_tensor.encoding<{
-  dimLevelType = [ "compressed", "compressed" ]
+  map = (d0, d1) -> (d0 : compressed, d1 : compressed)
 }>
 
 #trait_mult_elt = {
@@ -20,11 +46,9 @@
 
 module {
   // Sparse kernel.
-  func @sparse_mult_elt(
+  func.func @sparse_mult_elt(
       %arga: tensor<32x16xf32, #DCSR>, %argb: tensor<32x16xf32, #DCSR>) -> tensor<32x16xf32, #DCSR> {
-    %c16 = arith.constant 16 : index
-    %c32 = arith.constant 32 : index
-    %argx = sparse_tensor.init [%c32, %c16] : tensor<32x16xf32, #DCSR>
+    %argx = tensor.empty() : tensor<32x16xf32, #DCSR>
     %0 = linalg.generic #trait_mult_elt
       ins(%arga, %argb: tensor<32x16xf32, #DCSR>, tensor<32x16xf32, #DCSR>)
       outs(%argx: tensor<32x16xf32, #DCSR>) {
@@ -36,9 +60,9 @@ module {
   }
 
   // Driver method to call and verify kernel.
-  func @entry() {
+  func.func @main() {
     %c0 = arith.constant 0 : index
-    %f1 = arith.constant -1.0 : f32
+    %f0 = arith.constant 0.0 : f32
 
     // Setup very sparse matrices.
     %ta = arith.constant sparse<
@@ -60,16 +84,23 @@ module {
     //
     // Verify results. Only two entries stored in result!
     //
-    // CHECK: ( 14, 20, -1, -1 )
+    // CHECK:      ---- Sparse Tensor ----
+    // CHECK-NEXT: nse = 2
+    // CHECK-NEXT: dim = ( 32, 16 )
+    // CHECK-NEXT: lvl = ( 32, 16 )
+    // CHECK-NEXT: pos[0] : ( 0, 2 )
+    // CHECK-NEXT: crd[0] : ( 2, 31 )
+    // CHECK-NEXT: pos[1] : ( 0, 1, 2 )
+    // CHECK-NEXT: crd[1] : ( 2, 0 )
+    // CHECK-NEXT: values : ( 14, 20 )
+    // CHECK-NEXT: ----
     //
-    %val = sparse_tensor.values %0 : tensor<32x16xf32, #DCSR> to memref<?xf32>
-    %vv = vector.transfer_read %val[%c0], %f1: memref<?xf32>, vector<4xf32>
-    vector.print %vv : vector<4xf32>
+    sparse_tensor.print %0 : tensor<32x16xf32, #DCSR>
 
     // Release the resources.
-    sparse_tensor.release %sta : tensor<32x16xf32, #DCSR>
-    sparse_tensor.release %stb : tensor<32x16xf32, #DCSR>
-    sparse_tensor.release %0   : tensor<32x16xf32, #DCSR>
+    bufferization.dealloc_tensor %sta : tensor<32x16xf32, #DCSR>
+    bufferization.dealloc_tensor %stb : tensor<32x16xf32, #DCSR>
+    bufferization.dealloc_tensor %0   : tensor<32x16xf32, #DCSR>
     return
   }
 }

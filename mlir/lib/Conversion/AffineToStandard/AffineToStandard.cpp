@@ -13,29 +13,29 @@
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 
-#include "../PassDetail.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Affine/Transforms/Transforms.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/MLIRContext.h"
-#include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
 
+namespace mlir {
+#define GEN_PASS_DEF_CONVERTAFFINETOSTANDARD
+#include "mlir/Conversion/Passes.h.inc"
+} // namespace mlir
+
 using namespace mlir;
+using namespace mlir::affine;
 using namespace mlir::vector;
 
 /// Given a range of values, emit the code that reduces them with "min" or "max"
-/// depending on the provided comparison predicate.  The predicate defines which
-/// comparison to perform, "lt" for "min", "gt" for "max" and is used for the
-/// `cmpi` operation followed by the `select` operation:
-///
-///   %cond   = arith.cmpi "predicate" %v0, %v1
-///   %result = select %cond, %v0, %v1
+/// depending on the provided comparison predicate, sgt for max and slt for min.
 ///
 /// Multiple values are scanned in a linear sequence.  This creates a data
 /// dependences that wouldn't exist in a tree reduction, but is easier to
@@ -43,14 +43,17 @@ using namespace mlir::vector;
 static Value buildMinMaxReductionSeq(Location loc,
                                      arith::CmpIPredicate predicate,
                                      ValueRange values, OpBuilder &builder) {
-  assert(!llvm::empty(values) && "empty min/max chain");
+  assert(!values.empty() && "empty min/max chain");
+  assert(predicate == arith::CmpIPredicate::sgt ||
+         predicate == arith::CmpIPredicate::slt);
 
   auto valueIt = values.begin();
   Value value = *valueIt++;
   for (; valueIt != values.end(); ++valueIt) {
-    auto cmpOp = builder.create<arith::CmpIOp>(loc, predicate, value, *valueIt);
-    value = builder.create<arith::SelectOp>(loc, cmpOp.getResult(), value,
-                                            *valueIt);
+    if (predicate == arith::CmpIPredicate::sgt)
+      value = builder.create<arith::MaxSIOp>(loc, value, *valueIt);
+    else
+      value = builder.create<arith::MinSIOp>(loc, value, *valueIt);
   }
 
   return value;
@@ -100,7 +103,7 @@ public:
   LogicalResult matchAndRewrite(AffineMinOp op,
                                 PatternRewriter &rewriter) const override {
     Value reduced =
-        lowerAffineMapMin(rewriter, op.getLoc(), op.map(), op.operands());
+        lowerAffineMapMin(rewriter, op.getLoc(), op.getMap(), op.getOperands());
     if (!reduced)
       return failure();
 
@@ -116,7 +119,7 @@ public:
   LogicalResult matchAndRewrite(AffineMaxOp op,
                                 PatternRewriter &rewriter) const override {
     Value reduced =
-        lowerAffineMapMax(rewriter, op.getLoc(), op.map(), op.operands());
+        lowerAffineMapMax(rewriter, op.getLoc(), op.getMap(), op.getOperands());
     if (!reduced)
       return failure();
 
@@ -133,12 +136,11 @@ public:
   LogicalResult matchAndRewrite(AffineYieldOp op,
                                 PatternRewriter &rewriter) const override {
     if (isa<scf::ParallelOp>(op->getParentOp())) {
-      // scf.parallel does not yield any values via its terminator scf.yield but
-      // models reductions differently using additional ops in its region.
-      rewriter.replaceOpWithNewOp<scf::YieldOp>(op);
-      return success();
+      // Terminator is rewritten as part of the "affine.parallel" lowering
+      // pattern.
+      return failure();
     }
-    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, op.operands());
+    rewriter.replaceOpWithNewOp<scf::YieldOp>(op, op.getOperands());
     return success();
   }
 };
@@ -152,11 +154,12 @@ public:
     Location loc = op.getLoc();
     Value lowerBound = lowerAffineLowerBound(op, rewriter);
     Value upperBound = lowerAffineUpperBound(op, rewriter);
-    Value step = rewriter.create<arith::ConstantIndexOp>(loc, op.getStep());
+    Value step =
+        rewriter.create<arith::ConstantIndexOp>(loc, op.getStepAsInt());
     auto scfForOp = rewriter.create<scf::ForOp>(loc, lowerBound, upperBound,
-                                                step, op.getIterOperands());
+                                                step, op.getInits());
     rewriter.eraseBlock(scfForOp.getBody());
-    rewriter.inlineRegionBefore(op.region(), scfForOp.getRegion(),
+    rewriter.inlineRegionBefore(op.getRegion(), scfForOp.getRegion(),
                                 scfForOp.getRegion().end());
     rewriter.replaceOp(op, scfForOp.getResults());
     return success();
@@ -193,40 +196,41 @@ public:
         return rewriter.notifyMatchFailure(op, "couldn't convert upper bounds");
       upperBoundTuple.push_back(upper);
     }
-    steps.reserve(op.steps().size());
-    for (Attribute step : op.steps())
-      steps.push_back(rewriter.create<arith::ConstantIndexOp>(
-          loc, step.cast<IntegerAttr>().getInt()));
+    steps.reserve(op.getSteps().size());
+    for (int64_t step : op.getSteps())
+      steps.push_back(rewriter.create<arith::ConstantIndexOp>(loc, step));
 
     // Get the terminator op.
-    Operation *affineParOpTerminator = op.getBody()->getTerminator();
+    auto affineParOpTerminator =
+        cast<AffineYieldOp>(op.getBody()->getTerminator());
     scf::ParallelOp parOp;
-    if (op.results().empty()) {
+    if (op.getResults().empty()) {
       // Case with no reduction operations/return values.
       parOp = rewriter.create<scf::ParallelOp>(loc, lowerBoundTuple,
                                                upperBoundTuple, steps,
                                                /*bodyBuilderFn=*/nullptr);
       rewriter.eraseBlock(parOp.getBody());
-      rewriter.inlineRegionBefore(op.region(), parOp.getRegion(),
+      rewriter.inlineRegionBefore(op.getRegion(), parOp.getRegion(),
                                   parOp.getRegion().end());
       rewriter.replaceOp(op, parOp.getResults());
+      rewriter.setInsertionPoint(affineParOpTerminator);
+      rewriter.replaceOpWithNewOp<scf::ReduceOp>(affineParOpTerminator);
       return success();
     }
     // Case with affine.parallel with reduction operations/return values.
     // scf.parallel handles the reduction operation differently unlike
     // affine.parallel.
-    ArrayRef<Attribute> reductions = op.reductions().getValue();
+    ArrayRef<Attribute> reductions = op.getReductions().getValue();
     for (auto pair : llvm::zip(reductions, op.getResultTypes())) {
       // For each of the reduction operations get the identity values for
       // initialization of the result values.
       Attribute reduction = std::get<0>(pair);
       Type resultType = std::get<1>(pair);
-      Optional<arith::AtomicRMWKind> reductionOp =
+      std::optional<arith::AtomicRMWKind> reductionOp =
           arith::symbolizeAtomicRMWKind(
-              static_cast<uint64_t>(reduction.cast<IntegerAttr>().getInt()));
-      assert(reductionOp.hasValue() &&
-             "Reduction operation cannot be of None Type");
-      arith::AtomicRMWKind reductionOpValue = reductionOp.getValue();
+              static_cast<uint64_t>(cast<IntegerAttr>(reduction).getInt()));
+      assert(reductionOp && "Reduction operation cannot be of None Type");
+      arith::AtomicRMWKind reductionOpValue = *reductionOp;
       identityVals.push_back(
           arith::getIdentityValue(reductionOpValue, resultType, rewriter, loc));
     }
@@ -236,26 +240,28 @@ public:
 
     //  Copy the body of the affine.parallel op.
     rewriter.eraseBlock(parOp.getBody());
-    rewriter.inlineRegionBefore(op.region(), parOp.getRegion(),
+    rewriter.inlineRegionBefore(op.getRegion(), parOp.getRegion(),
                                 parOp.getRegion().end());
     assert(reductions.size() == affineParOpTerminator->getNumOperands() &&
            "Unequal number of reductions and operands.");
+
+    // Emit new "scf.reduce" terminator.
+    rewriter.setInsertionPoint(affineParOpTerminator);
+    auto reduceOp = rewriter.replaceOpWithNewOp<scf::ReduceOp>(
+        affineParOpTerminator, affineParOpTerminator->getOperands());
     for (unsigned i = 0, end = reductions.size(); i < end; i++) {
       // For each of the reduction operations get the respective mlir::Value.
-      Optional<arith::AtomicRMWKind> reductionOp =
+      std::optional<arith::AtomicRMWKind> reductionOp =
           arith::symbolizeAtomicRMWKind(
-              reductions[i].cast<IntegerAttr>().getInt());
-      assert(reductionOp.hasValue() &&
-             "Reduction Operation cannot be of None Type");
-      arith::AtomicRMWKind reductionOpValue = reductionOp.getValue();
+              cast<IntegerAttr>(reductions[i]).getInt());
+      assert(reductionOp && "Reduction Operation cannot be of None Type");
+      arith::AtomicRMWKind reductionOpValue = *reductionOp;
       rewriter.setInsertionPoint(&parOp.getBody()->back());
-      auto reduceOp = rewriter.create<scf::ReduceOp>(
-          loc, affineParOpTerminator->getOperand(i));
-      rewriter.setInsertionPointToEnd(&reduceOp.getReductionOperator().front());
+      Block &reductionBody = reduceOp.getReductions()[i].front();
+      rewriter.setInsertionPointToEnd(&reductionBody);
       Value reductionResult = arith::getReductionOp(
-          reductionOpValue, rewriter, loc,
-          reduceOp.getReductionOperator().front().getArgument(0),
-          reduceOp.getReductionOperator().front().getArgument(1));
+          reductionOpValue, rewriter, loc, reductionBody.getArgument(0),
+          reductionBody.getArgument(1));
       rewriter.create<scf::ReduceReturnOp>(loc, reductionResult);
     }
     rewriter.replaceOp(op, parOp.getResults());
@@ -275,7 +281,7 @@ public:
     auto integerSet = op.getIntegerSet();
     Value zeroConstant = rewriter.create<arith::ConstantIndexOp>(loc, 0);
     SmallVector<Value, 8> operands(op.getOperands());
-    auto operandsRef = llvm::makeArrayRef(operands);
+    auto operandsRef = llvm::ArrayRef(operands);
 
     // Calculate cond as a conjunction without short-circuiting.
     Value cond = nullptr;
@@ -302,13 +308,14 @@ public:
                 : rewriter.create<arith::ConstantIntOp>(loc, /*value=*/1,
                                                         /*width=*/1);
 
-    bool hasElseRegion = !op.elseRegion().empty();
+    bool hasElseRegion = !op.getElseRegion().empty();
     auto ifOp = rewriter.create<scf::IfOp>(loc, op.getResultTypes(), cond,
                                            hasElseRegion);
-    rewriter.inlineRegionBefore(op.thenRegion(), &ifOp.getThenRegion().back());
+    rewriter.inlineRegionBefore(op.getThenRegion(),
+                                &ifOp.getThenRegion().back());
     rewriter.eraseBlock(&ifOp.getThenRegion().back());
     if (hasElseRegion) {
-      rewriter.inlineRegionBefore(op.elseRegion(),
+      rewriter.inlineRegionBefore(op.getElseRegion(),
                                   &ifOp.getElseRegion().back());
       rewriter.eraseBlock(&ifOp.getElseRegion().back());
     }
@@ -378,8 +385,8 @@ public:
 
     // Build memref.prefetch memref[expandedMap.results].
     rewriter.replaceOpWithNewOp<memref::PrefetchOp>(
-        op, op.memref(), *resultOperands, op.isWrite(), op.localityHint(),
-        op.isDataCache());
+        op, op.getMemref(), *resultOperands, op.getIsWrite(),
+        op.getLocalityHint(), op.getIsDataCache());
     return success();
   }
 };
@@ -418,7 +425,7 @@ public:
   LogicalResult matchAndRewrite(AffineDmaStartOp op,
                                 PatternRewriter &rewriter) const override {
     SmallVector<Value, 8> operands(op.getOperands());
-    auto operandsRef = llvm::makeArrayRef(operands);
+    auto operandsRef = llvm::ArrayRef(operands);
 
     // Expand affine map for DMA source memref.
     auto maybeExpandedSrcMap = expandAffineMap(
@@ -546,13 +553,15 @@ void mlir::populateAffineToVectorConversionPatterns(
 }
 
 namespace {
-class LowerAffinePass : public ConvertAffineToStandardBase<LowerAffinePass> {
+class LowerAffinePass
+    : public impl::ConvertAffineToStandardBase<LowerAffinePass> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     populateAffineToStdConversionPatterns(patterns);
     populateAffineToVectorConversionPatterns(patterns);
+    populateAffineExpandIndexOpsPatterns(patterns);
     ConversionTarget target(getContext());
-    target.addLegalDialect<arith::ArithmeticDialect, memref::MemRefDialect,
+    target.addLegalDialect<arith::ArithDialect, memref::MemRefDialect,
                            scf::SCFDialect, VectorDialect>();
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns))))

@@ -22,6 +22,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace lldb_private {
 class DataExtractor;
@@ -32,9 +33,9 @@ class Status;
 /// set lldb type.
 class ValueObjectDynamicValue : public ValueObject {
 public:
-  ~ValueObjectDynamicValue() = default;
+  ~ValueObjectDynamicValue() override = default;
 
-  llvm::Optional<uint64_t> GetByteSize() override;
+  std::optional<uint64_t> GetByteSize() override;
 
   ConstString GetTypeName() override;
 
@@ -42,7 +43,7 @@ public:
 
   ConstString GetDisplayTypeName() override;
 
-  size_t CalculateNumChildren(uint32_t max) override;
+  llvm::Expected<uint32_t> CalculateNumChildren(uint32_t max) override;
 
   lldb::ValueType GetValueType() const override;
 

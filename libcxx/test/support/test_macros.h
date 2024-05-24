@@ -10,21 +10,18 @@
 #ifndef SUPPORT_TEST_MACROS_HPP
 #define SUPPORT_TEST_MACROS_HPP
 
-// Attempt to get STL specific macros like _LIBCPP_VERSION using the most
-// minimal header possible. If we're testing libc++, we should use `<__config>`.
-// If <__config> isn't available, fall back to <ciso646>.
 #ifdef __has_include
-# if __has_include("<__config>")
-#   include <__config>
-#   define TEST_IMP_INCLUDED_HEADER
-# endif
-#endif
-#ifndef TEST_IMP_INCLUDED_HEADER
-#include <ciso646>
+#  if __has_include("<version>")
+#    include <version>
+#  else
+#    include <ciso646>
+#  endif
+#else
+#  include <ciso646>
 #endif
 
-#define TEST_STRINGIZE_IMPL(x) #x
-#define TEST_STRINGIZE(x) TEST_STRINGIZE_IMPL(x)
+#define TEST_STRINGIZE_IMPL(...) #__VA_ARGS__
+#define TEST_STRINGIZE(...) TEST_STRINGIZE_IMPL(__VA_ARGS__)
 
 #define TEST_CONCAT1(X, Y) X##Y
 #define TEST_CONCAT(X, Y) TEST_CONCAT1(X, Y)
@@ -78,7 +75,8 @@
 #endif
 
 #if defined(__apple_build_version__)
-#define TEST_APPLE_CLANG_VER (__clang_major__ * 100) + __clang_minor__
+// Given AppleClang XX.Y.Z, TEST_APPLE_CLANG_VER is XXYZ (e.g. AppleClang 14.0.3 => 1403)
+#define TEST_APPLE_CLANG_VER (__apple_build_version__ / 10000)
 #elif defined(__clang_major__)
 #define TEST_CLANG_VER (__clang_major__ * 100) + __clang_minor__
 #elif defined(__GNUC__)
@@ -98,6 +96,8 @@
 # define TEST_STD_VER 17
 #elif __cplusplus <= 202002L
 # define TEST_STD_VER 20
+#elif __cplusplus <= 202302L
+# define TEST_STD_VER 23
 #else
 # define TEST_STD_VER 99    // greater than current standard
 // This is deliberately different than _LIBCPP_STD_VER to discourage matching them up.
@@ -148,6 +148,18 @@
 # define TEST_IS_CONSTANT_EVALUATED false
 #endif
 
+#if TEST_STD_VER >= 23
+#  define TEST_STD_AT_LEAST_23_OR_RUNTIME_EVALUATED true
+#else
+#  define TEST_STD_AT_LEAST_23_OR_RUNTIME_EVALUATED (!TEST_IS_CONSTANT_EVALUATED)
+#endif
+
+#if TEST_STD_VER >= 20
+#  define TEST_STD_AT_LEAST_20_OR_RUNTIME_EVALUATED true
+#else
+#  define TEST_STD_AT_LEAST_20_OR_RUNTIME_EVALUATED (!TEST_IS_CONSTANT_EVALUATED)
+#endif
+
 #if TEST_STD_VER >= 14
 # define TEST_CONSTEXPR_CXX14 constexpr
 #else
@@ -164,6 +176,12 @@
 # define TEST_CONSTEXPR_CXX20 constexpr
 #else
 # define TEST_CONSTEXPR_CXX20
+#endif
+
+#if TEST_STD_VER >= 23
+#  define TEST_CONSTEXPR_CXX23 constexpr
+#else
+#  define TEST_CONSTEXPR_CXX23
 #endif
 
 #define TEST_ALIGNAS_TYPE(...) TEST_ALIGNAS(TEST_ALIGNOF(__VA_ARGS__))
@@ -184,9 +202,10 @@
 #define TEST_HAS_NO_EXCEPTIONS
 #endif
 
-#if TEST_HAS_FEATURE(address_sanitizer) || TEST_HAS_FEATURE(memory_sanitizer) || \
-    TEST_HAS_FEATURE(thread_sanitizer)
+#if TEST_HAS_FEATURE(address_sanitizer) || TEST_HAS_FEATURE(hwaddress_sanitizer) || \
+    TEST_HAS_FEATURE(memory_sanitizer) || TEST_HAS_FEATURE(thread_sanitizer)
 #define TEST_HAS_SANITIZERS
+#define TEST_IS_EXECUTED_IN_A_SLOW_ENVIRONMENT
 #endif
 
 #if defined(_LIBCPP_NORETURN)
@@ -203,15 +222,8 @@
 
 #if TEST_STD_VER > 17
 #define TEST_CONSTINIT constinit
-#elif defined(_LIBCPP_CONSTINIT)
-#define TEST_CONSTINIT _LIBCPP_CONSTINIT
 #else
 #define TEST_CONSTINIT
-#endif
-
-#if !defined(__cpp_impl_three_way_comparison) \
-    && (!defined(_MSC_VER) || defined(__clang__) || _MSC_VER < 1920 || _MSVC_LANG <= 201703L)
-#define TEST_HAS_NO_SPACESHIP_OPERATOR
 #endif
 
 #if TEST_STD_VER < 11
@@ -240,6 +252,12 @@
 #define LIBCPP_ONLY(...) static_assert(true, "")
 #endif
 
+#if __has_cpp_attribute(nodiscard)
+#  define TEST_NODISCARD [[nodiscard]]
+#else
+#  define TEST_NODISCARD
+#endif
+
 #define TEST_IGNORE_NODISCARD (void)
 
 namespace test_macros_detail {
@@ -265,27 +283,35 @@ struct is_same<T, T> { enum {value = 1}; };
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
+// This function can be used to hide some objects from compiler optimizations.
+//
+// For example, this is useful to hide the result of a call to `new` and ensure
+// that the compiler doesn't elide the call to new/delete. Otherwise, elliding
+// calls to new/delete is allowed by the Standard and compilers actually do it
+// when optimizations are enabled.
 template <class Tp>
-inline
-void DoNotOptimize(Tp const& value) {
+inline Tp const& DoNotOptimize(Tp const& value) {
     asm volatile("" : : "r,m"(value) : "memory");
+    return value;
 }
 
 template <class Tp>
-inline void DoNotOptimize(Tp& value) {
+inline Tp& DoNotOptimize(Tp& value) {
 #if defined(__clang__)
   asm volatile("" : "+r,m"(value) : : "memory");
 #else
   asm volatile("" : "+m,r"(value) : : "memory");
 #endif
+  return value;
 }
 #else
 #include <intrin.h>
 template <class Tp>
-inline void DoNotOptimize(Tp const& value) {
+inline Tp const& DoNotOptimize(Tp const& value) {
   const volatile void* volatile unused = __builtin_addressof(value);
   static_cast<void>(unused);
   _ReadWriteBarrier();
+  return value;
 }
 #endif
 
@@ -306,8 +332,7 @@ inline void DoNotOptimize(Tp const& value) {
 #define TEST_NOT_WIN32(...) __VA_ARGS__
 #endif
 
-#if (defined(_WIN32) && !defined(_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS)) ||   \
-    defined(__MVS__) || defined(_AIX)
+#if defined(TEST_WINDOWS_DLL) ||defined(__MVS__) || defined(_AIX)
 // Macros for waiving cases when we can't count allocations done within
 // the library implementation.
 //
@@ -325,8 +350,7 @@ inline void DoNotOptimize(Tp const& value) {
 #define TEST_SUPPORTS_LIBRARY_INTERNAL_ALLOCATIONS 1
 #endif
 
-#if (defined(_WIN32) && !defined(_MSC_VER) &&                                  \
-     !defined(_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS)) ||                      \
+#if (defined(TEST_WINDOWS_DLL) && !defined(_MSC_VER)) ||                      \
     defined(__MVS__)
 // Normally, a replaced e.g. 'operator new' ends up used if the user code
 // does a call to e.g. 'operator new[]'; it's enough to replace the base
@@ -361,12 +385,12 @@ inline void DoNotOptimize(Tp const& value) {
 #   define TEST_HAS_NO_UNICODE
 #endif
 
-#if defined(_LIBCPP_HAS_NO_INT128) || defined(_MSVC_STL_VERSION)
-#   define TEST_HAS_NO_INT128
+#if defined(_LIBCPP_HAS_OPEN_WITH_WCHAR)
+#  define TEST_HAS_OPEN_WITH_WCHAR
 #endif
 
-#if defined(_LIBCPP_HAS_NO_UNICODE_CHARS)
-#   define TEST_HAS_NO_UNICODE_CHARS
+#if defined(_LIBCPP_HAS_NO_INT128) || defined(_MSVC_STL_VERSION)
+#   define TEST_HAS_NO_INT128
 #endif
 
 #if defined(_LIBCPP_HAS_NO_LOCALIZATION)
@@ -381,12 +405,24 @@ inline void DoNotOptimize(Tp const& value) {
 #  define TEST_HAS_NO_THREADS
 #endif
 
-#if defined(_LIBCPP_HAS_NO_FILESYSTEM_LIBRARY)
-#  define TEST_HAS_NO_FILESYSTEM_LIBRARY
+#if defined(_LIBCPP_HAS_NO_FILESYSTEM)
+#  define TEST_HAS_NO_FILESYSTEM
 #endif
 
-#if defined(_LIBCPP_HAS_NO_FGETPOS_FSETPOS)
-#  define TEST_HAS_NO_FGETPOS_FSETPOS
+#if defined(_LIBCPP_HAS_NO_C8RTOMB_MBRTOC8)
+#  define TEST_HAS_NO_C8RTOMB_MBRTOC8
+#endif
+
+#if defined(_LIBCPP_HAS_NO_RANDOM_DEVICE)
+#  define TEST_HAS_NO_RANDOM_DEVICE
+#endif
+
+#if defined(_LIBCPP_HAS_NO_EXPERIMENTAL_TZDB)
+#  define TEST_HAS_NO_EXPERIMENTAL_TZDB
+#endif
+
+#if defined(_LIBCPP_HAS_NO_TIME_ZONE_DATABASE)
+#  define TEST_HAS_NO_TIME_ZONE_DATABASE
 #endif
 
 #if defined(TEST_COMPILER_CLANG)
@@ -421,6 +457,34 @@ inline void DoNotOptimize(Tp const& value) {
 #define TEST_NO_UNIQUE_ADDRESS [[no_unique_address]]
 #else
 #define TEST_NO_UNIQUE_ADDRESS
+#endif
+
+#ifdef _LIBCPP_SHORT_WCHAR
+#  define TEST_SHORT_WCHAR
+#endif
+
+#ifdef _LIBCPP_ABI_MICROSOFT
+#  define TEST_ABI_MICROSOFT
+#endif
+
+// This is a temporary workaround for user-defined `operator new` definitions
+// not being picked up on Apple platforms in some circumstances. This is under
+// investigation and should be short-lived.
+#ifdef __APPLE__
+#  define TEST_WORKAROUND_BUG_109234844_WEAK __attribute__((weak))
+#else
+#  define TEST_WORKAROUND_BUG_109234844_WEAK /* nothing */
+#endif
+
+#ifdef _AIX
+#  define TEST_IF_AIX(arg_true, arg_false) arg_true
+#else
+#  define TEST_IF_AIX(arg_true, arg_false) arg_false
+#endif
+
+// Clang-18 has support for deducing this, but it does not set the FTM.
+#ifdef _LIBCPP_HAS_EXPLICIT_THIS_PARAMETER
+#  define TEST_HAS_EXPLICIT_THIS_PARAMETER
 #endif
 
 #endif // SUPPORT_TEST_MACROS_HPP

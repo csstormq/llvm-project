@@ -18,6 +18,7 @@
 #include "polly/ScopPass.h"
 #include "polly/Support/ISLOStream.h"
 #include "polly/Support/ISLTools.h"
+#include "polly/Support/PollyDebug.h"
 #define DEBUG_TYPE "polly-flatten-schedule"
 
 using namespace polly;
@@ -35,7 +36,7 @@ void printSchedule(raw_ostream &OS, const isl::union_map &Schedule,
 }
 
 /// Flatten the schedule stored in an polly::Scop.
-class FlattenSchedule : public ScopPass {
+class FlattenSchedule final : public ScopPass {
 private:
   FlattenSchedule(const FlattenSchedule &) = delete;
   const FlattenSchedule &operator=(const FlattenSchedule &) = delete;
@@ -47,39 +48,39 @@ public:
   static char ID;
   explicit FlattenSchedule() : ScopPass(ID) {}
 
-  virtual void getAnalysisUsage(AnalysisUsage &AU) const override {
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addRequiredTransitive<ScopInfoRegionPass>();
     AU.setPreservesAll();
   }
 
-  virtual bool runOnScop(Scop &S) override {
+  bool runOnScop(Scop &S) override {
     // Keep a reference to isl_ctx to ensure that it is not freed before we free
     // OldSchedule.
     IslCtx = S.getSharedIslCtx();
 
-    LLVM_DEBUG(dbgs() << "Going to flatten old schedule:\n");
+    POLLY_DEBUG(dbgs() << "Going to flatten old schedule:\n");
     OldSchedule = S.getSchedule();
-    LLVM_DEBUG(printSchedule(dbgs(), OldSchedule, 2));
+    POLLY_DEBUG(printSchedule(dbgs(), OldSchedule, 2));
 
     auto Domains = S.getDomains();
     auto RestrictedOldSchedule = OldSchedule.intersect_domain(Domains);
-    LLVM_DEBUG(dbgs() << "Old schedule with domains:\n");
-    LLVM_DEBUG(printSchedule(dbgs(), RestrictedOldSchedule, 2));
+    POLLY_DEBUG(dbgs() << "Old schedule with domains:\n");
+    POLLY_DEBUG(printSchedule(dbgs(), RestrictedOldSchedule, 2));
 
     auto NewSchedule = flattenSchedule(RestrictedOldSchedule);
 
-    LLVM_DEBUG(dbgs() << "Flattened new schedule:\n");
-    LLVM_DEBUG(printSchedule(dbgs(), NewSchedule, 2));
+    POLLY_DEBUG(dbgs() << "Flattened new schedule:\n");
+    POLLY_DEBUG(printSchedule(dbgs(), NewSchedule, 2));
 
     NewSchedule = NewSchedule.gist_domain(Domains);
-    LLVM_DEBUG(dbgs() << "Gisted, flattened new schedule:\n");
-    LLVM_DEBUG(printSchedule(dbgs(), NewSchedule, 2));
+    POLLY_DEBUG(dbgs() << "Gisted, flattened new schedule:\n");
+    POLLY_DEBUG(printSchedule(dbgs(), NewSchedule, 2));
 
     S.setSchedule(NewSchedule);
     return false;
   }
 
-  virtual void printScop(raw_ostream &OS, Scop &S) const override {
+  void printScop(raw_ostream &OS, Scop &S) const override {
     OS << "Schedule before flattening {\n";
     printSchedule(OS, OldSchedule, 4);
     OS << "}\n\n";
@@ -89,7 +90,7 @@ public:
     OS << "}\n";
   }
 
-  virtual void releaseMemory() override {
+  void releaseMemory() override {
     OldSchedule = {};
     IslCtx.reset();
   }
@@ -98,12 +99,12 @@ public:
 char FlattenSchedule::ID;
 
 /// Print result from FlattenSchedule.
-class FlattenSchedulePrinterLegacyPass : public ScopPass {
+class FlattenSchedulePrinterLegacyPass final : public ScopPass {
 public:
   static char ID;
 
   FlattenSchedulePrinterLegacyPass()
-      : FlattenSchedulePrinterLegacyPass(outs()){};
+      : FlattenSchedulePrinterLegacyPass(outs()) {}
   explicit FlattenSchedulePrinterLegacyPass(llvm::raw_ostream &OS)
       : ScopPass(ID), OS(OS) {}
 

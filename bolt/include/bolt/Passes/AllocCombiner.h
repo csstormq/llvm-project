@@ -17,6 +17,7 @@ namespace bolt {
 class AllocCombinerPass : public BinaryFunctionPass {
   /// Stats aggregating variables
   uint64_t NumCombined{0};
+  uint64_t DynamicCountCombined{0};
   DenseSet<const BinaryFunction *> FuncsChanged;
 
   void combineAdjustments(BinaryFunction &BF);
@@ -32,7 +33,7 @@ public:
   }
 
   /// Pass entry point
-  void runOnFunctions(BinaryContext &BC) override;
+  Error runOnFunctions(BinaryContext &BC) override;
 };
 
 } // namespace bolt

@@ -12,8 +12,8 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Testing/Support/Error.h"
+#include "gmock/gmock.h"
 #include "gtest/gtest-spi.h"
 #include "gtest/gtest.h"
 #include <memory>
@@ -1039,8 +1039,10 @@ public:
   }
 };
 
-static llvm::ManagedStatic<TestErrorCategory> TestErrCategory;
-const std::error_category &TErrorCategory() { return *TestErrCategory; }
+const std::error_category &TErrorCategory() {
+  static TestErrorCategory TestErrCategory;
+  return TestErrCategory;
+}
 
 char TestDebugError::ID;
 
@@ -1069,7 +1071,7 @@ static Error createAnyError() {
 }
 
 struct MoveOnlyBox {
-  Optional<int> Box;
+  std::optional<int> Box;
 
   explicit MoveOnlyBox(int I) : Box(I) {}
   MoveOnlyBox() = default;
@@ -1096,7 +1098,7 @@ TEST(Error, moveInto) {
 
     // Failure with no prior value.
     EXPECT_THAT_ERROR(makeFailure().moveInto(V), Failed());
-    EXPECT_EQ(None, V.Box);
+    EXPECT_EQ(std::nullopt, V.Box);
 
     // Success with no prior value.
     EXPECT_THAT_ERROR(make(5).moveInto(V), Succeeded());
@@ -1116,9 +1118,9 @@ TEST(Error, moveInto) {
   // Check that this works with optionals too.
   {
     // Same cases as above.
-    Optional<MoveOnlyBox> MaybeV;
+    std::optional<MoveOnlyBox> MaybeV;
     EXPECT_THAT_ERROR(makeFailure().moveInto(MaybeV), Failed());
-    EXPECT_EQ(None, MaybeV);
+    EXPECT_EQ(std::nullopt, MaybeV);
 
     EXPECT_THAT_ERROR(make(5).moveInto(MaybeV), Succeeded());
     EXPECT_EQ(MoveOnlyBox(5), MaybeV);
@@ -1131,4 +1133,47 @@ TEST(Error, moveInto) {
   }
 }
 
+TEST(Error, FatalBadAllocErrorHandlersInteraction) {
+  auto ErrorHandler = [](void *Data, const char *, bool) {};
+  install_fatal_error_handler(ErrorHandler, nullptr);
+  // The following call should not crash; previously, a bug in
+  // install_bad_alloc_error_handler asserted that no fatal-error handler is
+  // installed already.
+  install_bad_alloc_error_handler(ErrorHandler, nullptr);
+
+  // Don't interfere with other tests.
+  remove_fatal_error_handler();
+  remove_bad_alloc_error_handler();
+}
+
+TEST(Error, BadAllocFatalErrorHandlersInteraction) {
+  auto ErrorHandler = [](void *Data, const char *, bool) {};
+  install_bad_alloc_error_handler(ErrorHandler, nullptr);
+  // The following call should not crash; related to
+  // FatalBadAllocErrorHandlersInteraction: Ensure that the error does not occur
+  // in the other direction.
+  install_fatal_error_handler(ErrorHandler, nullptr);
+
+  // Don't interfere with other tests.
+  remove_fatal_error_handler();
+  remove_bad_alloc_error_handler();
+}
+
+TEST(Error, ForwardToExpected) {
+  auto ErrorReturningFct = [](bool Fail) {
+    return Fail ? make_error<StringError>(llvm::errc::invalid_argument,
+                                          "Some Error")
+                : Error::success();
+  };
+  auto ExpectedReturningFct = [&](bool Fail) -> Expected<int> {
+    auto Err = ErrorReturningFct(Fail);
+    if (Err)
+      return Err;
+    return 42;
+  };
+  std::optional<int> MaybeV;
+  EXPECT_THAT_ERROR(ExpectedReturningFct(true).moveInto(MaybeV), Failed());
+  EXPECT_THAT_ERROR(ExpectedReturningFct(false).moveInto(MaybeV), Succeeded());
+  EXPECT_EQ(*MaybeV, 42);
+}
 } // namespace

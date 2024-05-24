@@ -20,7 +20,8 @@
 #if defined(__CRC32__)
 // NB: clang has <crc32intrin.h> but GCC does not
 #include <smmintrin.h>
-#define CRC32_INTRINSIC FIRST_32_SECOND_64(__builtin_ia32_crc32si, __builtin_ia32_crc32di)
+#define CRC32_INTRINSIC                                                        \
+  FIRST_32_SECOND_64(__builtin_ia32_crc32si, __builtin_ia32_crc32di)
 #elif defined(__SSE4_2__)
 #include <smmintrin.h>
 #define CRC32_INTRINSIC FIRST_32_SECOND_64(_mm_crc32_u32, _mm_crc32_u64)
@@ -28,6 +29,10 @@
 #ifdef __ARM_FEATURE_CRC32
 #include <arm_acle.h>
 #define CRC32_INTRINSIC FIRST_32_SECOND_64(__crc32cw, __crc32cd)
+#endif
+#ifdef __loongarch__
+#include <larchintrin.h>
+#define CRC32_INTRINSIC FIRST_32_SECOND_64(__crcc_w_w_w, __crcc_w_d_w)
 #endif
 
 namespace scudo {

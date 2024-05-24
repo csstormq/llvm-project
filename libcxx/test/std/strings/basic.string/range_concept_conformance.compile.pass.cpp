@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 // UNSUPPORTED: c++03, c++11, c++14, c++17
-// UNSUPPORTED: libcpp-has-no-incomplete-ranges
 
 // string
 
@@ -15,8 +14,6 @@
 
 #include <concepts>
 #include <ranges>
-
-
 
 static_assert(std::same_as<std::ranges::iterator_t<std::string>, std::string::iterator>);
 static_assert(std::ranges::common_range<std::string>);

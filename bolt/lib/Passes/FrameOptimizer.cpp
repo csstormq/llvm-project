@@ -17,9 +17,9 @@
 #include "bolt/Passes/ShrinkWrapping.h"
 #include "bolt/Passes/StackAvailableExpressions.h"
 #include "bolt/Passes/StackReachingUses.h"
+#include "bolt/Utils/CommandLineOpts.h"
 #include "llvm/Support/Timer.h"
 #include <deque>
-#include <unordered_map>
 
 #define DEBUG_TYPE "fop"
 
@@ -43,13 +43,10 @@ FrameOptimization("frame-opt",
   cl::ZeroOrMore,
   cl::cat(BoltOptCategory));
 
-cl::opt<bool>
-RemoveStores("frame-opt-rm-stores",
-  cl::init(FOP_NONE),
-  cl::desc("apply additional analysis to remove stores (experimental)"),
-  cl::init(false),
-  cl::ZeroOrMore,
-  cl::cat(BoltOptCategory));
+cl::opt<bool> RemoveStores(
+    "frame-opt-rm-stores", cl::init(FOP_NONE),
+    cl::desc("apply additional analysis to remove stores (experimental)"),
+    cl::cat(BoltOptCategory));
 
 } // namespace opts
 
@@ -111,6 +108,7 @@ void FrameOptimizerPass::removeUnnecessaryLoads(const RegAnalysis &RA,
           continue;
 
         ++NumRedundantLoads;
+        FreqRedundantLoads += BB.getKnownExecutionCount();
         Changed = true;
         LLVM_DEBUG(dbgs() << "Redundant load instruction: ");
         LLVM_DEBUG(Inst.dump());
@@ -123,11 +121,12 @@ void FrameOptimizerPass::removeUnnecessaryLoads(const RegAnalysis &RA,
             LLVM_DEBUG(dbgs() << "FAILED to change operand to a reg\n");
             break;
           }
-          ++NumLoadsChangedToReg;
+          FreqLoadsChangedToReg += BB.getKnownExecutionCount();
           MIB->removeAnnotation(Inst, "FrameAccessEntry");
           LLVM_DEBUG(dbgs() << "Changed operand to a reg\n");
           if (MIB->isRedundantMove(Inst)) {
             ++NumLoadsDeleted;
+            FreqLoadsDeleted += BB.getKnownExecutionCount();
             LLVM_DEBUG(dbgs() << "Created a redundant move\n");
             // Delete it!
             ToErase.push_front(std::make_pair(&BB, &Inst));
@@ -139,7 +138,7 @@ void FrameOptimizerPass::removeUnnecessaryLoads(const RegAnalysis &RA,
           if (!MIB->replaceMemOperandWithImm(Inst, StringRef(Buf, 8), 0)) {
             LLVM_DEBUG(dbgs() << "FAILED\n");
           } else {
-            ++NumLoadsChangedToImm;
+            FreqLoadsChangedToImm += BB.getKnownExecutionCount();
             MIB->removeAnnotation(Inst, "FrameAccessEntry");
             LLVM_DEBUG(dbgs() << "Ok\n");
           }
@@ -171,8 +170,7 @@ void FrameOptimizerPass::removeUnusedStores(const FrameAnalysis &FA,
   for (BinaryBasicBlock &BB : BF) {
     LLVM_DEBUG(dbgs() << "\tNow at BB " << BB.getName() << "\n");
     const MCInst *Prev = nullptr;
-    for (auto I = BB.rbegin(), E = BB.rend(); I != E; ++I) {
-      MCInst &Inst = *I;
+    for (MCInst &Inst : llvm::reverse(BB)) {
       LLVM_DEBUG({
         dbgs() << "\t\tNow at ";
         Inst.dump();
@@ -202,6 +200,7 @@ void FrameOptimizerPass::removeUnusedStores(const FrameAnalysis &FA,
         continue;
 
       ++NumRedundantStores;
+      FreqRedundantStores += BB.getKnownExecutionCount();
       Changed = true;
       LLVM_DEBUG(dbgs() << "Unused store instruction: ");
       LLVM_DEBUG(Inst.dump());
@@ -221,9 +220,9 @@ void FrameOptimizerPass::removeUnusedStores(const FrameAnalysis &FA,
     LLVM_DEBUG(dbgs() << "FOP modified \"" << BF.getPrintName() << "\"\n");
 }
 
-void FrameOptimizerPass::runOnFunctions(BinaryContext &BC) {
+Error FrameOptimizerPass::runOnFunctions(BinaryContext &BC) {
   if (opts::FrameOptimization == FOP_NONE)
-    return;
+    return Error::success();
 
   std::unique_ptr<BinaryFunctionCallGraph> CG;
   std::unique_ptr<FrameAnalysis> FA;
@@ -267,13 +266,15 @@ void FrameOptimizerPass::runOnFunctions(BinaryContext &BC) {
     {
       NamedRegionTimer T1("removeloads", "remove loads", "FOP", "FOP breakdown",
                           opts::TimeOpts);
-      removeUnnecessaryLoads(*RA, *FA, I.second);
+      if (!FA->hasStackArithmetic(I.second))
+        removeUnnecessaryLoads(*RA, *FA, I.second);
     }
 
     if (opts::RemoveStores) {
       NamedRegionTimer T1("removestores", "remove stores", "FOP",
                           "FOP breakdown", opts::TimeOpts);
-      removeUnusedStores(*FA, I.second);
+      if (!FA->hasStackArithmetic(I.second))
+        removeUnusedStores(*FA, I.second);
     }
     // Don't even start shrink wrapping if no profiling info is available
     if (I.second.getKnownExecutionCount() == 0)
@@ -283,24 +284,31 @@ void FrameOptimizerPass::runOnFunctions(BinaryContext &BC) {
   {
     NamedRegionTimer T1("shrinkwrapping", "shrink wrapping", "FOP",
                         "FOP breakdown", opts::TimeOpts);
-    performShrinkWrapping(*RA, *FA, BC);
+    if (Error E = performShrinkWrapping(*RA, *FA, BC))
+      return Error(std::move(E));
   }
 
-  outs() << "BOLT-INFO: FOP optimized " << NumRedundantLoads
-         << " redundant load(s) and " << NumRedundantStores
-         << " unused store(s)\n";
-  outs() << "BOLT-INFO: FOP changed " << NumLoadsChangedToReg
-         << " load(s) to use a register instead of a stack access, and "
-         << NumLoadsChangedToImm << " to use an immediate.\n"
-         << "BOLT-INFO: FOP deleted " << NumLoadsDeleted << " load(s) and "
-         << NumRedundantStores << " store(s).\n";
+  BC.outs() << "BOLT-INFO: FOP optimized " << NumRedundantLoads
+            << " redundant load(s) and " << NumRedundantStores
+            << " unused store(s)\n";
+  BC.outs() << "BOLT-INFO: Frequency of redundant loads is "
+            << FreqRedundantLoads << " and frequency of unused stores is "
+            << FreqRedundantStores << "\n";
+  BC.outs() << "BOLT-INFO: Frequency of loads changed to use a register is "
+            << FreqLoadsChangedToReg
+            << " and frequency of loads changed to use an immediate is "
+            << FreqLoadsChangedToImm << "\n";
+  BC.outs() << "BOLT-INFO: FOP deleted " << NumLoadsDeleted
+            << " load(s) (dyn count: " << FreqLoadsDeleted << ") and "
+            << NumRedundantStores << " store(s)\n";
   FA->printStats();
-  ShrinkWrapping::printStats();
+  ShrinkWrapping::printStats(BC);
+  return Error::success();
 }
 
-void FrameOptimizerPass::performShrinkWrapping(const RegAnalysis &RA,
-                                               const FrameAnalysis &FA,
-                                               BinaryContext &BC) {
+Error FrameOptimizerPass::performShrinkWrapping(const RegAnalysis &RA,
+                                                const FrameAnalysis &FA,
+                                                BinaryContext &BC) {
   // Initialize necessary annotations to allow safe parallel accesses to
   // annotation index in MIB
   BC.MIB->getOrCreateAnnotationIndex(CalleeSavedAnalysis::getSaveTagName());
@@ -326,34 +334,61 @@ void FrameOptimizerPass::performShrinkWrapping(const RegAnalysis &RA,
   BC.MIB->getOrCreateAnnotationIndex("AccessesDeletedPos");
   BC.MIB->getOrCreateAnnotationIndex("DeleteMe");
 
+  std::vector<std::pair<uint64_t, const BinaryFunction *>> Top10Funcs;
+  auto LogFunc = [&](BinaryFunction &BF) {
+    auto Lower = llvm::lower_bound(
+        Top10Funcs, BF.getKnownExecutionCount(),
+        [](const std::pair<uint64_t, const BinaryFunction *> &Elmt,
+           uint64_t Value) { return Elmt.first > Value; });
+    if (Lower == Top10Funcs.end() && Top10Funcs.size() >= 10)
+      return;
+    Top10Funcs.insert(Lower,
+                      std::make_pair<>(BF.getKnownExecutionCount(), &BF));
+    if (Top10Funcs.size() > 10)
+      Top10Funcs.resize(10);
+  };
+  (void)LogFunc;
+
   ParallelUtilities::PredicateTy SkipPredicate = [&](const BinaryFunction &BF) {
-    if (!FA.hasFrameInfo(BF))
-      return true;
-
-    if (opts::FrameOptimization == FOP_HOT &&
-        (BF.getKnownExecutionCount() < BC.getHotThreshold()))
-      return true;
-
-    if (BF.getKnownExecutionCount() == 0)
+    if (BF.getFunctionScore() == 0)
       return true;
 
     return false;
   };
+
+  const bool HotOnly = opts::FrameOptimization == FOP_HOT;
+
+  Error SWError = Error::success();
 
   ParallelUtilities::WorkFuncWithAllocTy WorkFunction =
       [&](BinaryFunction &BF, MCPlusBuilder::AllocatorIdTy AllocatorId) {
         DataflowInfoManager Info(BF, &RA, &FA, AllocatorId);
         ShrinkWrapping SW(FA, BF, Info, AllocatorId);
 
-        if (SW.perform()) {
+        auto ChangedOrErr = SW.perform(HotOnly);
+        if (auto E = ChangedOrErr.takeError()) {
+          std::lock_guard<std::mutex> Lock(FuncsChangedMutex);
+          SWError = joinErrors(std::move(SWError), Error(std::move(E)));
+          return;
+        }
+        const bool Changed = *ChangedOrErr;
+        if (Changed) {
           std::lock_guard<std::mutex> Lock(FuncsChangedMutex);
           FuncsChanged.insert(&BF);
+          LLVM_DEBUG(LogFunc(BF));
         }
       };
 
   ParallelUtilities::runOnEachFunctionWithUniqueAllocId(
       BC, ParallelUtilities::SchedulingPolicy::SP_INST_QUADRATIC, WorkFunction,
       SkipPredicate, "shrink-wrapping");
+
+  if (!Top10Funcs.empty()) {
+    BC.outs() << "BOLT-INFO: top 10 functions changed by shrink wrapping:\n";
+    for (const auto &Elmt : Top10Funcs)
+      BC.outs() << Elmt.first << " : " << Elmt.second->getPrintName() << "\n";
+  }
+  return SWError;
 }
 
 } // namespace bolt

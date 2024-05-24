@@ -22,16 +22,18 @@ include "mlir/IR/OpBase.td"
 
 // DEF-LABEL: ::mlir::OptionalParseResult generatedTypeParser(
 // DEF-SAME: ::mlir::AsmParser &parser,
-// DEF-SAME: ::llvm::StringRef mnemonic,
+// DEF-SAME: ::llvm::StringRef *mnemonic,
 // DEF-SAME: ::mlir::Type &value) {
-// DEF: if (mnemonic == ::test::CompoundAType::getMnemonic()) {
+// DEF: .Case(::test::CompoundAType::getMnemonic()
 // DEF-NEXT:   value = ::test::CompoundAType::parse(parser);
 // DEF-NEXT:   return ::mlir::success(!!value);
-// DEF-NEXT: }
-// DEF-NEXT: if (mnemonic == ::test::IndexType::getMnemonic()) {
+// DEF-NEXT: })
+// DEF-NEXT: .Case(::test::IndexType::getMnemonic()
 // DEF-NEXT:   value = ::test::IndexType::parse(parser);
 // DEF-NEXT:   return ::mlir::success(!!value);
-// DEF: return {};
+// DEF: .Default([&](llvm::StringRef keyword,
+// DEF-NEXT:   *mnemonic = keyword;
+// DEF-NEXT:   return std::nullopt;
 
 def Test_Dialect: Dialect {
 // DECL-NOT: TestDialect
@@ -43,6 +45,7 @@ class TestType<string name> : TypeDef<Test_Dialect, name> { }
 
 def A_SimpleTypeA : TestType<"SimpleA"> {
 // DECL: class SimpleAType : public ::mlir::Type
+  let typeName = "test.simple_a";
 }
 
 def RTLValueType : Type<CPred<"isRTLValueType($_self)">, "Type"> {
@@ -95,6 +98,7 @@ def C_IndexType : TestType<"Index"> {
 }
 
 def D_SingleParameterType : TestType<"SingleParameter"> {
+  let typeName = "test.d_single_parameter";
   let parameters = (ins
     "int": $num
   );

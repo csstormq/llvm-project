@@ -15,13 +15,14 @@
 #include "polly/Options.h"
 #include "polly/ScheduleTreeTransform.h"
 #include "polly/Support/ScopHelper.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/Transforms/Utils/LoopUtils.h"
+#include <optional>
 
+#include "polly/Support/PollyDebug.h"
 #define DEBUG_TYPE "polly-opt-manual"
 
 using namespace polly;
@@ -32,7 +33,7 @@ namespace {
 static cl::opt<bool> IgnoreDepcheck(
     "polly-pragma-ignore-depcheck",
     cl::desc("Skip the dependency check for pragma-based transformations"),
-    cl::init(false), cl::ZeroOrMore, cl::cat(PollyCategory));
+    cl::cat(PollyCategory));
 
 /// Same as llvm::hasUnrollTransformation(), but takes a LoopID as argument
 /// instead of a Loop.
@@ -40,10 +41,10 @@ static TransformationMode hasUnrollTransformation(MDNode *LoopID) {
   if (getBooleanLoopAttribute(LoopID, "llvm.loop.unroll.disable"))
     return TM_SuppressedByUser;
 
-  Optional<int> Count =
+  std::optional<int> Count =
       getOptionalIntLoopAttribute(LoopID, "llvm.loop.unroll.count");
-  if (Count.hasValue())
-    return Count.getValue() == 1 ? TM_SuppressedByUser : TM_ForcedByUser;
+  if (Count)
+    return *Count == 1 ? TM_SuppressedByUser : TM_ForcedByUser;
 
   if (getBooleanLoopAttribute(LoopID, "llvm.loop.unroll.enable"))
     return TM_ForcedByUser;
@@ -96,8 +97,8 @@ static isl::schedule applyLoopUnroll(MDNode *LoopMD,
   // unrolled loop could be input of another loop transformation which expects
   // the explicit schedule nodes. That is, we would need this explicit expansion
   // anyway and using the ISL codegen option is a compile-time optimization.
-  int64_t Factor = getOptionalIntLoopAttribute(LoopMD, "llvm.loop.unroll.count")
-                       .getValueOr(0);
+  int64_t Factor =
+      getOptionalIntLoopAttribute(LoopMD, "llvm.loop.unroll.count").value_or(0);
   bool Full = getBooleanLoopAttribute(LoopMD, "llvm.loop.unroll.full");
   assert((!Full || !(Factor > 0)) &&
          "Cannot unroll fully and partially at the same time");
@@ -132,7 +133,7 @@ static auto getLoopMDProps(MDNode *LoopMD) {
 
 /// Recursively visit all nodes in a schedule, loop for loop-transformations
 /// metadata and apply the first encountered.
-class SearchTransformVisitor
+class SearchTransformVisitor final
     : public RecursiveScheduleTreeVisitor<SearchTransformVisitor> {
 private:
   using BaseTy = RecursiveScheduleTreeVisitor<SearchTransformVisitor>;
@@ -159,13 +160,13 @@ private:
       return Result;
 
     LLVMContext &Ctx = LoopMD->getContext();
-    LLVM_DEBUG(dbgs() << "Dependency violation detected\n");
+    POLLY_DEBUG(dbgs() << "Dependency violation detected\n");
 
     DebugLoc TransformLoc = findTransformationDebugLoc(LoopMD, DebugLocAttr);
 
     if (IgnoreDepcheck) {
-      LLVM_DEBUG(dbgs() << "Still accepting transformation due to "
-                           "-polly-pragma-ignore-depcheck\n");
+      POLLY_DEBUG(dbgs() << "Still accepting transformation due to "
+                            "-polly-pragma-ignore-depcheck\n");
       if (ORE) {
         ORE->emit(
             OptimizationRemark(DEBUG_TYPE, RemarkName, TransformLoc, CodeRegion)
@@ -177,7 +178,7 @@ private:
       return Result;
     }
 
-    LLVM_DEBUG(dbgs() << "Rolling back transformation\n");
+    POLLY_DEBUG(dbgs() << "Rolling back transformation\n");
 
     if (ORE) {
       ORE->emit(DiagnosticInfoOptimizationFailure(DEBUG_TYPE, RemarkName,
@@ -189,7 +190,7 @@ private:
     }
 
     // If illegal, revert and remove the transformation to not risk re-trying
-    // indefintely.
+    // indefinitely.
     MDNode *NewLoopMD =
         makePostTransformationMetadata(Ctx, LoopMD, {TransPrefix}, {});
     BandAttr *Attr = getBandAttr(OrigBand);

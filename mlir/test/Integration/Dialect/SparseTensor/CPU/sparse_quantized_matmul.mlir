@@ -1,24 +1,44 @@
-// RUN: mlir-opt %s --sparse-compiler | \
-// RUN: mlir-cpu-runner -e entry -entry-point-result=void \
-// RUN:  -shared-libs=%mlir_integration_test_dir/libmlir_c_runner_utils%shlibext | \
-// RUN: FileCheck %s
+//--------------------------------------------------------------------------------------------------
+// WHEN CREATING A NEW TEST, PLEASE JUST COPY & PASTE WITHOUT EDITS.
 //
-// Do the same run, but now with SIMDization as well. This should not change the outcome.
+// Set-up that's shared across all tests in this directory. In principle, this
+// config could be moved to lit.local.cfg. However, there are downstream users that
+//  do not use these LIT config files. Hence why this is kept inline.
 //
-// RUN: mlir-opt %s --sparse-compiler="vectorization-strategy=2 vl=2" | \
-// RUN: mlir-cpu-runner -e entry -entry-point-result=void \
-// RUN:  -shared-libs=%mlir_integration_test_dir/libmlir_c_runner_utils%shlibext | \
-// RUN: FileCheck %s
+// DEFINE: %{sparsifier_opts} = enable-runtime-library=true
+// DEFINE: %{sparsifier_opts_sve} = enable-arm-sve=true %{sparsifier_opts}
+// DEFINE: %{compile} = mlir-opt %s --sparsifier="%{sparsifier_opts}"
+// DEFINE: %{compile_sve} = mlir-opt %s --sparsifier="%{sparsifier_opts_sve}"
+// DEFINE: %{run_libs} = -shared-libs=%mlir_c_runner_utils,%mlir_runner_utils
+// DEFINE: %{run_opts} = -e main -entry-point-result=void
+// DEFINE: %{run} = mlir-cpu-runner %{run_opts} %{run_libs}
+// DEFINE: %{run_sve} = %mcr_aarch64_cmd --march=aarch64 --mattr="+sve" %{run_opts} %{run_libs}
+//
+// DEFINE: %{env} =
+//--------------------------------------------------------------------------------------------------
 
-#DCSR = #sparse_tensor.encoding<{ dimLevelType = [ "compressed", "compressed" ] }>
+// RUN: %{compile} | %{run} | FileCheck %s
+//
+// Do the same run, but now with direct IR generation.
+// REDEFINE: %{sparsifier_opts} = enable-runtime-library=false
+// RUN: %{compile} | %{run} | FileCheck %s
+//
+// Do the same run, but now with direct IR generation and vectorization.
+// REDEFINE: %{sparsifier_opts} = enable-runtime-library=false vl=2 reassociate-fp-reductions=true enable-index-optimizations=true
+// RUN: %{compile} | %{run} | FileCheck %s
+//
+// Do the same run, but now with direct IR generation and VLA vectorization.
+// RUN: %if mlir_arm_sve_tests %{ %{compile_sve} | %{run_sve} | FileCheck %s %}
+
+#DCSR = #sparse_tensor.encoding<{ map = (d0, d1) -> (d0 : compressed, d1 : compressed) }>
 
 // An example of a quantized sparse matmul. With the zero offset for the
-// sparse input, the sparse compiler generates very efficient code for the
+// sparse input, the sparsifier generates very efficient code for the
 //      x(i,j) += (ext(a(i,k)) - 2) * ext(b(k,j))
 // operation.
 module {
 
-  func @quantized_matmul(%input1: tensor<5x3xi8>,
+  func.func @quantized_matmul(%input1: tensor<5x3xi8>,
                          %input2: tensor<3x6xi8, #DCSR>,
                          %output: tensor<5x6xi32>) -> tensor<5x6xi32> {
     %c0 = arith.constant 0 : i32
@@ -29,7 +49,7 @@ module {
     return %0: tensor<5x6xi32>
   }
 
-  func @entry() {
+  func.func @main() {
     %c0 = arith.constant 0 : index
     %i0 = arith.constant 0 : i32
 
@@ -54,7 +74,7 @@ module {
     %0 = call @quantized_matmul(%input1, %sparse_input2, %output)
        : (tensor<5x3xi8>,
           tensor<3x6xi8, #DCSR>,
-	  tensor<5x6xi32>) -> tensor<5x6xi32>
+          tensor<5x6xi32>) -> tensor<5x6xi32>
 
     //
     // Verify the output.
@@ -65,14 +85,13 @@ module {
     // CHECK-SAME: ( -254, 0, 256, -300, -30, -6 ),
     // CHECK-SAME: ( 1397, 0, -1408, 100, 10, 33 ) )
     //
-    %m = bufferization.to_memref %0 : memref<5x6xi32>
-    %v = vector.transfer_read %m[%c0, %c0], %i0
-      : memref<5x6xi32>, vector<5x6xi32>
+    %v = vector.transfer_read %0[%c0, %c0], %i0
+      : tensor<5x6xi32>, vector<5x6xi32>
     vector.print %v : vector<5x6xi32>
 
     // Release the resources.
-    sparse_tensor.release %sparse_input2 : tensor<3x6xi8, #DCSR>
-    memref.dealloc %m : memref<5x6xi32>
+    bufferization.dealloc_tensor %sparse_input2 : tensor<3x6xi8, #DCSR>
+    bufferization.dealloc_tensor %0 : tensor<5x6xi32>
 
     return
   }

@@ -6,15 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
-#include "mlir/Dialect/Arithmetic/Utils/Utils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/MemRef/Utils/MemRefUtils.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
@@ -26,57 +26,12 @@
 using namespace mlir;
 using namespace mlir::memref;
 
-namespace {
-/// Idiomatic saturated operations on offsets, sizes and strides.
-namespace saturated_arith {
-struct Wrapper {
-  static Wrapper stride(int64_t v) {
-    return (ShapedType::isDynamicStrideOrOffset(v)) ? Wrapper{true, 0}
-                                                    : Wrapper{false, v};
-  }
-  static Wrapper offset(int64_t v) {
-    return (ShapedType::isDynamicStrideOrOffset(v)) ? Wrapper{true, 0}
-                                                    : Wrapper{false, v};
-  }
-  static Wrapper size(int64_t v) {
-    return (ShapedType::isDynamic(v)) ? Wrapper{true, 0} : Wrapper{false, v};
-  }
-  int64_t asOffset() {
-    return saturated ? ShapedType::kDynamicStrideOrOffset : v;
-  }
-  int64_t asSize() { return saturated ? ShapedType::kDynamicSize : v; }
-  int64_t asStride() {
-    return saturated ? ShapedType::kDynamicStrideOrOffset : v;
-  }
-  bool operator==(Wrapper other) {
-    return (saturated && other.saturated) ||
-           (!saturated && !other.saturated && v == other.v);
-  }
-  bool operator!=(Wrapper other) { return !(*this == other); }
-  Wrapper operator+(Wrapper other) {
-    if (saturated || other.saturated)
-      return Wrapper{true, 0};
-    return Wrapper{false, other.v + v};
-  }
-  Wrapper operator*(Wrapper other) {
-    if (saturated || other.saturated)
-      return Wrapper{true, 0};
-    return Wrapper{false, other.v * v};
-  }
-  bool saturated;
-  int64_t v;
-};
-} // namespace saturated_arith
-} // namespace
-
 /// Materialize a single constant operation from a given attribute value with
 /// the desired resultant type.
 Operation *MemRefDialect::materializeConstant(OpBuilder &builder,
                                               Attribute value, Type type,
                                               Location loc) {
-  if (arith::ConstantOp::isBuildableWith(value, type))
-    return builder.create<arith::ConstantOp>(loc, value, type);
-  return nullptr;
+  return arith::ConstantOp::materialize(builder, value, type, loc);
 }
 
 //===----------------------------------------------------------------------===//
@@ -91,7 +46,7 @@ LogicalResult mlir::memref::foldMemRefCast(Operation *op, Value inner) {
   for (OpOperand &operand : op->getOpOperands()) {
     auto cast = operand.get().getDefiningOp<CastOp>();
     if (cast && operand.get() != inner &&
-        !cast.getOperand().getType().isa<UnrankedMemRefType>()) {
+        !llvm::isa<UnrankedMemRefType>(cast.getOperand().getType())) {
       operand.set(cast.getOperand());
       folded = true;
     }
@@ -102,26 +57,155 @@ LogicalResult mlir::memref::foldMemRefCast(Operation *op, Value inner) {
 /// Return an unranked/ranked tensor type for the given unranked/ranked memref
 /// type.
 Type mlir::memref::getTensorTypeFromMemRefType(Type type) {
-  if (auto memref = type.dyn_cast<MemRefType>())
+  if (auto memref = llvm::dyn_cast<MemRefType>(type))
     return RankedTensorType::get(memref.getShape(), memref.getElementType());
-  if (auto memref = type.dyn_cast<UnrankedMemRefType>())
+  if (auto memref = llvm::dyn_cast<UnrankedMemRefType>(type))
     return UnrankedTensorType::get(memref.getElementType());
   return NoneType::get(type.getContext());
+}
+
+OpFoldResult memref::getMixedSize(OpBuilder &builder, Location loc, Value value,
+                                  int64_t dim) {
+  auto memrefType = llvm::cast<MemRefType>(value.getType());
+  SmallVector<OpFoldResult> result;
+  if (memrefType.isDynamicDim(dim))
+    return builder.createOrFold<memref::DimOp>(loc, value, dim);
+
+  return builder.getIndexAttr(memrefType.getDimSize(dim));
+}
+
+SmallVector<OpFoldResult> memref::getMixedSizes(OpBuilder &builder,
+                                                Location loc, Value value) {
+  auto memrefType = llvm::cast<MemRefType>(value.getType());
+  SmallVector<OpFoldResult> result;
+  for (int64_t i = 0; i < memrefType.getRank(); ++i)
+    result.push_back(getMixedSize(builder, loc, value, i));
+  return result;
+}
+
+//===----------------------------------------------------------------------===//
+// Utility functions for propagating static information
+//===----------------------------------------------------------------------===//
+
+/// Helper function that infers the constant values from a list of \p values,
+/// a \p memRefTy, and another helper function \p getAttributes.
+/// The inferred constant values replace the related `OpFoldResult` in
+/// \p values.
+///
+/// \note This function shouldn't be used directly, instead, use the
+/// `getConstifiedMixedXXX` methods from the related operations.
+///
+/// \p getAttributes retuns a list of potentially constant values, as determined
+/// by \p isDynamic, from the given \p memRefTy. The returned list must have as
+/// many elements as \p values or be empty.
+///
+/// E.g., consider the following example:
+/// ```
+/// memref.reinterpret_cast %base to <...> strides: [2, %dyn_stride] :
+///     memref<f32> to memref<?x?xf32, strided<[?, 1], offset: ?>>
+/// ```
+/// `ReinterpretCastOp::getMixedStrides()` will return `[2, %dyn_stride]`.
+/// Now using this helper function with:
+/// - `values == [2, %dyn_stride]`,
+/// - `memRefTy == memref<?x?xf32, strided<[?, 1], offset: ?>>`
+/// - `getAttributes == getConstantStrides` (i.e., a wrapper around
+/// `getStridesAndOffset`), and
+/// - `isDynamic == ShapedType::isDynamic`
+/// Will yield: `values == [2, 1]`
+static void constifyIndexValues(
+    SmallVectorImpl<OpFoldResult> &values, MemRefType memRefTy,
+    MLIRContext *ctxt,
+    llvm::function_ref<SmallVector<int64_t>(MemRefType)> getAttributes,
+    llvm::function_ref<bool(int64_t)> isDynamic) {
+  SmallVector<int64_t> constValues = getAttributes(memRefTy);
+  Builder builder(ctxt);
+  for (const auto &it : llvm::enumerate(constValues)) {
+    int64_t constValue = it.value();
+    if (!isDynamic(constValue))
+      values[it.index()] = builder.getIndexAttr(constValue);
+  }
+  for (OpFoldResult &ofr : values) {
+    if (ofr.is<Attribute>()) {
+      // FIXME: We shouldn't need to do that, but right now, the static indices
+      // are created with the wrong type: `i64` instead of `index`.
+      // As a result, if we were to keep the attribute as is, we may fail to see
+      // that two attributes are equal because one would have the i64 type and
+      // the other the index type.
+      // The alternative would be to create constant indices with getI64Attr in
+      // this and the previous loop, but it doesn't logically make sense (we are
+      // dealing with indices here) and would only strenghten the inconsistency
+      // around how static indices are created (some places use getI64Attr,
+      // others use getIndexAttr).
+      // The workaround here is to stick to the IndexAttr type for all the
+      // values, hence we recreate the attribute even when it is already static
+      // to make sure the type is consistent.
+      ofr = builder.getIndexAttr(
+          llvm::cast<IntegerAttr>(ofr.get<Attribute>()).getInt());
+      continue;
+    }
+    std::optional<int64_t> maybeConstant =
+        getConstantIntValue(ofr.get<Value>());
+    if (maybeConstant)
+      ofr = builder.getIndexAttr(*maybeConstant);
+  }
+}
+
+/// Wrapper around `getShape` that conforms to the function signature
+/// expected for `getAttributes` in `constifyIndexValues`.
+static SmallVector<int64_t> getConstantSizes(MemRefType memRefTy) {
+  ArrayRef<int64_t> sizes = memRefTy.getShape();
+  return SmallVector<int64_t>(sizes.begin(), sizes.end());
+}
+
+/// Wrapper around `getStridesAndOffset` that returns only the offset and
+/// conforms to the function signature expected for `getAttributes` in
+/// `constifyIndexValues`.
+static SmallVector<int64_t> getConstantOffset(MemRefType memrefType) {
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  LogicalResult hasStaticInformation =
+      getStridesAndOffset(memrefType, strides, offset);
+  if (failed(hasStaticInformation))
+    return SmallVector<int64_t>();
+  return SmallVector<int64_t>(1, offset);
+}
+
+/// Wrapper around `getStridesAndOffset` that returns only the strides and
+/// conforms to the function signature expected for `getAttributes` in
+/// `constifyIndexValues`.
+static SmallVector<int64_t> getConstantStrides(MemRefType memrefType) {
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  LogicalResult hasStaticInformation =
+      getStridesAndOffset(memrefType, strides, offset);
+  if (failed(hasStaticInformation))
+    return SmallVector<int64_t>();
+  return strides;
 }
 
 //===----------------------------------------------------------------------===//
 // AllocOp / AllocaOp
 //===----------------------------------------------------------------------===//
 
+void AllocOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "alloc");
+}
+
+void AllocaOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "alloca");
+}
+
 template <typename AllocLikeOp>
 static LogicalResult verifyAllocLikeOp(AllocLikeOp op) {
   static_assert(llvm::is_one_of<AllocLikeOp, AllocOp, AllocaOp>::value,
                 "applies to only alloc or alloca");
-  auto memRefType = op.getResult().getType().template dyn_cast<MemRefType>();
+  auto memRefType = llvm::dyn_cast<MemRefType>(op.getResult().getType());
   if (!memRefType)
     return op.emitOpError("result must be a memref");
 
-  if (static_cast<int64_t>(op.dynamicSizes().size()) !=
+  if (static_cast<int64_t>(op.getDynamicSizes().size()) !=
       memRefType.getNumDynamicDims())
     return op.emitOpError("dimension operand count does not equal memref "
                           "dynamic dimension count");
@@ -129,10 +213,10 @@ static LogicalResult verifyAllocLikeOp(AllocLikeOp op) {
   unsigned numSymbols = 0;
   if (!memRefType.getLayout().isIdentity())
     numSymbols = memRefType.getLayout().getAffineMap().getNumSymbols();
-  if (op.symbolOperands().size() != numSymbols)
+  if (op.getSymbolOperands().size() != numSymbols)
     return op.emitOpError("symbol operand count does not equal memref symbol "
                           "count: expected ")
-           << numSymbols << ", got " << op.symbolOperands().size();
+           << numSymbols << ", got " << op.getSymbolOperands().size();
 
   return success();
 }
@@ -158,8 +242,11 @@ struct SimplifyAllocConst : public OpRewritePattern<AllocLikeOp> {
                                 PatternRewriter &rewriter) const override {
     // Check to see if any dimensions operands are constants.  If so, we can
     // substitute and drop them.
-    if (llvm::none_of(alloc.dynamicSizes(), [](Value operand) {
-          return matchPattern(operand, matchConstantIndex());
+    if (llvm::none_of(alloc.getDynamicSizes(), [](Value operand) {
+          APInt constSizeArg;
+          if (!matchPattern(operand, m_ConstantInt(&constSizeArg)))
+            return false;
+          return constSizeArg.isNonNegative();
         }))
       return failure();
 
@@ -175,19 +262,19 @@ struct SimplifyAllocConst : public OpRewritePattern<AllocLikeOp> {
     for (unsigned dim = 0, e = memrefType.getRank(); dim < e; ++dim) {
       int64_t dimSize = memrefType.getDimSize(dim);
       // If this is already static dimension, keep it.
-      if (dimSize != -1) {
+      if (!ShapedType::isDynamic(dimSize)) {
         newShapeConstants.push_back(dimSize);
         continue;
       }
-      auto dynamicSize = alloc.dynamicSizes()[dynamicDimPos];
-      auto *defOp = dynamicSize.getDefiningOp();
-      if (auto constantIndexOp =
-              dyn_cast_or_null<arith::ConstantIndexOp>(defOp)) {
+      auto dynamicSize = alloc.getDynamicSizes()[dynamicDimPos];
+      APInt constSizeArg;
+      if (matchPattern(dynamicSize, m_ConstantInt(&constSizeArg)) &&
+          constSizeArg.isNonNegative()) {
         // Dynamic shape dimension will be folded.
-        newShapeConstants.push_back(constantIndexOp.value());
+        newShapeConstants.push_back(constSizeArg.getZExtValue());
       } else {
         // Dynamic shape dimension not folded; copy dynamicSize from old memref.
-        newShapeConstants.push_back(-1);
+        newShapeConstants.push_back(ShapedType::kDynamic);
         dynamicSizes.push_back(dynamicSize);
       }
       dynamicDimPos++;
@@ -201,13 +288,10 @@ struct SimplifyAllocConst : public OpRewritePattern<AllocLikeOp> {
 
     // Create and insert the alloc op for the new memref.
     auto newAlloc = rewriter.create<AllocLikeOp>(
-        alloc.getLoc(), newMemRefType, dynamicSizes, alloc.symbolOperands(),
-        alloc.alignmentAttr());
+        alloc.getLoc(), newMemRefType, dynamicSizes, alloc.getSymbolOperands(),
+        alloc.getAlignmentAttr());
     // Insert a cast so we have the same type as the old alloc.
-    auto resultCast =
-        rewriter.create<CastOp>(alloc.getLoc(), alloc.getType(), newAlloc);
-
-    rewriter.replaceOp(alloc, {resultCast});
+    rewriter.replaceOpWithNewOp<CastOp>(alloc, alloc.getType(), newAlloc);
     return success();
   }
 };
@@ -221,7 +305,7 @@ struct SimplifyDeadAlloc : public OpRewritePattern<T> {
                                 PatternRewriter &rewriter) const override {
     if (llvm::any_of(alloc->getUsers(), [&](Operation *op) {
           if (auto storeOp = dyn_cast<StoreOp>(op))
-            return storeOp.value() == alloc;
+            return storeOp.getValue() == alloc;
           return !isa<DeallocOp>(op);
         }))
       return failure();
@@ -247,6 +331,52 @@ void AllocaOp::getCanonicalizationPatterns(RewritePatternSet &results,
 }
 
 //===----------------------------------------------------------------------===//
+// ReallocOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ReallocOp::verify() {
+  auto sourceType = llvm::cast<MemRefType>(getOperand(0).getType());
+  MemRefType resultType = getType();
+
+  // The source memref should have identity layout (or none).
+  if (!sourceType.getLayout().isIdentity())
+    return emitError("unsupported layout for source memref type ")
+           << sourceType;
+
+  // The result memref should have identity layout (or none).
+  if (!resultType.getLayout().isIdentity())
+    return emitError("unsupported layout for result memref type ")
+           << resultType;
+
+  // The source memref and the result memref should be in the same memory space.
+  if (sourceType.getMemorySpace() != resultType.getMemorySpace())
+    return emitError("different memory spaces specified for source memref "
+                     "type ")
+           << sourceType << " and result memref type " << resultType;
+
+  // The source memref and the result memref should have the same element type.
+  if (sourceType.getElementType() != resultType.getElementType())
+    return emitError("different element types specified for source memref "
+                     "type ")
+           << sourceType << " and result memref type " << resultType;
+
+  // Verify that we have the dynamic dimension operand when it is needed.
+  if (resultType.getNumDynamicDims() && !getDynamicResultSize())
+    return emitError("missing dimension operand for result type ")
+           << resultType;
+  if (!resultType.getNumDynamicDims() && getDynamicResultSize())
+    return emitError("unnecessary dimension operand for result type ")
+           << resultType;
+
+  return success();
+}
+
+void ReallocOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                            MLIRContext *context) {
+  results.add<SimplifyDeadAlloc<ReallocOp>>(context);
+}
+
+//===----------------------------------------------------------------------===//
 // AllocaScopeOp
 //===----------------------------------------------------------------------===//
 
@@ -254,12 +384,12 @@ void AllocaScopeOp::print(OpAsmPrinter &p) {
   bool printBlockTerminators = false;
 
   p << ' ';
-  if (!results().empty()) {
+  if (!getResults().empty()) {
     p << " -> (" << getResultTypes() << ")";
     printBlockTerminators = true;
   }
   p << ' ';
-  p.printRegion(bodyRegion(),
+  p.printRegion(getBodyRegion(),
                 /*printEntryBlockArgs=*/false,
                 /*printBlockTerminators=*/printBlockTerminators);
   p.printOptionalAttrDict((*this)->getAttrs());
@@ -275,7 +405,7 @@ ParseResult AllocaScopeOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   // Parse the body region.
-  if (parser.parseRegion(*bodyRegion, /*arguments=*/{}, /*argTypes=*/{}))
+  if (parser.parseRegion(*bodyRegion, /*arguments=*/{}))
     return failure();
   AllocaScopeOp::ensureTerminator(*bodyRegion, parser.getBuilder(),
                                   result.location);
@@ -288,14 +418,13 @@ ParseResult AllocaScopeOp::parse(OpAsmParser &parser, OperationState &result) {
 }
 
 void AllocaScopeOp::getSuccessorRegions(
-    Optional<unsigned> index, ArrayRef<Attribute> operands,
-    SmallVectorImpl<RegionSuccessor> &regions) {
-  if (index.hasValue()) {
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (!point.isParent()) {
     regions.push_back(RegionSuccessor(getResults()));
     return;
   }
 
-  regions.push_back(RegionSuccessor(&bodyRegion()));
+  regions.push_back(RegionSuccessor(&getBodyRegion()));
 }
 
 /// Given an operation, return whether this op is guaranteed to
@@ -322,7 +451,7 @@ static bool isGuaranteedAutomaticAllocation(Operation *op) {
 static bool isOpItselfPotentialAutomaticAllocation(Operation *op) {
   // This op itself doesn't create a stack allocation,
   // the inner allocation should be handled separately.
-  if (op->hasTrait<OpTrait::HasRecursiveSideEffects>())
+  if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
     return false;
   MemoryEffectOpInterface interface = dyn_cast<MemoryEffectOpInterface>(op);
   if (!interface)
@@ -379,7 +508,7 @@ struct AllocaScopeInliner : public OpRewritePattern<AllocaScopeOp> {
     Block *block = &op.getRegion().front();
     Operation *terminator = block->getTerminator();
     ValueRange results = terminator->getOperands();
-    rewriter.mergeBlockBefore(block, op);
+    rewriter.inlineBlockBefore(block, op);
     rewriter.replaceOp(op, results);
     rewriter.eraseOp(terminator);
     return success();
@@ -467,7 +596,7 @@ void AllocaScopeOp::getCanonicalizationPatterns(RewritePatternSet &results,
 //===----------------------------------------------------------------------===//
 
 LogicalResult AssumeAlignmentOp::verify() {
-  if (!llvm::isPowerOf2_32(alignment()))
+  if (!llvm::isPowerOf2_32(getAlignment()))
     return emitOpError("alignment must be power of 2");
   return success();
 }
@@ -476,8 +605,12 @@ LogicalResult AssumeAlignmentOp::verify() {
 // CastOp
 //===----------------------------------------------------------------------===//
 
+void CastOp::getAsmResultNames(function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "cast");
+}
+
 /// Determines whether MemRef_CastOp casts to a more dynamic version of the
-/// source memref. This is useful to to fold a memref.cast into a consuming op
+/// source memref. This is useful to fold a memref.cast into a consuming op
 /// and implement canonicalization patterns for ops in different dialects that
 /// may consume the results of memref.cast operations. Such foldable memref.cast
 /// operations are typically inserted as `view` and `subview` ops are
@@ -514,8 +647,9 @@ LogicalResult AssumeAlignmentOp::verify() {
 ///   consumer %0 ... : memref<?x16xf32, affine_map<(i, j)->(16 * i + j)>>
 /// ```
 bool CastOp::canFoldIntoConsumerOp(CastOp castOp) {
-  MemRefType sourceType = castOp.source().getType().dyn_cast<MemRefType>();
-  MemRefType resultType = castOp.getType().dyn_cast<MemRefType>();
+  MemRefType sourceType =
+      llvm::dyn_cast<MemRefType>(castOp.getSource().getType());
+  MemRefType resultType = llvm::dyn_cast<MemRefType>(castOp.getType());
 
   // Requires ranked MemRefType.
   if (!sourceType || !resultType)
@@ -546,16 +680,15 @@ bool CastOp::canFoldIntoConsumerOp(CastOp castOp) {
 
   // If cast is towards more static offset along any dimension, don't fold.
   if (sourceOffset != resultOffset)
-    if (ShapedType::isDynamicStrideOrOffset(sourceOffset) &&
-        !ShapedType::isDynamicStrideOrOffset(resultOffset))
+    if (ShapedType::isDynamic(sourceOffset) &&
+        !ShapedType::isDynamic(resultOffset))
       return false;
 
   // If cast is towards more static strides along any dimension, don't fold.
   for (auto it : llvm::zip(sourceStrides, resultStrides)) {
     auto ss = std::get<0>(it), st = std::get<1>(it);
     if (ss != st)
-      if (ShapedType::isDynamicStrideOrOffset(ss) &&
-          !ShapedType::isDynamicStrideOrOffset(st))
+      if (ShapedType::isDynamic(ss) && !ShapedType::isDynamic(st))
         return false;
   }
 
@@ -566,11 +699,11 @@ bool CastOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
   if (inputs.size() != 1 || outputs.size() != 1)
     return false;
   Type a = inputs.front(), b = outputs.front();
-  auto aT = a.dyn_cast<MemRefType>();
-  auto bT = b.dyn_cast<MemRefType>();
+  auto aT = llvm::dyn_cast<MemRefType>(a);
+  auto bT = llvm::dyn_cast<MemRefType>(b);
 
-  auto uaT = a.dyn_cast<UnrankedMemRefType>();
-  auto ubT = b.dyn_cast<UnrankedMemRefType>();
+  auto uaT = llvm::dyn_cast<UnrankedMemRefType>(a);
+  auto ubT = llvm::dyn_cast<UnrankedMemRefType>(b);
 
   if (aT && bT) {
     if (aT.getElementType() != bT.getElementType())
@@ -588,8 +721,7 @@ bool CastOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
       // same. They are also compatible if either one is dynamic (see
       // description of MemRefCastOp for details).
       auto checkCompatible = [](int64_t a, int64_t b) {
-        return (a == MemRefType::getDynamicStrideOrOffset() ||
-                b == MemRefType::getDynamicStrideOrOffset() || a == b);
+        return (ShapedType::isDynamic(a) || ShapedType::isDynamic(b) || a == b);
       };
       if (!checkCompatible(aOffset, bOffset))
         return false;
@@ -606,7 +738,8 @@ bool CastOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
 
     for (unsigned i = 0, e = aT.getRank(); i != e; ++i) {
       int64_t aDim = aT.getDimSize(i), bDim = bT.getDimSize(i);
-      if (aDim != -1 && bDim != -1 && aDim != bDim)
+      if (!ShapedType::isDynamic(aDim) && !ShapedType::isDynamic(bDim) &&
+          aDim != bDim)
         return false;
     }
     return true;
@@ -632,7 +765,7 @@ bool CastOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
   return false;
 }
 
-OpFoldResult CastOp::fold(ArrayRef<Attribute> operands) {
+OpFoldResult CastOp::fold(FoldAdaptor adaptor) {
   return succeeded(foldMemRefCast(*this)) ? getResult() : Value();
 }
 
@@ -652,30 +785,32 @@ struct FoldCopyOfCast : public OpRewritePattern<CopyOp> {
     bool modified = false;
 
     // Check source.
-    if (auto castOp = copyOp.source().getDefiningOp<CastOp>()) {
-      auto fromType = castOp.source().getType().dyn_cast<MemRefType>();
-      auto toType = castOp.source().getType().dyn_cast<MemRefType>();
+    if (auto castOp = copyOp.getSource().getDefiningOp<CastOp>()) {
+      auto fromType = llvm::dyn_cast<MemRefType>(castOp.getSource().getType());
+      auto toType = llvm::dyn_cast<MemRefType>(castOp.getSource().getType());
 
       if (fromType && toType) {
         if (fromType.getShape() == toType.getShape() &&
             fromType.getElementType() == toType.getElementType()) {
-          rewriter.updateRootInPlace(
-              copyOp, [&] { copyOp.sourceMutable().assign(castOp.source()); });
+          rewriter.modifyOpInPlace(copyOp, [&] {
+            copyOp.getSourceMutable().assign(castOp.getSource());
+          });
           modified = true;
         }
       }
     }
 
     // Check target.
-    if (auto castOp = copyOp.target().getDefiningOp<CastOp>()) {
-      auto fromType = castOp.source().getType().dyn_cast<MemRefType>();
-      auto toType = castOp.source().getType().dyn_cast<MemRefType>();
+    if (auto castOp = copyOp.getTarget().getDefiningOp<CastOp>()) {
+      auto fromType = llvm::dyn_cast<MemRefType>(castOp.getSource().getType());
+      auto toType = llvm::dyn_cast<MemRefType>(castOp.getSource().getType());
 
       if (fromType && toType) {
         if (fromType.getShape() == toType.getShape() &&
             fromType.getElementType() == toType.getElementType()) {
-          rewriter.updateRootInPlace(
-              copyOp, [&] { copyOp.targetMutable().assign(castOp.source()); });
+          rewriter.modifyOpInPlace(copyOp, [&] {
+            copyOp.getTargetMutable().assign(castOp.getSource());
+          });
           modified = true;
         }
       }
@@ -691,21 +826,41 @@ struct FoldSelfCopy : public OpRewritePattern<CopyOp> {
 
   LogicalResult matchAndRewrite(CopyOp copyOp,
                                 PatternRewriter &rewriter) const override {
-    if (copyOp.source() != copyOp.target())
+    if (copyOp.getSource() != copyOp.getTarget())
       return failure();
 
     rewriter.eraseOp(copyOp);
     return success();
   }
 };
+
+struct FoldEmptyCopy final : public OpRewritePattern<CopyOp> {
+  using OpRewritePattern<CopyOp>::OpRewritePattern;
+
+  static bool isEmptyMemRef(BaseMemRefType type) {
+    return type.hasRank() &&
+           llvm::any_of(type.getShape(), [](int64_t x) { return x == 0; });
+  }
+
+  LogicalResult matchAndRewrite(CopyOp copyOp,
+                                PatternRewriter &rewriter) const override {
+    if (isEmptyMemRef(copyOp.getSource().getType()) ||
+        isEmptyMemRef(copyOp.getTarget().getType())) {
+      rewriter.eraseOp(copyOp);
+      return success();
+    }
+
+    return failure();
+  }
+};
 } // namespace
 
 void CopyOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                          MLIRContext *context) {
-  results.add<FoldCopyOfCast, FoldSelfCopy>(context);
+  results.add<FoldCopyOfCast, FoldEmptyCopy, FoldSelfCopy>(context);
 }
 
-LogicalResult CopyOp::fold(ArrayRef<Attribute> cstOperands,
+LogicalResult CopyOp::fold(FoldAdaptor adaptor,
                            SmallVectorImpl<OpFoldResult> &results) {
   /// copy(memrefcast) -> copy
   bool folded = false;
@@ -724,7 +879,7 @@ LogicalResult CopyOp::fold(ArrayRef<Attribute> cstOperands,
 // DeallocOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult DeallocOp::fold(ArrayRef<Attribute> cstOperands,
+LogicalResult DeallocOp::fold(FoldAdaptor adaptor,
                               SmallVectorImpl<OpFoldResult> &results) {
   /// dealloc(memrefcast) -> dealloc
   return foldMemRefCast(*this);
@@ -734,6 +889,10 @@ LogicalResult DeallocOp::fold(ArrayRef<Attribute> cstOperands,
 // DimOp
 //===----------------------------------------------------------------------===//
 
+void DimOp::getAsmResultNames(function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "dim");
+}
+
 void DimOp::build(OpBuilder &builder, OperationState &result, Value source,
                   int64_t index) {
   auto loc = result.location;
@@ -741,35 +900,23 @@ void DimOp::build(OpBuilder &builder, OperationState &result, Value source,
   build(builder, result, source, indexValue);
 }
 
-void DimOp::build(OpBuilder &builder, OperationState &result, Value source,
-                  Value index) {
-  auto indexTy = builder.getIndexType();
-  build(builder, result, indexTy, source, index);
+std::optional<int64_t> DimOp::getConstantIndex() {
+  return getConstantIntValue(getIndex());
 }
 
-Optional<int64_t> DimOp::getConstantIndex() {
-  if (auto constantOp = index().getDefiningOp<arith::ConstantOp>())
-    return constantOp.getValue().cast<IntegerAttr>().getInt();
-  return {};
-}
+Speculation::Speculatability DimOp::getSpeculatability() {
+  auto constantIndex = getConstantIndex();
+  if (!constantIndex)
+    return Speculation::NotSpeculatable;
 
-LogicalResult DimOp::verify() {
-  // Assume unknown index to be in range.
-  Optional<int64_t> index = getConstantIndex();
-  if (!index.hasValue())
-    return success();
+  auto rankedSourceType = dyn_cast<MemRefType>(getSource().getType());
+  if (!rankedSourceType)
+    return Speculation::NotSpeculatable;
 
-  // Check that constant index is not knowingly out of range.
-  auto type = source().getType();
-  if (auto memrefType = type.dyn_cast<MemRefType>()) {
-    if (index.getValue() >= memrefType.getRank())
-      return emitOpError("index is out of range");
-  } else if (type.isa<UnrankedMemRefType>()) {
-    // Assume index to be in range.
-  } else {
-    llvm_unreachable("expected operand with memref type");
-  }
-  return success();
+  if (rankedSourceType.getRank() <= constantIndex)
+    return Speculation::NotSpeculatable;
+
+  return Speculation::Speculatable;
 }
 
 /// Return a map with key being elements in `vals` and data being number of
@@ -790,7 +937,7 @@ static std::map<int64_t, unsigned> getNumOccurences(ArrayRef<int64_t> vals) {
 /// This accounts for cases where there are multiple unit-dims, but only a
 /// subset of those are dropped. For MemRefTypes these can be disambiguated
 /// using the strides. If a dimension is dropped the stride must be dropped too.
-static llvm::Optional<llvm::SmallBitVector>
+static FailureOr<llvm::SmallBitVector>
 computeMemRefRankReductionMask(MemRefType originalType, MemRefType reducedType,
                                ArrayRef<OpFoldResult> sizes) {
   llvm::SmallBitVector unusedDims(originalType.getRank());
@@ -798,8 +945,8 @@ computeMemRefRankReductionMask(MemRefType originalType, MemRefType reducedType,
     return unusedDims;
 
   for (const auto &dim : llvm::enumerate(sizes))
-    if (auto attr = dim.value().dyn_cast<Attribute>())
-      if (attr.cast<IntegerAttr>().getInt() == 1)
+    if (auto attr = llvm::dyn_cast_if_present<Attribute>(dim.value()))
+      if (llvm::cast<IntegerAttr>(attr).getInt() == 1)
         unusedDims.set(dim.index());
 
   // Early exit for the case where the number of unused dims matches the number
@@ -814,7 +961,7 @@ computeMemRefRankReductionMask(MemRefType originalType, MemRefType reducedType,
           getStridesAndOffset(originalType, originalStrides, originalOffset)) ||
       failed(
           getStridesAndOffset(reducedType, candidateStrides, candidateOffset)))
-    return llvm::None;
+    return failure();
 
   // For memrefs, a dimension is truly dropped if its corresponding stride is
   // also dropped. This is particularly important when more than one of the dims
@@ -849,34 +996,40 @@ computeMemRefRankReductionMask(MemRefType originalType, MemRefType reducedType,
         candidateStridesNumOccurences[originalStride]) {
       // This should never happen. Cant have a stride in the reduced rank type
       // that wasnt in the original one.
-      return llvm::None;
+      return failure();
     }
   }
 
   if ((int64_t)unusedDims.count() + reducedType.getRank() !=
       originalType.getRank())
-    return llvm::None;
+    return failure();
   return unusedDims;
 }
 
 llvm::SmallBitVector SubViewOp::getDroppedDims() {
   MemRefType sourceType = getSourceType();
   MemRefType resultType = getType();
-  llvm::Optional<llvm::SmallBitVector> unusedDims =
+  FailureOr<llvm::SmallBitVector> unusedDims =
       computeMemRefRankReductionMask(sourceType, resultType, getMixedSizes());
-  assert(unusedDims && "unable to find unused dims of subview");
+  assert(succeeded(unusedDims) && "unable to find unused dims of subview");
   return *unusedDims;
 }
 
-OpFoldResult DimOp::fold(ArrayRef<Attribute> operands) {
+OpFoldResult DimOp::fold(FoldAdaptor adaptor) {
   // All forms of folding require a known index.
-  auto index = operands[1].dyn_cast_or_null<IntegerAttr>();
+  auto index = llvm::dyn_cast_if_present<IntegerAttr>(adaptor.getIndex());
   if (!index)
     return {};
 
   // Folding for unranked types (UnrankedMemRefType) is not supported.
-  auto memrefType = source().getType().dyn_cast<MemRefType>();
+  auto memrefType = llvm::dyn_cast<MemRefType>(getSource().getType());
   if (!memrefType)
+    return {};
+
+  // Out of bound indices produce undefined behavior but are still valid IR.
+  // Don't choke on them.
+  int64_t indexVal = index.getInt();
+  if (indexVal < 0 || indexVal >= memrefType.getRank())
     return {};
 
   // Fold if the shape extent along the given index is known.
@@ -889,7 +1042,7 @@ OpFoldResult DimOp::fold(ArrayRef<Attribute> operands) {
   unsigned unsignedIndex = index.getValue().getZExtValue();
 
   // Fold dim to the size argument for an `AllocOp`, `ViewOp`, or `SubViewOp`.
-  Operation *definingOp = source().getDefiningOp();
+  Operation *definingOp = getSource().getDefiningOp();
 
   if (auto alloc = dyn_cast_or_null<AllocOp>(definingOp))
     return *(alloc.getDynamicSizes().begin() +
@@ -944,16 +1097,47 @@ struct DimOfMemRefReshape : public OpRewritePattern<DimOp> {
 
   LogicalResult matchAndRewrite(DimOp dim,
                                 PatternRewriter &rewriter) const override {
-    auto reshape = dim.source().getDefiningOp<ReshapeOp>();
+    auto reshape = dim.getSource().getDefiningOp<ReshapeOp>();
 
     if (!reshape)
-      return failure();
+      return rewriter.notifyMatchFailure(
+          dim, "Dim op is not defined by a reshape op.");
+
+    // dim of a memref reshape can be folded if dim.getIndex() dominates the
+    // reshape. Instead of using `DominanceInfo` (which is usually costly) we
+    // cheaply check that either of the following conditions hold:
+    //      1. dim.getIndex() is defined in the same block as reshape but before
+    //      reshape.
+    //      2. dim.getIndex() is defined in a parent block of
+    //      reshape.
+
+    // Check condition 1
+    if (dim.getIndex().getParentBlock() == reshape->getBlock()) {
+      if (auto *definingOp = dim.getIndex().getDefiningOp()) {
+        if (reshape->isBeforeInBlock(definingOp)) {
+          return rewriter.notifyMatchFailure(
+              dim,
+              "dim.getIndex is not defined before reshape in the same block.");
+        }
+      } // else dim.getIndex is a block argument to reshape->getBlock and
+        // dominates reshape
+    }   // Check condition 2
+    else if (dim->getBlock() != reshape->getBlock() &&
+             !dim.getIndex().getParentRegion()->isProperAncestor(
+                 reshape->getParentRegion())) {
+      // If dim and reshape are in the same block but dim.getIndex() isn't, we
+      // already know dim.getIndex() dominates reshape without calling
+      // `isProperAncestor`
+      return rewriter.notifyMatchFailure(
+          dim, "dim.getIndex does not dominate reshape.");
+    }
 
     // Place the load directly after the reshape to ensure that the shape memref
     // was not mutated.
     rewriter.setInsertionPointAfter(reshape);
     Location loc = dim.getLoc();
-    Value load = rewriter.create<LoadOp>(loc, reshape.shape(), dim.index());
+    Value load =
+        rewriter.create<LoadOp>(loc, reshape.getShape(), dim.getIndex());
     if (load.getType() != dim.getType())
       load = rewriter.create<arith::IndexCastOp>(loc, dim.getType(), load);
     rewriter.replaceOp(dim, load);
@@ -1078,7 +1262,7 @@ LogicalResult DmaStartOp::verify() {
   // Check types of operands. The order of these calls is important: the later
   // calls rely on some type properties to compute the operand position.
   // 1. Source memref.
-  if (!getSrcMemRef().getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(getSrcMemRef().getType()))
     return emitOpError("expected source to be of memref type");
   if (numOperands < getSrcMemRefRank() + 4)
     return emitOpError() << "expected at least " << getSrcMemRefRank() + 4
@@ -1089,7 +1273,7 @@ LogicalResult DmaStartOp::verify() {
     return emitOpError("expected source indices to be of index type");
 
   // 2. Destination memref.
-  if (!getDstMemRef().getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(getDstMemRef().getType()))
     return emitOpError("expected destination to be of memref type");
   unsigned numExpectedOperands = getSrcMemRefRank() + getDstMemRefRank() + 4;
   if (numOperands < numExpectedOperands)
@@ -1105,7 +1289,7 @@ LogicalResult DmaStartOp::verify() {
     return emitOpError("expected num elements to be of index type");
 
   // 4. Tag memref.
-  if (!getTagMemRef().getType().isa<MemRefType>())
+  if (!llvm::isa<MemRefType>(getTagMemRef().getType()))
     return emitOpError("expected tag to be of memref type");
   numExpectedOperands += getTagMemRefRank();
   if (numOperands < numExpectedOperands)
@@ -1133,7 +1317,7 @@ LogicalResult DmaStartOp::verify() {
   return success();
 }
 
-LogicalResult DmaStartOp::fold(ArrayRef<Attribute> cstOperands,
+LogicalResult DmaStartOp::fold(FoldAdaptor adaptor,
                                SmallVectorImpl<OpFoldResult> &results) {
   /// dma_start(memrefcast) -> dma_start
   return foldMemRefCast(*this);
@@ -1143,7 +1327,7 @@ LogicalResult DmaStartOp::fold(ArrayRef<Attribute> cstOperands,
 // DmaWaitOp
 // ---------------------------------------------------------------------------
 
-LogicalResult DmaWaitOp::fold(ArrayRef<Attribute> cstOperands,
+LogicalResult DmaWaitOp::fold(FoldAdaptor adaptor,
                               SmallVectorImpl<OpFoldResult> &results) {
   /// dma_wait(memrefcast) -> dma_wait
   return foldMemRefCast(*this);
@@ -1151,7 +1335,7 @@ LogicalResult DmaWaitOp::fold(ArrayRef<Attribute> cstOperands,
 
 LogicalResult DmaWaitOp::verify() {
   // Check that the number of tag indices matches the tagMemRef rank.
-  unsigned numTagIndices = tagIndices().size();
+  unsigned numTagIndices = getTagIndices().size();
   unsigned tagMemRefRank = getTagMemRefRank();
   if (numTagIndices != tagMemRefRank)
     return emitOpError() << "expected tagIndices to have the same number of "
@@ -1161,20 +1345,141 @@ LogicalResult DmaWaitOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// ExtractAlignedPointerAsIndexOp
+//===----------------------------------------------------------------------===//
+
+void ExtractAlignedPointerAsIndexOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "intptr");
+}
+
+//===----------------------------------------------------------------------===//
+// ExtractStridedMetadataOp
+//===----------------------------------------------------------------------===//
+
+/// The number and type of the results are inferred from the
+/// shape of the source.
+LogicalResult ExtractStridedMetadataOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location,
+    ExtractStridedMetadataOp::Adaptor adaptor,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  auto sourceType = llvm::dyn_cast<MemRefType>(adaptor.getSource().getType());
+  if (!sourceType)
+    return failure();
+
+  unsigned sourceRank = sourceType.getRank();
+  IndexType indexType = IndexType::get(context);
+  auto memrefType =
+      MemRefType::get({}, sourceType.getElementType(),
+                      MemRefLayoutAttrInterface{}, sourceType.getMemorySpace());
+  // Base.
+  inferredReturnTypes.push_back(memrefType);
+  // Offset.
+  inferredReturnTypes.push_back(indexType);
+  // Sizes and strides.
+  for (unsigned i = 0; i < sourceRank * 2; ++i)
+    inferredReturnTypes.push_back(indexType);
+  return success();
+}
+
+void ExtractStridedMetadataOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getBaseBuffer(), "base_buffer");
+  setNameFn(getOffset(), "offset");
+  // For multi-result to work properly with pretty names and packed syntax `x:3`
+  // we can only give a pretty name to the first value in the pack.
+  if (!getSizes().empty()) {
+    setNameFn(getSizes().front(), "sizes");
+    setNameFn(getStrides().front(), "strides");
+  }
+}
+
+/// Helper function to perform the replacement of all constant uses of `values`
+/// by a materialized constant extracted from `maybeConstants`.
+/// `values` and `maybeConstants` are expected to have the same size.
+template <typename Container>
+static bool replaceConstantUsesOf(OpBuilder &rewriter, Location loc,
+                                  Container values,
+                                  ArrayRef<OpFoldResult> maybeConstants) {
+  assert(values.size() == maybeConstants.size() &&
+         " expected values and maybeConstants of the same size");
+  bool atLeastOneReplacement = false;
+  for (auto [maybeConstant, result] : llvm::zip(maybeConstants, values)) {
+    // Don't materialize a constant if there are no uses: this would indice
+    // infinite loops in the driver.
+    if (result.use_empty() || maybeConstant == getAsOpFoldResult(result))
+      continue;
+    assert(maybeConstant.template is<Attribute>() &&
+           "The constified value should be either unchanged (i.e., == result) "
+           "or a constant");
+    Value constantVal = rewriter.create<arith::ConstantIndexOp>(
+        loc, llvm::cast<IntegerAttr>(maybeConstant.template get<Attribute>())
+                 .getInt());
+    for (Operation *op : llvm::make_early_inc_range(result.getUsers())) {
+      // modifyOpInPlace: lambda cannot capture structured bindings in C++17
+      // yet.
+      op->replaceUsesOfWith(result, constantVal);
+      atLeastOneReplacement = true;
+    }
+  }
+  return atLeastOneReplacement;
+}
+
+LogicalResult
+ExtractStridedMetadataOp::fold(FoldAdaptor adaptor,
+                               SmallVectorImpl<OpFoldResult> &results) {
+  OpBuilder builder(*this);
+
+  bool atLeastOneReplacement = replaceConstantUsesOf(
+      builder, getLoc(), ArrayRef<TypedValue<IndexType>>(getOffset()),
+      getConstifiedMixedOffset());
+  atLeastOneReplacement |= replaceConstantUsesOf(builder, getLoc(), getSizes(),
+                                                 getConstifiedMixedSizes());
+  atLeastOneReplacement |= replaceConstantUsesOf(
+      builder, getLoc(), getStrides(), getConstifiedMixedStrides());
+
+  return success(atLeastOneReplacement);
+}
+
+SmallVector<OpFoldResult> ExtractStridedMetadataOp::getConstifiedMixedSizes() {
+  SmallVector<OpFoldResult> values = getAsOpFoldResult(getSizes());
+  constifyIndexValues(values, getSource().getType(), getContext(),
+                      getConstantSizes, ShapedType::isDynamic);
+  return values;
+}
+
+SmallVector<OpFoldResult>
+ExtractStridedMetadataOp::getConstifiedMixedStrides() {
+  SmallVector<OpFoldResult> values = getAsOpFoldResult(getStrides());
+  constifyIndexValues(values, getSource().getType(), getContext(),
+                      getConstantStrides, ShapedType::isDynamic);
+  return values;
+}
+
+OpFoldResult ExtractStridedMetadataOp::getConstifiedMixedOffset() {
+  OpFoldResult offsetOfr = getAsOpFoldResult(getOffset());
+  SmallVector<OpFoldResult> values(1, offsetOfr);
+  constifyIndexValues(values, getSource().getType(), getContext(),
+                      getConstantOffset, ShapedType::isDynamic);
+  return values[0];
+}
+
+//===----------------------------------------------------------------------===//
 // GenericAtomicRMWOp
 //===----------------------------------------------------------------------===//
 
 void GenericAtomicRMWOp::build(OpBuilder &builder, OperationState &result,
                                Value memref, ValueRange ivs) {
+  OpBuilder::InsertionGuard g(builder);
   result.addOperands(memref);
   result.addOperands(ivs);
 
-  if (auto memrefType = memref.getType().dyn_cast<MemRefType>()) {
+  if (auto memrefType = llvm::dyn_cast<MemRefType>(memref.getType())) {
     Type elementType = memrefType.getElementType();
     result.addTypes(elementType);
 
     Region *bodyRegion = result.addRegion();
-    bodyRegion->push_back(new Block());
+    builder.createBlock(bodyRegion);
     bodyRegion->addArgument(elementType, memref.getLoc());
   }
 }
@@ -1189,7 +1494,7 @@ LogicalResult GenericAtomicRMWOp::verify() {
 
   bool hasSideEffects =
       body.walk([&](Operation *nestedOp) {
-            if (MemoryEffectOpInterface::hasNoEffect(nestedOp))
+            if (isMemoryEffectFree(nestedOp))
               return WalkResult::advance();
             nestedOp->emitError(
                 "body of 'memref.generic_atomic_rmw' should contain "
@@ -1215,16 +1520,16 @@ ParseResult GenericAtomicRMWOp::parse(OpAsmParser &parser,
     return failure();
 
   Region *body = result.addRegion();
-  if (parser.parseRegion(*body, llvm::None, llvm::None) ||
+  if (parser.parseRegion(*body, {}) ||
       parser.parseOptionalAttrDict(result.attributes))
     return failure();
-  result.types.push_back(memrefType.cast<MemRefType>().getElementType());
+  result.types.push_back(llvm::cast<MemRefType>(memrefType).getElementType());
   return success();
 }
 
 void GenericAtomicRMWOp::print(OpAsmPrinter &p) {
-  p << ' ' << memref() << "[" << indices() << "] : " << memref().getType()
-    << ' ';
+  p << ' ' << getMemref() << "[" << getIndices()
+    << "] : " << getMemref().getType() << ' ';
   p.printRegion(getRegion());
   p.printOptionalAttrDict((*this)->getAttrs());
 }
@@ -1235,7 +1540,7 @@ void GenericAtomicRMWOp::print(OpAsmPrinter &p) {
 
 LogicalResult AtomicYieldOp::verify() {
   Type parentType = (*this)->getParentOp()->getResultTypes().front();
-  Type resultType = result().getType();
+  Type resultType = getResult().getType();
   if (parentType != resultType)
     return emitOpError() << "types mismatch between yield op: " << resultType
                          << " and its parent: " << parentType;
@@ -1266,7 +1571,7 @@ parseGlobalMemrefOpTypeAndInitialValue(OpAsmParser &parser, TypeAttr &typeAttr,
   if (parser.parseType(type))
     return failure();
 
-  auto memrefType = type.dyn_cast<MemRefType>();
+  auto memrefType = llvm::dyn_cast<MemRefType>(type);
   if (!memrefType || !memrefType.hasStaticShape())
     return parser.emitError(parser.getNameLoc())
            << "type should be static shaped memref, but got " << type;
@@ -1283,31 +1588,31 @@ parseGlobalMemrefOpTypeAndInitialValue(OpAsmParser &parser, TypeAttr &typeAttr,
   Type tensorType = getTensorTypeFromMemRefType(memrefType);
   if (parser.parseAttribute(initialValue, tensorType))
     return failure();
-  if (!initialValue.isa<ElementsAttr>())
+  if (!llvm::isa<ElementsAttr>(initialValue))
     return parser.emitError(parser.getNameLoc())
            << "initial value should be a unit or elements attribute";
   return success();
 }
 
 LogicalResult GlobalOp::verify() {
-  auto memrefType = type().dyn_cast<MemRefType>();
+  auto memrefType = llvm::dyn_cast<MemRefType>(getType());
   if (!memrefType || !memrefType.hasStaticShape())
     return emitOpError("type should be static shaped memref, but got ")
-           << type();
+           << getType();
 
   // Verify that the initial value, if present, is either a unit attribute or
   // an elements attribute.
-  if (initial_value().hasValue()) {
-    Attribute initValue = initial_value().getValue();
-    if (!initValue.isa<UnitAttr>() && !initValue.isa<ElementsAttr>())
+  if (getInitialValue().has_value()) {
+    Attribute initValue = getInitialValue().value();
+    if (!llvm::isa<UnitAttr>(initValue) && !llvm::isa<ElementsAttr>(initValue))
       return emitOpError("initial value should be a unit or elements "
                          "attribute, but got ")
              << initValue;
 
     // Check that the type of the initial value is compatible with the type of
     // the global variable.
-    if (initValue.isa<ElementsAttr>()) {
-      Type initType = initValue.getType();
+    if (auto elementsAttr = llvm::dyn_cast<ElementsAttr>(initValue)) {
+      Type initType = elementsAttr.getType();
       Type tensorType = getTensorTypeFromMemRefType(memrefType);
       if (initType != tensorType)
         return emitOpError("initial value expected to be of type ")
@@ -1315,8 +1620,8 @@ LogicalResult GlobalOp::verify() {
     }
   }
 
-  if (Optional<uint64_t> alignAttr = alignment()) {
-    uint64_t alignment = alignAttr.getValue();
+  if (std::optional<uint64_t> alignAttr = getAlignment()) {
+    uint64_t alignment = *alignAttr;
 
     if (!llvm::isPowerOf2_64(alignment))
       return emitError() << "alignment attribute value " << alignment
@@ -1328,9 +1633,9 @@ LogicalResult GlobalOp::verify() {
 }
 
 ElementsAttr GlobalOp::getConstantInitValue() {
-  auto initVal = initial_value();
-  if (constant() && initVal.hasValue())
-    return initVal.getValue().cast<ElementsAttr>();
+  auto initVal = getInitialValue();
+  if (getConstant() && initVal.has_value())
+    return llvm::cast<ElementsAttr>(initVal.value());
   return {};
 }
 
@@ -1343,16 +1648,16 @@ GetGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // Verify that the result type is same as the type of the referenced
   // memref.global op.
   auto global =
-      symbolTable.lookupNearestSymbolFrom<GlobalOp>(*this, nameAttr());
+      symbolTable.lookupNearestSymbolFrom<GlobalOp>(*this, getNameAttr());
   if (!global)
     return emitOpError("'")
-           << name() << "' does not reference a valid global memref";
+           << getName() << "' does not reference a valid global memref";
 
-  Type resultType = result().getType();
-  if (global.type() != resultType)
+  Type resultType = getResult().getType();
+  if (global.getType() != resultType)
     return emitOpError("result type ")
-           << resultType << " does not match type " << global.type()
-           << " of the global memref @" << name();
+           << resultType << " does not match type " << global.getType()
+           << " of the global memref @" << getName();
   return success();
 }
 
@@ -1361,12 +1666,14 @@ GetGlobalOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 //===----------------------------------------------------------------------===//
 
 LogicalResult LoadOp::verify() {
-  if (getNumOperands() != 1 + getMemRefType().getRank())
-    return emitOpError("incorrect number of indices for load");
+  if (static_cast<int64_t>(getIndices().size()) != getMemRefType().getRank()) {
+    return emitOpError("incorrect number of indices for load, expected ")
+           << getMemRefType().getRank() << " but got " << getIndices().size();
+  }
   return success();
 }
 
-OpFoldResult LoadOp::fold(ArrayRef<Attribute> cstOperands) {
+OpFoldResult LoadOp::fold(FoldAdaptor adaptor) {
   /// load(memrefcast) -> load
   if (succeeded(foldMemRefCast(*this)))
     return getResult();
@@ -1374,15 +1681,59 @@ OpFoldResult LoadOp::fold(ArrayRef<Attribute> cstOperands) {
 }
 
 //===----------------------------------------------------------------------===//
+// MemorySpaceCastOp
+//===----------------------------------------------------------------------===//
+
+void MemorySpaceCastOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "memspacecast");
+}
+
+bool MemorySpaceCastOp::areCastCompatible(TypeRange inputs, TypeRange outputs) {
+  if (inputs.size() != 1 || outputs.size() != 1)
+    return false;
+  Type a = inputs.front(), b = outputs.front();
+  auto aT = llvm::dyn_cast<MemRefType>(a);
+  auto bT = llvm::dyn_cast<MemRefType>(b);
+
+  auto uaT = llvm::dyn_cast<UnrankedMemRefType>(a);
+  auto ubT = llvm::dyn_cast<UnrankedMemRefType>(b);
+
+  if (aT && bT) {
+    if (aT.getElementType() != bT.getElementType())
+      return false;
+    if (aT.getLayout() != bT.getLayout())
+      return false;
+    if (aT.getShape() != bT.getShape())
+      return false;
+    return true;
+  }
+  if (uaT && ubT) {
+    return uaT.getElementType() == ubT.getElementType();
+  }
+  return false;
+}
+
+OpFoldResult MemorySpaceCastOp::fold(FoldAdaptor adaptor) {
+  // memory_space_cast(memory_space_cast(v, t1), t2) -> memory_space_cast(v,
+  // t2)
+  if (auto parentCast = getSource().getDefiningOp<MemorySpaceCastOp>()) {
+    getSourceMutable().assign(parentCast.getSource());
+    return getResult();
+  }
+  return Value{};
+}
+
+//===----------------------------------------------------------------------===//
 // PrefetchOp
 //===----------------------------------------------------------------------===//
 
 void PrefetchOp::print(OpAsmPrinter &p) {
-  p << " " << memref() << '[';
-  p.printOperands(indices());
-  p << ']' << ", " << (isWrite() ? "write" : "read");
-  p << ", locality<" << localityHint();
-  p << ">, " << (isDataCache() ? "data" : "instr");
+  p << " " << getMemref() << '[';
+  p.printOperands(getIndices());
+  p << ']' << ", " << (getIsWrite() ? "write" : "read");
+  p << ", locality<" << getLocalityHint();
+  p << ">, " << (getIsDataCache() ? "data" : "instr");
   p.printOptionalAttrDict(
       (*this)->getAttrs(),
       /*elidedAttrs=*/{"localityHint", "isWrite", "isDataCache"});
@@ -1411,20 +1762,18 @@ ParseResult PrefetchOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.resolveOperands(indexInfo, indexTy, result.operands))
     return failure();
 
-  if (!readOrWrite.equals("read") && !readOrWrite.equals("write"))
+  if (readOrWrite != "read" && readOrWrite != "write")
     return parser.emitError(parser.getNameLoc(),
                             "rw specifier has to be 'read' or 'write'");
-  result.addAttribute(
-      PrefetchOp::getIsWriteAttrName(),
-      parser.getBuilder().getBoolAttr(readOrWrite.equals("write")));
+  result.addAttribute(PrefetchOp::getIsWriteAttrStrName(),
+                      parser.getBuilder().getBoolAttr(readOrWrite == "write"));
 
-  if (!cacheType.equals("data") && !cacheType.equals("instr"))
+  if (cacheType != "data" && cacheType != "instr")
     return parser.emitError(parser.getNameLoc(),
                             "cache type has to be 'data' or 'instr'");
 
-  result.addAttribute(
-      PrefetchOp::getIsDataCacheAttrName(),
-      parser.getBuilder().getBoolAttr(cacheType.equals("data")));
+  result.addAttribute(PrefetchOp::getIsDataCacheAttrStrName(),
+                      parser.getBuilder().getBoolAttr(cacheType == "data"));
 
   return success();
 }
@@ -1436,7 +1785,7 @@ LogicalResult PrefetchOp::verify() {
   return success();
 }
 
-LogicalResult PrefetchOp::fold(ArrayRef<Attribute> cstOperands,
+LogicalResult PrefetchOp::fold(FoldAdaptor adaptor,
                                SmallVectorImpl<OpFoldResult> &results) {
   // prefetch(memrefcast) -> prefetch
   return foldMemRefCast(*this);
@@ -1446,10 +1795,10 @@ LogicalResult PrefetchOp::fold(ArrayRef<Attribute> cstOperands,
 // RankOp
 //===----------------------------------------------------------------------===//
 
-OpFoldResult RankOp::fold(ArrayRef<Attribute> operands) {
+OpFoldResult RankOp::fold(FoldAdaptor adaptor) {
   // Constant fold rank when the rank of the operand is known.
   auto type = getOperand().getType();
-  auto shapedType = type.dyn_cast<ShapedType>();
+  auto shapedType = llvm::dyn_cast<ShapedType>(type);
   if (shapedType && shapedType.hasRank())
     return IntegerAttr::get(IndexType::get(getContext()), shapedType.getRank());
   return IntegerAttr();
@@ -1458,6 +1807,11 @@ OpFoldResult RankOp::fold(ArrayRef<Attribute> operands) {
 //===----------------------------------------------------------------------===//
 // ReinterpretCastOp
 //===----------------------------------------------------------------------===//
+
+void ReinterpretCastOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "reinterpret_cast");
+}
 
 /// Build a ReinterpretCastOp with all dynamic entries: `staticOffsets`,
 /// `staticSizes` and `staticStrides` are automatically filled with
@@ -1469,16 +1823,14 @@ void ReinterpretCastOp::build(OpBuilder &b, OperationState &result,
                               ArrayRef<NamedAttribute> attrs) {
   SmallVector<int64_t> staticOffsets, staticSizes, staticStrides;
   SmallVector<Value> dynamicOffsets, dynamicSizes, dynamicStrides;
-  dispatchIndexOpFoldResults(offset, dynamicOffsets, staticOffsets,
-                             ShapedType::kDynamicStrideOrOffset);
-  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes,
-                             ShapedType::kDynamicSize);
-  dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides,
-                             ShapedType::kDynamicStrideOrOffset);
-  build(b, result, resultType, source, dynamicOffsets, dynamicSizes,
-        dynamicStrides, b.getI64ArrayAttr(staticOffsets),
-        b.getI64ArrayAttr(staticSizes), b.getI64ArrayAttr(staticStrides));
+  dispatchIndexOpFoldResults(offset, dynamicOffsets, staticOffsets);
+  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes);
+  dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides);
   result.addAttributes(attrs);
+  build(b, result, resultType, source, dynamicOffsets, dynamicSizes,
+        dynamicStrides, b.getDenseI64ArrayAttr(staticOffsets),
+        b.getDenseI64ArrayAttr(staticSizes),
+        b.getDenseI64ArrayAttr(staticStrides));
 }
 
 void ReinterpretCastOp::build(OpBuilder &b, OperationState &result,
@@ -1513,8 +1865,8 @@ void ReinterpretCastOp::build(OpBuilder &b, OperationState &result,
 // completed automatically, like we have for subview and extract_slice.
 LogicalResult ReinterpretCastOp::verify() {
   // The source and result memrefs should be in the same memory space.
-  auto srcType = source().getType().cast<BaseMemRefType>();
-  auto resultType = getType().cast<MemRefType>();
+  auto srcType = llvm::cast<BaseMemRefType>(getSource().getType());
+  auto resultType = llvm::cast<MemRefType>(getType());
   if (srcType.getMemorySpace() != resultType.getMemorySpace())
     return emitError("different memory spaces specified for source type ")
            << srcType << " and result memref type " << resultType;
@@ -1523,15 +1875,13 @@ LogicalResult ReinterpretCastOp::verify() {
            << srcType << " and result memref type " << resultType;
 
   // Match sizes in result memref type and in static_sizes attribute.
-  for (auto &en : llvm::enumerate(llvm::zip(
-           resultType.getShape(), extractFromI64ArrayAttr(static_sizes())))) {
-    int64_t resultSize = std::get<0>(en.value());
-    int64_t expectedSize = std::get<1>(en.value());
+  for (auto [idx, resultSize, expectedSize] :
+       llvm::enumerate(resultType.getShape(), getStaticSizes())) {
     if (!ShapedType::isDynamic(resultSize) &&
         !ShapedType::isDynamic(expectedSize) && resultSize != expectedSize)
       return emitError("expected result type with size = ")
              << expectedSize << " instead of " << resultSize
-             << " in dim = " << en.index();
+             << " in dim = " << idx;
   }
 
   // Match offset and strides in static_offset and static_strides attributes. If
@@ -1544,39 +1894,36 @@ LogicalResult ReinterpretCastOp::verify() {
            << resultType;
 
   // Match offset in result memref type and in static_offsets attribute.
-  int64_t expectedOffset = extractFromI64ArrayAttr(static_offsets()).front();
-  if (!ShapedType::isDynamicStrideOrOffset(resultOffset) &&
-      !ShapedType::isDynamicStrideOrOffset(expectedOffset) &&
-      resultOffset != expectedOffset)
+  int64_t expectedOffset = getStaticOffsets().front();
+  if (!ShapedType::isDynamic(resultOffset) &&
+      !ShapedType::isDynamic(expectedOffset) && resultOffset != expectedOffset)
     return emitError("expected result type with offset = ")
-           << resultOffset << " instead of " << expectedOffset;
+           << expectedOffset << " instead of " << resultOffset;
 
   // Match strides in result memref type and in static_strides attribute.
-  for (auto &en : llvm::enumerate(llvm::zip(
-           resultStrides, extractFromI64ArrayAttr(static_strides())))) {
-    int64_t resultStride = std::get<0>(en.value());
-    int64_t expectedStride = std::get<1>(en.value());
-    if (!ShapedType::isDynamicStrideOrOffset(resultStride) &&
-        !ShapedType::isDynamicStrideOrOffset(expectedStride) &&
+  for (auto [idx, resultStride, expectedStride] :
+       llvm::enumerate(resultStrides, getStaticStrides())) {
+    if (!ShapedType::isDynamic(resultStride) &&
+        !ShapedType::isDynamic(expectedStride) &&
         resultStride != expectedStride)
       return emitError("expected result type with stride = ")
              << expectedStride << " instead of " << resultStride
-             << " in dim = " << en.index();
+             << " in dim = " << idx;
   }
 
   return success();
 }
 
-OpFoldResult ReinterpretCastOp::fold(ArrayRef<Attribute> /*operands*/) {
-  Value src = source();
+OpFoldResult ReinterpretCastOp::fold(FoldAdaptor /*operands*/) {
+  Value src = getSource();
   auto getPrevSrc = [&]() -> Value {
     // reinterpret_cast(reinterpret_cast(x)) -> reinterpret_cast(x).
     if (auto prev = src.getDefiningOp<ReinterpretCastOp>())
-      return prev.source();
+      return prev.getSource();
 
     // reinterpret_cast(cast(x)) -> reinterpret_cast(x).
     if (auto prev = src.getDefiningOp<CastOp>())
-      return prev.source();
+      return prev.getSource();
 
     // reinterpret_cast(subview(x)) -> reinterpret_cast(x) if subview offsets
     // are 0.
@@ -1584,22 +1931,178 @@ OpFoldResult ReinterpretCastOp::fold(ArrayRef<Attribute> /*operands*/) {
       if (llvm::all_of(prev.getMixedOffsets(), [](OpFoldResult val) {
             return isConstantIntValue(val, 0);
           }))
-        return prev.source();
+        return prev.getSource();
 
     return nullptr;
   };
 
   if (auto prevSrc = getPrevSrc()) {
-    sourceMutable().assign(prevSrc);
+    getSourceMutable().assign(prevSrc);
     return getResult();
+  }
+
+  // reinterpret_cast(x) w/o offset/shape/stride changes -> x
+  if (!ShapedType::isDynamicShape(getType().getShape()) &&
+      src.getType() == getType() && getStaticOffsets().front() == 0) {
+    return src;
   }
 
   return nullptr;
 }
 
+SmallVector<OpFoldResult> ReinterpretCastOp::getConstifiedMixedSizes() {
+  SmallVector<OpFoldResult> values = getMixedSizes();
+  constifyIndexValues(values, getType(), getContext(), getConstantSizes,
+                      ShapedType::isDynamic);
+  return values;
+}
+
+SmallVector<OpFoldResult> ReinterpretCastOp::getConstifiedMixedStrides() {
+  SmallVector<OpFoldResult> values = getMixedStrides();
+  constifyIndexValues(values, getType(), getContext(), getConstantStrides,
+                      ShapedType::isDynamic);
+  return values;
+}
+
+OpFoldResult ReinterpretCastOp::getConstifiedMixedOffset() {
+  SmallVector<OpFoldResult> values = getMixedOffsets();
+  assert(values.size() == 1 &&
+         "reinterpret_cast must have one and only one offset");
+  constifyIndexValues(values, getType(), getContext(), getConstantOffset,
+                      ShapedType::isDynamic);
+  return values[0];
+}
+
+namespace {
+/// Replace the sequence:
+/// ```
+/// base, offset, sizes, strides = extract_strided_metadata src
+/// dst = reinterpret_cast base to offset, sizes, strides
+/// ```
+/// With
+///
+/// ```
+/// dst = memref.cast src
+/// ```
+///
+/// Note: The cast operation is only inserted when the type of dst and src
+/// are not the same. E.g., when going from <4xf32> to <?xf32>.
+///
+/// This pattern also matches when the offset, sizes, and strides don't come
+/// directly from the `extract_strided_metadata`'s results but it can be
+/// statically proven that they would hold the same values.
+///
+/// For instance, the following sequence would be replaced:
+/// ```
+/// base, offset, sizes, strides =
+///   extract_strided_metadata memref : memref<3x4xty>
+/// dst = reinterpret_cast base to 0, [3, 4], strides
+/// ```
+/// Because we know (thanks to the type of the input memref) that variable
+/// `offset` and `sizes` will respectively hold 0 and [3, 4].
+///
+/// Similarly, the following sequence would be replaced:
+/// ```
+/// c0 = arith.constant 0
+/// c4 = arith.constant 4
+/// base, offset, sizes, strides =
+///   extract_strided_metadata memref : memref<3x4xty>
+/// dst = reinterpret_cast base to c0, [3, c4], strides
+/// ```
+/// Because we know that `offset`and `c0` will hold 0
+/// and `c4` will hold 4.
+struct ReinterpretCastOpExtractStridedMetadataFolder
+    : public OpRewritePattern<ReinterpretCastOp> {
+public:
+  using OpRewritePattern<ReinterpretCastOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(ReinterpretCastOp op,
+                                PatternRewriter &rewriter) const override {
+    auto extractStridedMetadata =
+        op.getSource().getDefiningOp<ExtractStridedMetadataOp>();
+    if (!extractStridedMetadata)
+      return failure();
+    // Check if the reinterpret cast reconstructs a memref with the exact same
+    // properties as the extract strided metadata.
+
+    // First, check that the strides are the same.
+    SmallVector<OpFoldResult> extractStridesOfr =
+        extractStridedMetadata.getConstifiedMixedStrides();
+    SmallVector<OpFoldResult> reinterpretStridesOfr =
+        op.getConstifiedMixedStrides();
+    if (extractStridesOfr.size() != reinterpretStridesOfr.size())
+      return failure();
+
+    unsigned rank = op.getType().getRank();
+    for (unsigned i = 0; i < rank; ++i) {
+      if (extractStridesOfr[i] != reinterpretStridesOfr[i])
+        return failure();
+    }
+
+    // Second, check the sizes.
+    assert(extractStridedMetadata.getSizes().size() ==
+               op.getMixedSizes().size() &&
+           "Strides and sizes rank must match");
+    SmallVector<OpFoldResult> extractSizesOfr =
+        extractStridedMetadata.getConstifiedMixedSizes();
+    SmallVector<OpFoldResult> reinterpretSizesOfr =
+        op.getConstifiedMixedSizes();
+    for (unsigned i = 0; i < rank; ++i) {
+      if (extractSizesOfr[i] != reinterpretSizesOfr[i])
+        return failure();
+    }
+    // Finally, check the offset.
+    assert(op.getMixedOffsets().size() == 1 &&
+           "reinterpret_cast with more than one offset should have been "
+           "rejected by the verifier");
+    OpFoldResult extractOffsetOfr =
+        extractStridedMetadata.getConstifiedMixedOffset();
+    OpFoldResult reinterpretOffsetOfr = op.getConstifiedMixedOffset();
+    if (extractOffsetOfr != reinterpretOffsetOfr)
+      return failure();
+
+    // At this point, we know that the back and forth between extract strided
+    // metadata and reinterpret cast is a noop. However, the final type of the
+    // reinterpret cast may not be exactly the same as the original memref.
+    // E.g., it could be changing a dimension from static to dynamic. Check that
+    // here and add a cast if necessary.
+    Type srcTy = extractStridedMetadata.getSource().getType();
+    if (srcTy == op.getResult().getType())
+      rewriter.replaceOp(op, extractStridedMetadata.getSource());
+    else
+      rewriter.replaceOpWithNewOp<CastOp>(op, op.getType(),
+                                          extractStridedMetadata.getSource());
+
+    return success();
+  }
+};
+} // namespace
+
+void ReinterpretCastOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                                    MLIRContext *context) {
+  results.add<ReinterpretCastOpExtractStridedMetadataFolder>(context);
+}
+
 //===----------------------------------------------------------------------===//
 // Reassociative reshape ops
 //===----------------------------------------------------------------------===//
+
+void CollapseShapeOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "collapse_shape");
+}
+
+void ExpandShapeOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "expand_shape");
+}
+
+LogicalResult ExpandShapeOp::reifyResultShapes(
+    OpBuilder &builder, ReifiedRankedShapedTypeDims &reifiedResultShapes) {
+  reifiedResultShapes = {
+      getMixedValues(getStaticOutputShape(), getOutputShape(), builder)};
+  return success();
+}
 
 /// Helper function for verifying the shape of ExpandShapeOp and ResultShapeOp
 /// result and operand. Layout maps are verified separately.
@@ -1699,7 +2202,7 @@ SmallVector<ReassociationExprs, 4> ExpandShapeOp::getReassociationExprs() {
 
 /// Compute the layout map after expanding a given source MemRef type with the
 /// specified reassociation indices.
-static FailureOr<AffineMap>
+static FailureOr<StridedLayoutAttr>
 computeExpandedLayoutMap(MemRefType srcType, ArrayRef<int64_t> resultShape,
                          ArrayRef<ReassociationIndices> reassociation) {
   int64_t srcOffset;
@@ -1727,21 +2230,21 @@ computeExpandedLayoutMap(MemRefType srcType, ArrayRef<int64_t> resultShape,
     ReassociationIndices reassoc = std::get<0>(it);
     int64_t currentStrideToExpand = std::get<1>(it);
     for (unsigned idx = 0, e = reassoc.size(); idx < e; ++idx) {
-      using saturated_arith::Wrapper;
       reverseResultStrides.push_back(currentStrideToExpand);
-      currentStrideToExpand = (Wrapper::stride(currentStrideToExpand) *
-                               Wrapper::size(resultShape[shapeIndex--]))
-                                  .asStride();
+      currentStrideToExpand =
+          (SaturatedInteger::wrap(currentStrideToExpand) *
+           SaturatedInteger::wrap(resultShape[shapeIndex--]))
+              .asInteger();
     }
   }
-  return makeStridedLinearLayoutMap(
-      llvm::to_vector<8>(llvm::reverse(reverseResultStrides)), srcOffset,
-      srcType.getContext());
+  auto resultStrides = llvm::to_vector<8>(llvm::reverse(reverseResultStrides));
+  resultStrides.resize(resultShape.size(), 1);
+  return StridedLayoutAttr::get(srcType.getContext(), srcOffset, resultStrides);
 }
 
-static FailureOr<MemRefType>
-computeExpandedType(MemRefType srcType, ArrayRef<int64_t> resultShape,
-                    ArrayRef<ReassociationIndices> reassociation) {
+FailureOr<MemRefType> ExpandShapeOp::computeExpandedType(
+    MemRefType srcType, ArrayRef<int64_t> resultShape,
+    ArrayRef<ReassociationIndices> reassociation) {
   if (srcType.getLayout().isIdentity()) {
     // If the source is contiguous (i.e., no layout map specified), so is the
     // result.
@@ -1751,60 +2254,140 @@ computeExpandedType(MemRefType srcType, ArrayRef<int64_t> resultShape,
   }
 
   // Source may not be contiguous. Compute the layout map.
-  FailureOr<AffineMap> computedLayout =
+  FailureOr<StridedLayoutAttr> computedLayout =
       computeExpandedLayoutMap(srcType, resultShape, reassociation);
   if (failed(computedLayout))
     return failure();
-  auto computedType =
-      MemRefType::get(resultShape, srcType.getElementType(), *computedLayout,
-                      srcType.getMemorySpaceAsInt());
-  return canonicalizeStridedLayout(computedType);
+  return MemRefType::get(resultShape, srcType.getElementType(), *computedLayout,
+                         srcType.getMemorySpace());
+}
+
+FailureOr<SmallVector<OpFoldResult>>
+ExpandShapeOp::inferOutputShape(OpBuilder &b, Location loc,
+                                MemRefType expandedType,
+                                ArrayRef<ReassociationIndices> reassociation,
+                                ArrayRef<OpFoldResult> inputShape) {
+  std::optional<SmallVector<OpFoldResult>> outputShape =
+      inferExpandShapeOutputShape(b, loc, expandedType, reassociation,
+                                  inputShape);
+  if (!outputShape)
+    return failure();
+  return *outputShape;
+}
+
+void ExpandShapeOp::build(OpBuilder &builder, OperationState &result,
+                          Type resultType, Value src,
+                          ArrayRef<ReassociationIndices> reassociation,
+                          ArrayRef<OpFoldResult> outputShape) {
+  auto [staticOutputShape, dynamicOutputShape] =
+      decomposeMixedValues(SmallVector<OpFoldResult>(outputShape));
+  build(builder, result, llvm::cast<MemRefType>(resultType), src,
+        getReassociationIndicesAttribute(builder, reassociation),
+        dynamicOutputShape, staticOutputShape);
+}
+
+void ExpandShapeOp::build(OpBuilder &builder, OperationState &result,
+                          Type resultType, Value src,
+                          ArrayRef<ReassociationIndices> reassociation) {
+  SmallVector<OpFoldResult> inputShape =
+      getMixedSizes(builder, result.location, src);
+  MemRefType memrefResultTy = llvm::cast<MemRefType>(resultType);
+  FailureOr<SmallVector<OpFoldResult>> outputShape = inferOutputShape(
+      builder, result.location, memrefResultTy, reassociation, inputShape);
+  // Failure of this assertion usually indicates presence of multiple
+  // dynamic dimensions in the same reassociation group.
+  assert(succeeded(outputShape) && "unable to infer output shape");
+  build(builder, result, memrefResultTy, src, reassociation, *outputShape);
 }
 
 void ExpandShapeOp::build(OpBuilder &builder, OperationState &result,
                           ArrayRef<int64_t> resultShape, Value src,
                           ArrayRef<ReassociationIndices> reassociation) {
   // Only ranked memref source values are supported.
-  auto srcType = src.getType().cast<MemRefType>();
+  auto srcType = llvm::cast<MemRefType>(src.getType());
   FailureOr<MemRefType> resultType =
-      computeExpandedType(srcType, resultShape, reassociation);
+      ExpandShapeOp::computeExpandedType(srcType, resultShape, reassociation);
   // Failure of this assertion usually indicates a problem with the source
   // type, e.g., could not get strides/offset.
   assert(succeeded(resultType) && "could not compute layout");
   build(builder, result, *resultType, src, reassociation);
 }
 
+void ExpandShapeOp::build(OpBuilder &builder, OperationState &result,
+                          ArrayRef<int64_t> resultShape, Value src,
+                          ArrayRef<ReassociationIndices> reassociation,
+                          ArrayRef<OpFoldResult> outputShape) {
+  // Only ranked memref source values are supported.
+  auto srcType = llvm::cast<MemRefType>(src.getType());
+  FailureOr<MemRefType> resultType =
+      ExpandShapeOp::computeExpandedType(srcType, resultShape, reassociation);
+  // Failure of this assertion usually indicates a problem with the source
+  // type, e.g., could not get strides/offset.
+  assert(succeeded(resultType) && "could not compute layout");
+  build(builder, result, *resultType, src, reassociation, outputShape);
+}
+
 LogicalResult ExpandShapeOp::verify() {
   MemRefType srcType = getSrcType();
   MemRefType resultType = getResultType();
+
+  if (srcType.getRank() > resultType.getRank()) {
+    auto r0 = srcType.getRank();
+    auto r1 = resultType.getRank();
+    return emitOpError("has source rank ")
+           << r0 << " and result rank " << r1 << ". This is not an expansion ("
+           << r0 << " > " << r1 << ").";
+  }
 
   // Verify result shape.
   if (failed(verifyCollapsedShape(getOperation(), srcType.getShape(),
                                   resultType.getShape(),
                                   getReassociationIndices(),
-                                  /*allowMultipleDynamicDimsPerGroup=*/false)))
+                                  /*allowMultipleDynamicDimsPerGroup=*/true)))
     return failure();
 
   // Compute expected result type (including layout map).
-  FailureOr<MemRefType> expectedResultType = computeExpandedType(
+  FailureOr<MemRefType> expectedResultType = ExpandShapeOp::computeExpandedType(
       srcType, resultType.getShape(), getReassociationIndices());
   if (failed(expectedResultType))
     return emitOpError("invalid source layout map");
 
   // Check actual result type.
-  auto canonicalizedResultType = canonicalizeStridedLayout(resultType);
-  if (*expectedResultType != canonicalizedResultType)
+  if (*expectedResultType != resultType)
     return emitOpError("expected expanded type to be ")
-           << *expectedResultType << " but found " << canonicalizedResultType;
+           << *expectedResultType << " but found " << resultType;
+
+  if ((int64_t)getStaticOutputShape().size() != resultType.getRank())
+    return emitOpError("expected number of static shape bounds to be equal to "
+                       "the output rank (")
+           << resultType.getRank() << ") but found "
+           << getStaticOutputShape().size() << " inputs instead";
+
+  if ((int64_t)getOutputShape().size() !=
+      llvm::count(getStaticOutputShape(), ShapedType::kDynamic))
+    return emitOpError("mismatch in dynamic dims in output_shape and "
+                       "static_output_shape: static_output_shape has ")
+           << llvm::count(getStaticOutputShape(), ShapedType::kDynamic)
+           << " dynamic dims while output_shape has " << getOutputShape().size()
+           << " values";
+
+  // Verify if provided output shapes are in agreement with output type.
+  DenseI64ArrayAttr staticOutputShapes = getStaticOutputShapeAttr();
+  ArrayRef<int64_t> resShape = getResult().getType().getShape();
+  for (auto [pos, shape] : llvm::enumerate(resShape)) {
+    if (!ShapedType::isDynamic(shape) && shape != staticOutputShapes[pos]) {
+      return emitOpError("invalid output shape provided at pos ") << pos;
+    }
+  }
 
   return success();
 }
 
 void ExpandShapeOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                 MLIRContext *context) {
-  results.add<ComposeReassociativeReshapeOps<ExpandShapeOp>,
-              ComposeExpandOfCollapseOp<ExpandShapeOp, CollapseShapeOp>>(
-      context);
+  results.add<
+      ComposeReassociativeReshapeOps<ExpandShapeOp, ReshapeOpKind::kExpand>,
+      ComposeExpandOfCollapseOp<ExpandShapeOp, CollapseShapeOp>>(context);
 }
 
 /// Compute the layout map after collapsing a given source MemRef type with the
@@ -1814,7 +2397,7 @@ void ExpandShapeOp::getCanonicalizationPatterns(RewritePatternSet &results,
 /// not possible to check this by inspecting a MemRefType in the general case.
 /// If non-contiguity cannot be checked statically, the collapse is assumed to
 /// be valid (and thus accepted by this function) unless `strict = true`.
-static FailureOr<AffineMap>
+static FailureOr<StridedLayoutAttr>
 computeCollapsedLayoutMap(MemRefType srcType,
                           ArrayRef<ReassociationIndices> reassociation,
                           bool strict = false) {
@@ -1824,37 +2407,45 @@ computeCollapsedLayoutMap(MemRefType srcType,
   if (failed(getStridesAndOffset(srcType, srcStrides, srcOffset)))
     return failure();
 
-  // The result strides are exactly the strides of the last entry of each
-  // reassociation.
+  // The result stride of a reassociation group is the stride of the last entry
+  // of the reassociation. (TODO: Should be the minimum stride in the
+  // reassociation because strides are not necessarily sorted. E.g., when using
+  // memref.transpose.) Dimensions of size 1 should be skipped, because their
+  // strides are meaningless and could have any arbitrary value.
   SmallVector<int64_t> resultStrides;
   resultStrides.reserve(reassociation.size());
-  for (ReassociationIndices reassoc : reassociation)
-    resultStrides.push_back(srcStrides[reassoc.back()]);
+  for (const ReassociationIndices &reassoc : reassociation) {
+    ArrayRef<int64_t> ref = llvm::ArrayRef(reassoc);
+    while (srcShape[ref.back()] == 1 && ref.size() > 1)
+      ref = ref.drop_back();
+    if (!ShapedType::isDynamic(srcShape[ref.back()]) || ref.size() == 1) {
+      resultStrides.push_back(srcStrides[ref.back()]);
+    } else {
+      // Dynamically-sized dims may turn out to be dims of size 1 at runtime, so
+      // the corresponding stride may have to be skipped. (See above comment.)
+      // Therefore, the result stride cannot be statically determined and must
+      // be dynamic.
+      resultStrides.push_back(ShapedType::kDynamic);
+    }
+  }
 
   // Validate that each reassociation group is contiguous.
   unsigned resultStrideIndex = resultStrides.size() - 1;
-  for (ReassociationIndices reassoc : llvm::reverse(reassociation)) {
+  for (const ReassociationIndices &reassoc : llvm::reverse(reassociation)) {
     auto trailingReassocs = ArrayRef<int64_t>(reassoc).drop_front();
-    using saturated_arith::Wrapper;
-    auto stride = Wrapper::stride(resultStrides[resultStrideIndex--]);
+    auto stride = SaturatedInteger::wrap(resultStrides[resultStrideIndex--]);
     for (int64_t idx : llvm::reverse(trailingReassocs)) {
-      stride = stride * Wrapper::size(srcShape[idx]);
+      stride = stride * SaturatedInteger::wrap(srcShape[idx]);
 
       // Both source and result stride must have the same static value. In that
       // case, we can be sure, that the dimensions are collapsible (because they
       // are contiguous).
-      //
-      // One special case is when the srcShape is `1`, in which case it can
-      // never produce non-contiguity.
-      if (srcShape[idx] == 1)
-        continue;
-
       // If `strict = false` (default during op verification), we accept cases
       // where one or both strides are dynamic. This is best effort: We reject
       // ops where obviously non-contiguous dims are collapsed, but accept ops
       // where we cannot be sure statically. Such ops may fail at runtime. See
       // the op documentation for details.
-      auto srcStride = Wrapper::stride(srcStrides[idx - 1]);
+      auto srcStride = SaturatedInteger::wrap(srcStrides[idx - 1]);
       if (strict && (stride.saturated || srcStride.saturated))
         return failure();
 
@@ -1862,13 +2453,12 @@ computeCollapsedLayoutMap(MemRefType srcType,
         return failure();
     }
   }
-  return makeStridedLinearLayoutMap(resultStrides, srcOffset,
-                                    srcType.getContext());
+  return StridedLayoutAttr::get(srcType.getContext(), srcOffset, resultStrides);
 }
 
-bool ExpandShapeOp::isGuaranteedCollapsible(
+bool CollapseShapeOp::isGuaranteedCollapsible(
     MemRefType srcType, ArrayRef<ReassociationIndices> reassociation) {
-  // MemRefs with standard layout are always collapsible.
+  // MemRefs with identity layout are always collapsible.
   if (srcType.getLayout().isIdentity())
     return true;
 
@@ -1876,17 +2466,16 @@ bool ExpandShapeOp::isGuaranteedCollapsible(
                                              /*strict=*/true));
 }
 
-static MemRefType
-computeCollapsedType(MemRefType srcType,
-                     ArrayRef<ReassociationIndices> reassociation) {
+MemRefType CollapseShapeOp::computeCollapsedType(
+    MemRefType srcType, ArrayRef<ReassociationIndices> reassociation) {
   SmallVector<int64_t> resultShape;
   resultShape.reserve(reassociation.size());
   for (const ReassociationIndices &group : reassociation) {
-    using saturated_arith::Wrapper;
-    auto groupSize = Wrapper::size(1);
+    auto groupSize = SaturatedInteger::wrap(1);
     for (int64_t srcDim : group)
-      groupSize = groupSize * Wrapper::size(srcType.getDimSize(srcDim));
-    resultShape.push_back(groupSize.asSize());
+      groupSize =
+          groupSize * SaturatedInteger::wrap(srcType.getDimSize(srcDim));
+    resultShape.push_back(groupSize.asInteger());
   }
 
   if (srcType.getLayout().isIdentity()) {
@@ -1900,29 +2489,36 @@ computeCollapsedType(MemRefType srcType,
   // Source may not be fully contiguous. Compute the layout map.
   // Note: Dimensions that are collapsed into a single dim are assumed to be
   // contiguous.
-  FailureOr<AffineMap> computedLayout =
+  FailureOr<StridedLayoutAttr> computedLayout =
       computeCollapsedLayoutMap(srcType, reassociation);
   assert(succeeded(computedLayout) &&
          "invalid source layout map or collapsing non-contiguous dims");
-  auto computedType =
-      MemRefType::get(resultShape, srcType.getElementType(), *computedLayout,
-                      srcType.getMemorySpaceAsInt());
-  return canonicalizeStridedLayout(computedType);
+  return MemRefType::get(resultShape, srcType.getElementType(), *computedLayout,
+                         srcType.getMemorySpace());
 }
 
 void CollapseShapeOp::build(OpBuilder &b, OperationState &result, Value src,
                             ArrayRef<ReassociationIndices> reassociation,
                             ArrayRef<NamedAttribute> attrs) {
-  auto srcType = src.getType().cast<MemRefType>();
-  MemRefType resultType = computeCollapsedType(srcType, reassociation);
-  build(b, result, resultType, src, attrs);
-  result.addAttribute(getReassociationAttrName(),
+  auto srcType = llvm::cast<MemRefType>(src.getType());
+  MemRefType resultType =
+      CollapseShapeOp::computeCollapsedType(srcType, reassociation);
+  result.addAttribute(::mlir::getReassociationAttrName(),
                       getReassociationIndicesAttribute(b, reassociation));
+  build(b, result, resultType, src, attrs);
 }
 
 LogicalResult CollapseShapeOp::verify() {
   MemRefType srcType = getSrcType();
   MemRefType resultType = getResultType();
+
+  if (srcType.getRank() < resultType.getRank()) {
+    auto r0 = srcType.getRank();
+    auto r1 = resultType.getRank();
+    return emitOpError("has source rank ")
+           << r0 << " and result rank " << r1 << ". This is not a collapse ("
+           << r0 << " < " << r1 << ").";
+  }
 
   // Verify result shape.
   if (failed(verifyCollapsedShape(getOperation(), resultType.getShape(),
@@ -1943,21 +2539,19 @@ LogicalResult CollapseShapeOp::verify() {
     // Source may not be fully contiguous. Compute the layout map.
     // Note: Dimensions that are collapsed into a single dim are assumed to be
     // contiguous.
-    FailureOr<AffineMap> computedLayout =
+    FailureOr<StridedLayoutAttr> computedLayout =
         computeCollapsedLayoutMap(srcType, getReassociationIndices());
     if (failed(computedLayout))
       return emitOpError(
           "invalid source layout map or collapsing non-contiguous dims");
-    auto computedType =
+    expectedResultType =
         MemRefType::get(resultType.getShape(), srcType.getElementType(),
-                        *computedLayout, srcType.getMemorySpaceAsInt());
-    expectedResultType = canonicalizeStridedLayout(computedType);
+                        *computedLayout, srcType.getMemorySpace());
   }
 
-  auto canonicalizedResultType = canonicalizeStridedLayout(resultType);
-  if (expectedResultType != canonicalizedResultType)
+  if (expectedResultType != resultType)
     return emitOpError("expected collapsed type to be ")
-           << expectedResultType << " but found " << canonicalizedResultType;
+           << expectedResultType << " but found " << resultType;
 
   return success();
 }
@@ -1976,16 +2570,16 @@ public:
     if (!CastOp::canFoldIntoConsumerOp(cast))
       return failure();
 
-    Type newResultType =
-        computeCollapsedType(cast.getOperand().getType().cast<MemRefType>(),
-                             op.getReassociationIndices());
+    Type newResultType = CollapseShapeOp::computeCollapsedType(
+        llvm::cast<MemRefType>(cast.getOperand().getType()),
+        op.getReassociationIndices());
 
     if (newResultType == op.getResultType()) {
-      rewriter.updateRootInPlace(
-          op, [&]() { op.srcMutable().assign(cast.source()); });
+      rewriter.modifyOpInPlace(
+          op, [&]() { op.getSrcMutable().assign(cast.getSource()); });
     } else {
       Value newOp = rewriter.create<CollapseShapeOp>(
-          op->getLoc(), cast.source(), op.getReassociationIndices());
+          op->getLoc(), cast.getSource(), op.getReassociationIndices());
       rewriter.replaceOpWithNewOp<CastOp>(op, op.getType(), newOp);
     }
     return success();
@@ -1994,43 +2588,54 @@ public:
 
 void CollapseShapeOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                   MLIRContext *context) {
-  results.add<ComposeReassociativeReshapeOps<CollapseShapeOp>,
-              ComposeCollapseOfExpandOp<CollapseShapeOp, ExpandShapeOp>,
-              CollapseShapeOpMemRefCastFolder>(context);
+  results.add<
+      ComposeReassociativeReshapeOps<CollapseShapeOp, ReshapeOpKind::kCollapse>,
+      ComposeCollapseOfExpandOp<CollapseShapeOp, ExpandShapeOp, CastOp,
+                                memref::DimOp, MemRefType>,
+      CollapseShapeOpMemRefCastFolder>(context);
 }
 
-OpFoldResult ExpandShapeOp::fold(ArrayRef<Attribute> operands) {
-  return foldReshapeOp<ExpandShapeOp, CollapseShapeOp>(*this, operands);
+OpFoldResult ExpandShapeOp::fold(FoldAdaptor adaptor) {
+  return foldReshapeOp<ExpandShapeOp, CollapseShapeOp>(*this,
+                                                       adaptor.getOperands());
 }
 
-OpFoldResult CollapseShapeOp::fold(ArrayRef<Attribute> operands) {
-  return foldReshapeOp<CollapseShapeOp, ExpandShapeOp>(*this, operands);
+OpFoldResult CollapseShapeOp::fold(FoldAdaptor adaptor) {
+  return foldReshapeOp<CollapseShapeOp, ExpandShapeOp>(*this,
+                                                       adaptor.getOperands());
 }
 
 //===----------------------------------------------------------------------===//
 // ReshapeOp
 //===----------------------------------------------------------------------===//
 
-LogicalResult ReshapeOp::verify() {
-  Type operandType = source().getType();
-  Type resultType = result().getType();
+void ReshapeOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "reshape");
+}
 
-  Type operandElementType = operandType.cast<ShapedType>().getElementType();
-  Type resultElementType = resultType.cast<ShapedType>().getElementType();
+LogicalResult ReshapeOp::verify() {
+  Type operandType = getSource().getType();
+  Type resultType = getResult().getType();
+
+  Type operandElementType =
+      llvm::cast<ShapedType>(operandType).getElementType();
+  Type resultElementType = llvm::cast<ShapedType>(resultType).getElementType();
   if (operandElementType != resultElementType)
     return emitOpError("element types of source and destination memref "
                        "types should be the same");
 
-  if (auto operandMemRefType = operandType.dyn_cast<MemRefType>())
+  if (auto operandMemRefType = llvm::dyn_cast<MemRefType>(operandType))
     if (!operandMemRefType.getLayout().isIdentity())
       return emitOpError("source memref type should have identity affine map");
 
-  int64_t shapeSize = shape().getType().cast<MemRefType>().getDimSize(0);
-  auto resultMemRefType = resultType.dyn_cast<MemRefType>();
+  int64_t shapeSize =
+      llvm::cast<MemRefType>(getShape().getType()).getDimSize(0);
+  auto resultMemRefType = llvm::dyn_cast<MemRefType>(resultType);
   if (resultMemRefType) {
     if (!resultMemRefType.getLayout().isIdentity())
       return emitOpError("result memref type should have identity affine map");
-    if (shapeSize == ShapedType::kDynamicSize)
+    if (shapeSize == ShapedType::kDynamic)
       return emitOpError("cannot use shape operand with dynamic length to "
                          "reshape to statically-ranked memref type");
     if (shapeSize != resultMemRefType.getRank())
@@ -2051,7 +2656,7 @@ LogicalResult StoreOp::verify() {
   return success();
 }
 
-LogicalResult StoreOp::fold(ArrayRef<Attribute> cstOperands,
+LogicalResult StoreOp::fold(FoldAdaptor adaptor,
                             SmallVectorImpl<OpFoldResult> &results) {
   /// store(memrefcast) -> store
   return foldMemRefCast(*this, getValueToStore());
@@ -2060,6 +2665,11 @@ LogicalResult StoreOp::fold(ArrayRef<Attribute> cstOperands,
 //===----------------------------------------------------------------------===//
 // SubViewOp
 //===----------------------------------------------------------------------===//
+
+void SubViewOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "subview");
+}
 
 /// A subview result type can be fully inferred from the source type and the
 /// static representation of offsets, sizes and strides. Special sentinels
@@ -2075,22 +2685,17 @@ Type SubViewOp::inferResultType(MemRefType sourceMemRefType,
   assert(staticStrides.size() == rank && "staticStrides length mismatch");
 
   // Extract source offset and strides.
-  int64_t sourceOffset;
-  SmallVector<int64_t, 4> sourceStrides;
-  auto res = getStridesAndOffset(sourceMemRefType, sourceStrides, sourceOffset);
-  assert(succeeded(res) && "SubViewOp expected strided memref type");
-  (void)res;
+  auto [sourceStrides, sourceOffset] = getStridesAndOffset(sourceMemRefType);
 
   // Compute target offset whose value is:
   //   `sourceOffset + sum_i(staticOffset_i * sourceStrides_i)`.
   int64_t targetOffset = sourceOffset;
   for (auto it : llvm::zip(staticOffsets, sourceStrides)) {
     auto staticOffset = std::get<0>(it), targetStride = std::get<1>(it);
-    using saturated_arith::Wrapper;
-    targetOffset =
-        (Wrapper::offset(targetOffset) +
-         Wrapper::offset(staticOffset) * Wrapper::stride(targetStride))
-            .asOffset();
+    targetOffset = (SaturatedInteger::wrap(targetOffset) +
+                    SaturatedInteger::wrap(staticOffset) *
+                        SaturatedInteger::wrap(targetStride))
+                       .asInteger();
   }
 
   // Compute target stride whose value is:
@@ -2099,18 +2704,16 @@ Type SubViewOp::inferResultType(MemRefType sourceMemRefType,
   targetStrides.reserve(staticOffsets.size());
   for (auto it : llvm::zip(sourceStrides, staticStrides)) {
     auto sourceStride = std::get<0>(it), staticStride = std::get<1>(it);
-    using saturated_arith::Wrapper;
-    targetStrides.push_back(
-        (Wrapper::stride(sourceStride) * Wrapper::stride(staticStride))
-            .asStride());
+    targetStrides.push_back((SaturatedInteger::wrap(sourceStride) *
+                             SaturatedInteger::wrap(staticStride))
+                                .asInteger());
   }
 
   // The type is now known.
-  return MemRefType::get(
-      staticSizes, sourceMemRefType.getElementType(),
-      makeStridedLinearLayoutMap(targetStrides, targetOffset,
-                                 sourceMemRefType.getContext()),
-      sourceMemRefType.getMemorySpace());
+  return MemRefType::get(staticSizes, sourceMemRefType.getElementType(),
+                         StridedLayoutAttr::get(sourceMemRefType.getContext(),
+                                                targetOffset, targetStrides),
+                         sourceMemRefType.getMemorySpace());
 }
 
 Type SubViewOp::inferResultType(MemRefType sourceMemRefType,
@@ -2119,62 +2722,66 @@ Type SubViewOp::inferResultType(MemRefType sourceMemRefType,
                                 ArrayRef<OpFoldResult> strides) {
   SmallVector<int64_t> staticOffsets, staticSizes, staticStrides;
   SmallVector<Value> dynamicOffsets, dynamicSizes, dynamicStrides;
-  dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets,
-                             ShapedType::kDynamicStrideOrOffset);
-  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes,
-                             ShapedType::kDynamicSize);
-  dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides,
-                             ShapedType::kDynamicStrideOrOffset);
+  dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets);
+  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes);
+  dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides);
+  if (!hasValidSizesOffsets(staticOffsets))
+    return {};
+  if (!hasValidSizesOffsets(staticSizes))
+    return {};
+  if (!hasValidStrides(staticStrides))
+    return {};
   return SubViewOp::inferResultType(sourceMemRefType, staticOffsets,
                                     staticSizes, staticStrides);
 }
 
-Type SubViewOp::inferRankReducedResultType(unsigned resultRank,
+Type SubViewOp::inferRankReducedResultType(ArrayRef<int64_t> resultShape,
                                            MemRefType sourceRankedTensorType,
                                            ArrayRef<int64_t> offsets,
                                            ArrayRef<int64_t> sizes,
                                            ArrayRef<int64_t> strides) {
-  auto inferredType =
-      inferResultType(sourceRankedTensorType, offsets, sizes, strides)
-          .cast<MemRefType>();
-  assert(inferredType.getRank() >= resultRank && "expected ");
-  int rankDiff = inferredType.getRank() - resultRank;
-  if (rankDiff > 0) {
-    auto shape = inferredType.getShape();
-    llvm::SmallBitVector dimsToProject =
-        getPositionsOfShapeOne(rankDiff, shape);
-    SmallVector<int64_t> projectedShape;
-    for (unsigned pos = 0, e = shape.size(); pos < e; ++pos)
-      if (!dimsToProject.test(pos))
-        projectedShape.push_back(shape[pos]);
+  auto inferredType = llvm::cast<MemRefType>(
+      inferResultType(sourceRankedTensorType, offsets, sizes, strides));
+  assert(inferredType.getRank() >= static_cast<int64_t>(resultShape.size()) &&
+         "expected ");
+  if (inferredType.getRank() == static_cast<int64_t>(resultShape.size()))
+    return inferredType;
 
-    AffineMap map = inferredType.getLayout().getAffineMap();
-    if (!map.isIdentity())
-      map = getProjectedMap(map, dimsToProject);
-    inferredType =
-        MemRefType::get(projectedShape, inferredType.getElementType(), map,
-                        inferredType.getMemorySpace());
+  // Compute which dimensions are dropped.
+  std::optional<llvm::SmallDenseSet<unsigned>> dimsToProject =
+      computeRankReductionMask(inferredType.getShape(), resultShape);
+  assert(dimsToProject.has_value() && "invalid rank reduction");
+
+  // Compute the layout and result type.
+  auto inferredLayout = llvm::cast<StridedLayoutAttr>(inferredType.getLayout());
+  SmallVector<int64_t> rankReducedStrides;
+  rankReducedStrides.reserve(resultShape.size());
+  for (auto [idx, value] : llvm::enumerate(inferredLayout.getStrides())) {
+    if (!dimsToProject->contains(idx))
+      rankReducedStrides.push_back(value);
   }
-  return inferredType;
+  return MemRefType::get(resultShape, inferredType.getElementType(),
+                         StridedLayoutAttr::get(inferredLayout.getContext(),
+                                                inferredLayout.getOffset(),
+                                                rankReducedStrides),
+                         inferredType.getMemorySpace());
 }
 
-Type SubViewOp::inferRankReducedResultType(unsigned resultRank,
+Type SubViewOp::inferRankReducedResultType(ArrayRef<int64_t> resultShape,
                                            MemRefType sourceRankedTensorType,
                                            ArrayRef<OpFoldResult> offsets,
                                            ArrayRef<OpFoldResult> sizes,
                                            ArrayRef<OpFoldResult> strides) {
   SmallVector<int64_t> staticOffsets, staticSizes, staticStrides;
   SmallVector<Value> dynamicOffsets, dynamicSizes, dynamicStrides;
-  dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets,
-                             ShapedType::kDynamicStrideOrOffset);
-  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes,
-                             ShapedType::kDynamicSize);
-  dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides,
-                             ShapedType::kDynamicStrideOrOffset);
+  dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets);
+  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes);
+  dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides);
   return SubViewOp::inferRankReducedResultType(
-      resultRank, sourceRankedTensorType, staticOffsets, staticSizes,
+      resultShape, sourceRankedTensorType, staticOffsets, staticSizes,
       staticStrides);
 }
+
 // Build a SubViewOp with mixed static and dynamic entries and custom result
 // type. If the type passed is nullptr, it is inferred.
 void SubViewOp::build(OpBuilder &b, OperationState &result,
@@ -2185,23 +2792,20 @@ void SubViewOp::build(OpBuilder &b, OperationState &result,
                       ArrayRef<NamedAttribute> attrs) {
   SmallVector<int64_t> staticOffsets, staticSizes, staticStrides;
   SmallVector<Value> dynamicOffsets, dynamicSizes, dynamicStrides;
-  dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets,
-                             ShapedType::kDynamicStrideOrOffset);
-  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes,
-                             ShapedType::kDynamicSize);
-  dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides,
-                             ShapedType::kDynamicStrideOrOffset);
-  auto sourceMemRefType = source.getType().cast<MemRefType>();
+  dispatchIndexOpFoldResults(offsets, dynamicOffsets, staticOffsets);
+  dispatchIndexOpFoldResults(sizes, dynamicSizes, staticSizes);
+  dispatchIndexOpFoldResults(strides, dynamicStrides, staticStrides);
+  auto sourceMemRefType = llvm::cast<MemRefType>(source.getType());
   // Structuring implementation this way avoids duplication between builders.
   if (!resultType) {
-    resultType = SubViewOp::inferResultType(sourceMemRefType, staticOffsets,
-                                            staticSizes, staticStrides)
-                     .cast<MemRefType>();
+    resultType = llvm::cast<MemRefType>(SubViewOp::inferResultType(
+        sourceMemRefType, staticOffsets, staticSizes, staticStrides));
   }
-  build(b, result, resultType, source, dynamicOffsets, dynamicSizes,
-        dynamicStrides, b.getI64ArrayAttr(staticOffsets),
-        b.getI64ArrayAttr(staticSizes), b.getI64ArrayAttr(staticStrides));
   result.addAttributes(attrs);
+  build(b, result, resultType, source, dynamicOffsets, dynamicSizes,
+        dynamicStrides, b.getDenseI64ArrayAttr(staticOffsets),
+        b.getDenseI64ArrayAttr(staticSizes),
+        b.getDenseI64ArrayAttr(staticStrides));
 }
 
 // Build a SubViewOp with mixed static and dynamic entries and inferred result
@@ -2280,68 +2884,63 @@ void SubViewOp::build(OpBuilder &b, OperationState &result, Value source,
 }
 
 /// For ViewLikeOpInterface.
-Value SubViewOp::getViewSource() { return source(); }
+Value SubViewOp::getViewSource() { return getSource(); }
 
-/// Return true if t1 and t2 have equal offsets (both dynamic or of same
+/// Return true if `t1` and `t2` have equal offsets (both dynamic or of same
 /// static value).
 static bool haveCompatibleOffsets(MemRefType t1, MemRefType t2) {
-  AffineExpr t1Offset, t2Offset;
-  SmallVector<AffineExpr> t1Strides, t2Strides;
+  int64_t t1Offset, t2Offset;
+  SmallVector<int64_t> t1Strides, t2Strides;
   auto res1 = getStridesAndOffset(t1, t1Strides, t1Offset);
   auto res2 = getStridesAndOffset(t2, t2Strides, t2Offset);
   return succeeded(res1) && succeeded(res2) && t1Offset == t2Offset;
 }
 
-/// Checks if `original` Type type can be rank reduced to `reduced` type.
-/// This function is slight variant of `is subsequence` algorithm where
-/// not matching dimension must be 1.
-static SliceVerificationResult
-isRankReducedMemRefType(MemRefType originalType,
-                        MemRefType candidateRankReducedType,
-                        ArrayRef<OpFoldResult> sizes) {
-  auto partialRes = isRankReducedType(originalType, candidateRankReducedType);
-  if (partialRes != SliceVerificationResult::Success)
-    return partialRes;
-
-  auto optionalUnusedDimsMask = computeMemRefRankReductionMask(
-      originalType, candidateRankReducedType, sizes);
-
-  // Sizes cannot be matched in case empty vector is returned.
-  if (!optionalUnusedDimsMask.hasValue())
-    return SliceVerificationResult::LayoutMismatch;
-
-  if (originalType.getMemorySpace() !=
-      candidateRankReducedType.getMemorySpace())
-    return SliceVerificationResult::MemSpaceMismatch;
-
-  // No amount of stride dropping can reconcile incompatible offsets.
-  if (!haveCompatibleOffsets(originalType, candidateRankReducedType))
-    return SliceVerificationResult::LayoutMismatch;
-
-  return SliceVerificationResult::Success;
+/// Return true if `t1` and `t2` have equal strides (both dynamic or of same
+/// static value). Dimensions of `t1` may be dropped in `t2`; these must be
+/// marked as dropped in `droppedDims`.
+static bool haveCompatibleStrides(MemRefType t1, MemRefType t2,
+                                  const llvm::SmallBitVector &droppedDims) {
+  assert(size_t(t1.getRank()) == droppedDims.size() &&
+         "incorrect number of bits");
+  assert(size_t(t1.getRank() - t2.getRank()) == droppedDims.count() &&
+         "incorrect number of dropped dims");
+  int64_t t1Offset, t2Offset;
+  SmallVector<int64_t> t1Strides, t2Strides;
+  auto res1 = getStridesAndOffset(t1, t1Strides, t1Offset);
+  auto res2 = getStridesAndOffset(t2, t2Strides, t2Offset);
+  if (failed(res1) || failed(res2))
+    return false;
+  for (int64_t i = 0, j = 0, e = t1.getRank(); i < e; ++i) {
+    if (droppedDims[i])
+      continue;
+    if (t1Strides[i] != t2Strides[j])
+      return false;
+    ++j;
+  }
+  return true;
 }
 
-template <typename OpTy>
 static LogicalResult produceSubViewErrorMsg(SliceVerificationResult result,
-                                            OpTy op, Type expectedType) {
-  auto memrefType = expectedType.cast<ShapedType>();
+                                            Operation *op, Type expectedType) {
+  auto memrefType = llvm::cast<ShapedType>(expectedType);
   switch (result) {
   case SliceVerificationResult::Success:
     return success();
   case SliceVerificationResult::RankTooLarge:
-    return op.emitError("expected result rank to be smaller or equal to ")
+    return op->emitError("expected result rank to be smaller or equal to ")
            << "the source rank. ";
   case SliceVerificationResult::SizeMismatch:
-    return op.emitError("expected result type to be ")
+    return op->emitError("expected result type to be ")
            << expectedType
            << " or a rank-reduced version. (mismatch of result sizes) ";
   case SliceVerificationResult::ElemTypeMismatch:
-    return op.emitError("expected result element type to be ")
+    return op->emitError("expected result element type to be ")
            << memrefType.getElementType();
   case SliceVerificationResult::MemSpaceMismatch:
-    return op.emitError("expected result and source memory spaces to match.");
+    return op->emitError("expected result and source memory spaces to match.");
   case SliceVerificationResult::LayoutMismatch:
-    return op.emitError("expected result type to be ")
+    return op->emitError("expected result type to be ")
            << expectedType
            << " or a rank-reduced version. (mismatch of result layout) ";
   }
@@ -2363,15 +2962,44 @@ LogicalResult SubViewOp::verify() {
   if (!isStrided(baseType))
     return emitError("base type ") << baseType << " is not strided";
 
-  // Verify result type against inferred type.
-  auto expectedType = SubViewOp::inferResultType(
-      baseType, extractFromI64ArrayAttr(static_offsets()),
-      extractFromI64ArrayAttr(static_sizes()),
-      extractFromI64ArrayAttr(static_strides()));
+  // Compute the expected result type, assuming that there are no rank
+  // reductions.
+  auto expectedType = cast<MemRefType>(SubViewOp::inferResultType(
+      baseType, getStaticOffsets(), getStaticSizes(), getStaticStrides()));
 
-  auto result = isRankReducedMemRefType(expectedType.cast<MemRefType>(),
-                                        subViewType, getMixedSizes());
-  return produceSubViewErrorMsg(result, *this, expectedType);
+  // Verify all properties of a shaped type: rank, element type and dimension
+  // sizes. This takes into account potential rank reductions.
+  auto shapedTypeVerification = isRankReducedType(
+      /*originalType=*/expectedType, /*candidateReducedType=*/subViewType);
+  if (shapedTypeVerification != SliceVerificationResult::Success)
+    return produceSubViewErrorMsg(shapedTypeVerification, *this, expectedType);
+
+  // Make sure that the memory space did not change.
+  if (expectedType.getMemorySpace() != subViewType.getMemorySpace())
+    return produceSubViewErrorMsg(SliceVerificationResult::MemSpaceMismatch,
+                                  *this, expectedType);
+
+  // Verify the offset of the layout map.
+  if (!haveCompatibleOffsets(expectedType, subViewType))
+    return produceSubViewErrorMsg(SliceVerificationResult::LayoutMismatch,
+                                  *this, expectedType);
+
+  // The only thing that's left to verify now are the strides. First, compute
+  // the unused dimensions due to rank reductions. We have to look at sizes and
+  // strides to decide which dimensions were dropped. This function also
+  // partially verifies strides in case of rank reductions.
+  auto unusedDims = computeMemRefRankReductionMask(expectedType, subViewType,
+                                                   getMixedSizes());
+  if (failed(unusedDims))
+    return produceSubViewErrorMsg(SliceVerificationResult::LayoutMismatch,
+                                  *this, expectedType);
+
+  // Strides must match.
+  if (!haveCompatibleStrides(expectedType, subViewType, *unusedDims))
+    return produceSubViewErrorMsg(SliceVerificationResult::LayoutMismatch,
+                                  *this, expectedType);
+
+  return success();
 }
 
 raw_ostream &mlir::operator<<(raw_ostream &os, const Range &range) {
@@ -2419,38 +3047,61 @@ static MemRefType getCanonicalSubViewResultType(
     MemRefType currentResultType, MemRefType currentSourceType,
     MemRefType sourceType, ArrayRef<OpFoldResult> mixedOffsets,
     ArrayRef<OpFoldResult> mixedSizes, ArrayRef<OpFoldResult> mixedStrides) {
-  auto nonRankReducedType = SubViewOp::inferResultType(sourceType, mixedOffsets,
-                                                       mixedSizes, mixedStrides)
-                                .cast<MemRefType>();
-  llvm::Optional<llvm::SmallBitVector> unusedDims =
-      computeMemRefRankReductionMask(currentSourceType, currentResultType,
-                                     mixedSizes);
-  // Return nullptr as failure mode.
-  if (!unusedDims)
+  auto nonRankReducedType = llvm::cast<MemRefType>(SubViewOp::inferResultType(
+      sourceType, mixedOffsets, mixedSizes, mixedStrides));
+  FailureOr<llvm::SmallBitVector> unusedDims = computeMemRefRankReductionMask(
+      currentSourceType, currentResultType, mixedSizes);
+  if (failed(unusedDims))
     return nullptr;
-  SmallVector<int64_t> shape;
-  for (const auto &sizes : llvm::enumerate(nonRankReducedType.getShape())) {
-    if (unusedDims->test(sizes.index()))
+
+  auto layout = llvm::cast<StridedLayoutAttr>(nonRankReducedType.getLayout());
+  SmallVector<int64_t> shape, strides;
+  unsigned numDimsAfterReduction =
+      nonRankReducedType.getRank() - unusedDims->count();
+  shape.reserve(numDimsAfterReduction);
+  strides.reserve(numDimsAfterReduction);
+  for (const auto &[idx, size, stride] :
+       llvm::zip(llvm::seq<unsigned>(0, nonRankReducedType.getRank()),
+                 nonRankReducedType.getShape(), layout.getStrides())) {
+    if (unusedDims->test(idx))
       continue;
-    shape.push_back(sizes.value());
+    shape.push_back(size);
+    strides.push_back(stride);
   }
-  AffineMap layoutMap = nonRankReducedType.getLayout().getAffineMap();
-  if (!layoutMap.isIdentity())
-    layoutMap = getProjectedMap(layoutMap, unusedDims.getValue());
-  return MemRefType::get(shape, nonRankReducedType.getElementType(), layoutMap,
+
+  return MemRefType::get(shape, nonRankReducedType.getElementType(),
+                         StridedLayoutAttr::get(sourceType.getContext(),
+                                                layout.getOffset(), strides),
                          nonRankReducedType.getMemorySpace());
 }
 
-/// Compute the canonical result type of a SubViewOp. Call `inferResultType`
-/// to deduce the result type. Additionally, reduce the rank of the inferred
-/// result type if `currentResultType` is lower rank than `sourceType`.
-static MemRefType getCanonicalSubViewResultType(
-    MemRefType currentResultType, MemRefType sourceType,
-    ArrayRef<OpFoldResult> mixedOffsets, ArrayRef<OpFoldResult> mixedSizes,
-    ArrayRef<OpFoldResult> mixedStrides) {
-  return getCanonicalSubViewResultType(currentResultType, sourceType,
-                                       sourceType, mixedOffsets, mixedSizes,
-                                       mixedStrides);
+Value mlir::memref::createCanonicalRankReducingSubViewOp(
+    OpBuilder &b, Location loc, Value memref, ArrayRef<int64_t> targetShape) {
+  auto memrefType = llvm::cast<MemRefType>(memref.getType());
+  unsigned rank = memrefType.getRank();
+  SmallVector<OpFoldResult> offsets(rank, b.getIndexAttr(0));
+  SmallVector<OpFoldResult> sizes = getMixedSizes(b, loc, memref);
+  SmallVector<OpFoldResult> strides(rank, b.getIndexAttr(1));
+  auto targetType =
+      llvm::cast<MemRefType>(SubViewOp::inferRankReducedResultType(
+          targetShape, memrefType, offsets, sizes, strides));
+  return b.createOrFold<memref::SubViewOp>(loc, targetType, memref, offsets,
+                                           sizes, strides);
+}
+
+FailureOr<Value> SubViewOp::rankReduceIfNeeded(OpBuilder &b, Location loc,
+                                               Value value,
+                                               ArrayRef<int64_t> desiredShape) {
+  auto sourceMemrefType = llvm::dyn_cast<MemRefType>(value.getType());
+  assert(sourceMemrefType && "not a ranked memref type");
+  auto sourceShape = sourceMemrefType.getShape();
+  if (sourceShape.equals(desiredShape))
+    return value;
+  auto maybeRankReductionMask =
+      mlir::computeRankReductionMask(sourceShape, desiredShape);
+  if (!maybeRankReductionMask)
+    return failure();
+  return createCanonicalRankReducingSubViewOp(b, loc, value, desiredShape);
 }
 
 /// Helper method to check if a `subview` operation is trivially a no-op. This
@@ -2467,23 +3118,23 @@ static bool isTrivialSubViewOp(SubViewOp subViewOp) {
 
   // Check offsets are zero.
   if (llvm::any_of(mixedOffsets, [](OpFoldResult ofr) {
-        Optional<int64_t> intValue = getConstantIntValue(ofr);
-        return !intValue || intValue.getValue() != 0;
+        std::optional<int64_t> intValue = getConstantIntValue(ofr);
+        return !intValue || intValue.value() != 0;
       }))
     return false;
 
   // Check strides are one.
   if (llvm::any_of(mixedStrides, [](OpFoldResult ofr) {
-        Optional<int64_t> intValue = getConstantIntValue(ofr);
-        return !intValue || intValue.getValue() != 1;
+        std::optional<int64_t> intValue = getConstantIntValue(ofr);
+        return !intValue || intValue.value() != 1;
       }))
     return false;
 
   // Check all size values are static and matches the (static) source shape.
   ArrayRef<int64_t> sourceShape = subViewOp.getSourceType().getShape();
   for (const auto &size : llvm::enumerate(mixedSizes)) {
-    Optional<int64_t> intValue = getConstantIntValue(size.value());
-    if (!intValue || intValue.getValue() != sourceShape[size.index()])
+    std::optional<int64_t> intValue = getConstantIntValue(size.value());
+    if (!intValue || *intValue != sourceShape[size.index()])
       return false;
   }
   // All conditions met. The `SubViewOp` is foldable as a no-op.
@@ -2499,13 +3150,13 @@ namespace {
 /// ```
 ///   %0 = memref.cast %V : memref<16x16xf32> to memref<?x?xf32>
 ///   %1 = memref.subview %0[0, 0][3, 4][1, 1] :
-///     memref<?x?xf32> to memref<3x4xf32, offset:?, strides:[?, 1]>
+///     memref<?x?xf32> to memref<3x4xf32, strided<[?, 1], offset: ?>>
 /// ```
 /// is rewritten into:
 /// ```
 ///   %0 = memref.subview %V: memref<16x16xf32> to memref<3x4xf32, #[[map0]]>
-///   %1 = memref.cast %0: memref<3x4xf32, offset:0, strides:[16, 1]> to
-///     memref<3x4xf32, offset:?, strides:[?, 1]>
+///   %1 = memref.cast %0: memref<3x4xf32, strided<[16, 1], offset: 0>> to
+///     memref<3x4xf32, strided<[?, 1], offset: ?>>
 /// ```
 class SubViewOpMemRefCastFolder final : public OpRewritePattern<SubViewOp> {
 public:
@@ -2520,7 +3171,7 @@ public:
         }))
       return failure();
 
-    auto castOp = subViewOp.source().getDefiningOp<CastOp>();
+    auto castOp = subViewOp.getSource().getDefiningOp<CastOp>();
     if (!castOp)
       return failure();
 
@@ -2533,16 +3184,17 @@ public:
     // if the operation is rank-reducing.
     auto resultType = getCanonicalSubViewResultType(
         subViewOp.getType(), subViewOp.getSourceType(),
-        castOp.source().getType().cast<MemRefType>(),
+        llvm::cast<MemRefType>(castOp.getSource().getType()),
         subViewOp.getMixedOffsets(), subViewOp.getMixedSizes(),
         subViewOp.getMixedStrides());
     if (!resultType)
       return failure();
 
     Value newSubView = rewriter.create<SubViewOp>(
-        subViewOp.getLoc(), resultType, castOp.source(), subViewOp.offsets(),
-        subViewOp.sizes(), subViewOp.strides(), subViewOp.static_offsets(),
-        subViewOp.static_sizes(), subViewOp.static_strides());
+        subViewOp.getLoc(), resultType, castOp.getSource(),
+        subViewOp.getOffsets(), subViewOp.getSizes(), subViewOp.getStrides(),
+        subViewOp.getStaticOffsets(), subViewOp.getStaticSizes(),
+        subViewOp.getStaticStrides());
     rewriter.replaceOpWithNewOp<CastOp>(subViewOp, subViewOp.getType(),
                                         newSubView);
     return success();
@@ -2560,11 +3212,11 @@ public:
     if (!isTrivialSubViewOp(subViewOp))
       return failure();
     if (subViewOp.getSourceType() == subViewOp.getType()) {
-      rewriter.replaceOp(subViewOp, subViewOp.source());
+      rewriter.replaceOp(subViewOp, subViewOp.getSource());
       return success();
     }
     rewriter.replaceOpWithNewOp<CastOp>(subViewOp, subViewOp.getType(),
-                                        subViewOp.source());
+                                        subViewOp.getSource());
     return success();
   }
 };
@@ -2575,9 +3227,35 @@ struct SubViewReturnTypeCanonicalizer {
   MemRefType operator()(SubViewOp op, ArrayRef<OpFoldResult> mixedOffsets,
                         ArrayRef<OpFoldResult> mixedSizes,
                         ArrayRef<OpFoldResult> mixedStrides) {
-    return getCanonicalSubViewResultType(op.getType(), op.getSourceType(),
-                                         mixedOffsets, mixedSizes,
-                                         mixedStrides);
+    // Infer a memref type without taking into account any rank reductions.
+    auto resTy = SubViewOp::inferResultType(op.getSourceType(), mixedOffsets,
+                                            mixedSizes, mixedStrides);
+    if (!resTy)
+      return {};
+    MemRefType nonReducedType = cast<MemRefType>(resTy);
+
+    // Directly return the non-rank reduced type if there are no dropped dims.
+    llvm::SmallBitVector droppedDims = op.getDroppedDims();
+    if (droppedDims.none())
+      return nonReducedType;
+
+    // Take the strides and offset from the non-rank reduced type.
+    auto [nonReducedStrides, offset] = getStridesAndOffset(nonReducedType);
+
+    // Drop dims from shape and strides.
+    SmallVector<int64_t> targetShape;
+    SmallVector<int64_t> targetStrides;
+    for (int64_t i = 0; i < static_cast<int64_t>(mixedSizes.size()); ++i) {
+      if (droppedDims.test(i))
+        continue;
+      targetStrides.push_back(nonReducedStrides[i]);
+      targetShape.push_back(nonReducedType.getDimSize(i));
+    }
+
+    return MemRefType::get(targetShape, nonReducedType.getElementType(),
+                           StridedLayoutAttr::get(nonReducedType.getContext(),
+                                                  offset, targetStrides),
+                           nonReducedType.getMemorySpace());
   }
 };
 
@@ -2596,13 +3274,31 @@ void SubViewOp::getCanonicalizationPatterns(RewritePatternSet &results,
            SubViewOpMemRefCastFolder, TrivialSubViewOpFolder>(context);
 }
 
-OpFoldResult SubViewOp::fold(ArrayRef<Attribute> operands) {
-  auto resultShapedType = getResult().getType().cast<ShapedType>();
-  auto sourceShapedType = source().getType().cast<ShapedType>();
+OpFoldResult SubViewOp::fold(FoldAdaptor adaptor) {
+  auto resultShapedType = llvm::cast<ShapedType>(getResult().getType());
+  auto sourceShapedType = llvm::cast<ShapedType>(getSource().getType());
 
   if (resultShapedType.hasStaticShape() &&
       resultShapedType == sourceShapedType) {
     return getViewSource();
+  }
+
+  // Fold subview(subview(x)), where both subviews have the same size and the
+  // second subview's offsets are all zero. (I.e., the second subview is a
+  // no-op.)
+  if (auto srcSubview = getViewSource().getDefiningOp<SubViewOp>()) {
+    auto srcSizes = srcSubview.getMixedSizes();
+    auto sizes = getMixedSizes();
+    auto offsets = getMixedOffsets();
+    bool allOffsetsZero = llvm::all_of(
+        offsets, [](OpFoldResult ofr) { return isConstantIntValue(ofr, 0); });
+    auto strides = getMixedStrides();
+    bool allStridesOne = llvm::all_of(
+        strides, [](OpFoldResult ofr) { return isConstantIntValue(ofr, 1); });
+    bool allSizesSame = llvm::equal(sizes, srcSizes);
+    if (allOffsetsZero && allStridesOne && allSizesSame &&
+        resultShapedType == sourceShapedType)
+      return getViewSource();
   }
 
   return {};
@@ -2612,29 +3308,26 @@ OpFoldResult SubViewOp::fold(ArrayRef<Attribute> operands) {
 // TransposeOp
 //===----------------------------------------------------------------------===//
 
-/// Build a strided memref type by applying `permutationMap` tp `memRefType`.
+void TransposeOp::getAsmResultNames(
+    function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "transpose");
+}
+
+/// Build a strided memref type by applying `permutationMap` to `memRefType`.
 static MemRefType inferTransposeResultType(MemRefType memRefType,
                                            AffineMap permutationMap) {
-  auto rank = memRefType.getRank();
   auto originalSizes = memRefType.getShape();
-  // Compute permuted sizes.
-  SmallVector<int64_t, 4> sizes(rank, 0);
-  for (const auto &en : llvm::enumerate(permutationMap.getResults()))
-    sizes[en.index()] =
-        originalSizes[en.value().cast<AffineDimExpr>().getPosition()];
+  auto [originalStrides, offset] = getStridesAndOffset(memRefType);
+  assert(originalStrides.size() == static_cast<unsigned>(memRefType.getRank()));
 
-  // Compute permuted strides.
-  int64_t offset;
-  SmallVector<int64_t, 4> strides;
-  auto res = getStridesAndOffset(memRefType, strides, offset);
-  assert(succeeded(res) && strides.size() == static_cast<unsigned>(rank));
-  (void)res;
-  auto map =
-      makeStridedLinearLayoutMap(strides, offset, memRefType.getContext());
-  map = permutationMap ? map.compose(permutationMap) : map;
+  // Compute permuted sizes and strides.
+  auto sizes = applyPermutationMap<int64_t>(permutationMap, originalSizes);
+  auto strides = applyPermutationMap<int64_t>(permutationMap, originalStrides);
+
   return MemRefType::Builder(memRefType)
       .setShape(sizes)
-      .setLayout(AffineMapAttr::get(map));
+      .setLayout(
+          StridedLayoutAttr::get(memRefType.getContext(), offset, strides));
 }
 
 void TransposeOp::build(OpBuilder &b, OperationState &result, Value in,
@@ -2643,19 +3336,19 @@ void TransposeOp::build(OpBuilder &b, OperationState &result, Value in,
   auto permutationMap = permutation.getValue();
   assert(permutationMap);
 
-  auto memRefType = in.getType().cast<MemRefType>();
+  auto memRefType = llvm::cast<MemRefType>(in.getType());
   // Compute result type.
   MemRefType resultType = inferTransposeResultType(memRefType, permutationMap);
 
+  result.addAttribute(TransposeOp::getPermutationAttrStrName(), permutation);
   build(b, result, resultType, in, attrs);
-  result.addAttribute(TransposeOp::getPermutationAttrName(), permutation);
 }
 
 // transpose $in $permutation attr-dict : type($in) `to` type(results)
 void TransposeOp::print(OpAsmPrinter &p) {
-  p << " " << in() << " " << permutation();
-  p.printOptionalAttrDict((*this)->getAttrs(), {getPermutationAttrName()});
-  p << " : " << in().getType() << " to " << getType();
+  p << " " << getIn() << " " << getPermutation();
+  p.printOptionalAttrDict((*this)->getAttrs(), {getPermutationAttrStrName()});
+  p << " : " << getIn().getType() << " to " << getType();
 }
 
 ParseResult TransposeOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -2670,30 +3363,44 @@ ParseResult TransposeOp::parse(OpAsmParser &parser, OperationState &result) {
       parser.addTypeToList(dstType, result.types))
     return failure();
 
-  result.addAttribute(TransposeOp::getPermutationAttrName(),
+  result.addAttribute(TransposeOp::getPermutationAttrStrName(),
                       AffineMapAttr::get(permutation));
   return success();
 }
 
 LogicalResult TransposeOp::verify() {
-  if (!permutation().isPermutation())
+  if (!getPermutation().isPermutation())
     return emitOpError("expected a permutation map");
-  if (permutation().getNumDims() != getShapedType().getRank())
+  if (getPermutation().getNumDims() != getIn().getType().getRank())
     return emitOpError("expected a permutation map of same rank as the input");
 
-  auto srcType = in().getType().cast<MemRefType>();
-  auto dstType = getType().cast<MemRefType>();
-  auto transposedType = inferTransposeResultType(srcType, permutation());
-  if (dstType != transposedType)
-    return emitOpError("output type ")
-           << dstType << " does not match transposed input type " << srcType
-           << ", " << transposedType;
+  auto srcType = llvm::cast<MemRefType>(getIn().getType());
+  auto resultType = llvm::cast<MemRefType>(getType());
+  auto canonicalResultType = canonicalizeStridedLayout(
+      inferTransposeResultType(srcType, getPermutation()));
+
+  if (canonicalizeStridedLayout(resultType) != canonicalResultType)
+    return emitOpError("result type ")
+           << resultType
+           << " is not equivalent to the canonical transposed input type "
+           << canonicalResultType;
   return success();
 }
 
-OpFoldResult TransposeOp::fold(ArrayRef<Attribute>) {
-  if (succeeded(foldMemRefCast(*this)))
+OpFoldResult TransposeOp::fold(FoldAdaptor) {
+  // First check for identity permutation, we can fold it away if input and
+  // result types are identical already.
+  if (getPermutation().isIdentity() && getType() == getIn().getType())
+    return getIn();
+  // Fold two consecutive memref.transpose Ops into one by composing their
+  // permutation maps.
+  if (auto otherTransposeOp = getIn().getDefiningOp<memref::TransposeOp>()) {
+    AffineMap composedPermutation =
+        getPermutation().compose(otherTransposeOp.getPermutation());
+    getInMutable().assign(otherTransposeOp.getIn());
+    setPermutation(composedPermutation);
     return getResult();
+  }
   return {};
 }
 
@@ -2701,8 +3408,12 @@ OpFoldResult TransposeOp::fold(ArrayRef<Attribute>) {
 // ViewOp
 //===----------------------------------------------------------------------===//
 
+void ViewOp::getAsmResultNames(function_ref<void(Value, StringRef)> setNameFn) {
+  setNameFn(getResult(), "view");
+}
+
 LogicalResult ViewOp::verify() {
-  auto baseType = getOperand(0).getType().cast<MemRefType>();
+  auto baseType = llvm::cast<MemRefType>(getOperand(0).getType());
   auto viewType = getType();
 
   // The base memref should have identity layout map (or none).
@@ -2721,13 +3432,13 @@ LogicalResult ViewOp::verify() {
 
   // Verify that we have the correct number of sizes for the result type.
   unsigned numDynamicDims = viewType.getNumDynamicDims();
-  if (sizes().size() != numDynamicDims)
+  if (getSizes().size() != numDynamicDims)
     return emitError("incorrect number of size operands for type ") << viewType;
 
   return success();
 }
 
-Value ViewOp::getViewSource() { return source(); }
+Value ViewOp::getViewSource() { return getSource(); }
 
 namespace {
 
@@ -2769,7 +3480,7 @@ struct ViewOpShapeFolder : public OpRewritePattern<ViewOp> {
         newShapeConstants.push_back(dimSize);
         continue;
       }
-      auto *defOp = viewOp.sizes()[dynamicDimPos].getDefiningOp();
+      auto *defOp = viewOp.getSizes()[dynamicDimPos].getDefiningOp();
       if (auto constantIndexOp =
               dyn_cast_or_null<arith::ConstantIndexOp>(defOp)) {
         // Dynamic shape dimension will be folded.
@@ -2777,7 +3488,7 @@ struct ViewOpShapeFolder : public OpRewritePattern<ViewOp> {
       } else {
         // Dynamic shape dimension not folded; copy operand from old memref.
         newShapeConstants.push_back(dimSize);
-        newOperands.push_back(viewOp.sizes()[dynamicDimPos]);
+        newOperands.push_back(viewOp.getSizes()[dynamicDimPos]);
       }
       dynamicDimPos++;
     }
@@ -2790,9 +3501,9 @@ struct ViewOpShapeFolder : public OpRewritePattern<ViewOp> {
       return failure();
 
     // Create new ViewOp.
-    auto newViewOp = rewriter.create<ViewOp>(viewOp.getLoc(), newMemRefType,
-                                             viewOp.getOperand(0),
-                                             viewOp.byte_shift(), newOperands);
+    auto newViewOp = rewriter.create<ViewOp>(
+        viewOp.getLoc(), newMemRefType, viewOp.getOperand(0),
+        viewOp.getByteShift(), newOperands);
     // Insert a cast so we have the same type as the old memref type.
     rewriter.replaceOpWithNewOp<CastOp>(viewOp, viewOp.getType(), newViewOp);
     return success();
@@ -2813,7 +3524,8 @@ struct ViewOpMemrefCastFolder : public OpRewritePattern<ViewOp> {
     if (!allocOp)
       return failure();
     rewriter.replaceOpWithNewOp<ViewOp>(viewOp, viewOp.getType(), allocOperand,
-                                        viewOp.byte_shift(), viewOp.sizes());
+                                        viewOp.getByteShift(),
+                                        viewOp.getSizes());
     return success();
   }
 };
@@ -2833,14 +3545,14 @@ LogicalResult AtomicRMWOp::verify() {
   if (getMemRefType().getRank() != getNumOperands() - 2)
     return emitOpError(
         "expects the number of subscripts to be equal to memref rank");
-  switch (kind()) {
+  switch (getKind()) {
   case arith::AtomicRMWKind::addf:
-  case arith::AtomicRMWKind::maxf:
-  case arith::AtomicRMWKind::minf:
+  case arith::AtomicRMWKind::maximumf:
+  case arith::AtomicRMWKind::minimumf:
   case arith::AtomicRMWKind::mulf:
-    if (!value().getType().isa<FloatType>())
+    if (!llvm::isa<FloatType>(getValue().getType()))
       return emitOpError() << "with kind '"
-                           << arith::stringifyAtomicRMWKind(kind())
+                           << arith::stringifyAtomicRMWKind(getKind())
                            << "' expects a floating-point type";
     break;
   case arith::AtomicRMWKind::addi:
@@ -2851,9 +3563,9 @@ LogicalResult AtomicRMWOp::verify() {
   case arith::AtomicRMWKind::muli:
   case arith::AtomicRMWKind::ori:
   case arith::AtomicRMWKind::andi:
-    if (!value().getType().isa<IntegerType>())
+    if (!llvm::isa<IntegerType>(getValue().getType()))
       return emitOpError() << "with kind '"
-                           << arith::stringifyAtomicRMWKind(kind())
+                           << arith::stringifyAtomicRMWKind(getKind())
                            << "' expects an integer type";
     break;
   default:
@@ -2862,9 +3574,9 @@ LogicalResult AtomicRMWOp::verify() {
   return success();
 }
 
-OpFoldResult AtomicRMWOp::fold(ArrayRef<Attribute> operands) {
+OpFoldResult AtomicRMWOp::fold(FoldAdaptor adaptor) {
   /// atomicrmw(memrefcast) -> atomicrmw
-  if (succeeded(foldMemRefCast(*this, value())))
+  if (succeeded(foldMemRefCast(*this, getValue())))
     return getResult();
   return OpFoldResult();
 }

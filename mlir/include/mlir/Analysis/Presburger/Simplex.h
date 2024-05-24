@@ -22,10 +22,11 @@
 #include "mlir/Analysis/Presburger/Utils.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
 
 namespace mlir {
 namespace presburger {
@@ -42,7 +43,7 @@ class GBRSimplex;
 /// these constraints that are redundant, i.e. a subset of constraints that
 /// doesn't constrain the affine set further after adding the non-redundant
 /// constraints. The LexSimplex class provides support for computing the
-/// lexicographic minimum of an IntegerRelation. The SymbolicLexMin class
+/// lexicographic minimum of an IntegerRelation. The SymbolicLexOpt class
 /// provides support for computing symbolic lexicographic minimums. All of these
 /// classes can be constructed from an IntegerRelation, and all inherit common
 /// functionality from SimplexBase.
@@ -165,7 +166,7 @@ public:
   /// Add an inequality to the tableau. If coeffs is c_0, c_1, ... c_n, where n
   /// is the current number of variables, then the corresponding inequality is
   /// c_n + c_0*x_0 + c_1*x_1 + ... + c_{n-1}*x_{n-1} >= 0.
-  virtual void addInequality(ArrayRef<int64_t> coeffs) = 0;
+  virtual void addInequality(ArrayRef<MPInt> coeffs) = 0;
 
   /// Returns the number of variables in the tableau.
   unsigned getNumVariables() const;
@@ -176,14 +177,16 @@ public:
   /// Add an equality to the tableau. If coeffs is c_0, c_1, ... c_n, where n
   /// is the current number of variables, then the corresponding equality is
   /// c_n + c_0*x_0 + c_1*x_1 + ... + c_{n-1}*x_{n-1} == 0.
-  void addEquality(ArrayRef<int64_t> coeffs);
+  void addEquality(ArrayRef<MPInt> coeffs);
 
   /// Add new variables to the end of the list of variables.
   void appendVariable(unsigned count = 1);
 
   /// Append a new variable to the simplex and constrain it such that its only
   /// integer value is the floor div of `coeffs` and `denom`.
-  void addDivisionVariable(ArrayRef<int64_t> coeffs, int64_t denom);
+  ///
+  /// `denom` must be positive.
+  void addDivisionVariable(ArrayRef<MPInt> coeffs, const MPInt &denom);
 
   /// Mark the tableau as being empty.
   void markEmpty();
@@ -210,14 +213,18 @@ public:
 
 protected:
   /// Construct a SimplexBase with the specified number of variables and fixed
-  /// columns.
+  /// columns. The first overload should be used when there are nosymbols.
+  /// With the second overload, the specified range of vars will be marked
+  /// as symbols. With the third overload, `isSymbol` is a bitmask denoting
+  /// which vars are symbols. The size of `isSymbol` must be `nVar`.
   ///
   /// For example, Simplex uses two fixed columns: the denominator and the
   /// constant term, whereas LexSimplex has an extra fixed column for the
   /// so-called big M parameter. For more information see the documentation for
   /// LexSimplex.
-  SimplexBase(unsigned nVar, bool mustUseBigM, unsigned symbolOffset,
-              unsigned nSymbol);
+  SimplexBase(unsigned nVar, bool mustUseBigM);
+  SimplexBase(unsigned nVar, bool mustUseBigM,
+              const llvm::SmallBitVector &isSymbol);
 
   enum class Orientation { Row, Column };
 
@@ -256,7 +263,7 @@ protected:
   /// Returns an empty optional if no pivot is possible, which happens only when
   /// the column unknown is a variable and no constraint has a non-zero
   /// coefficient for it.
-  Optional<unsigned> findAnyPivotRow(unsigned col);
+  std::optional<unsigned> findAnyPivotRow(unsigned col);
 
   /// Swap the row with the column in the tableau's data structures but not the
   /// tableau itself. This is used by pivot.
@@ -280,7 +287,7 @@ protected:
   Unknown &unknownFromRow(unsigned row);
 
   /// Add a new row to the tableau and the associated data structures. The row
-  /// is initialized to zero.
+  /// is initialized to zero. Returns the index of the added row.
   unsigned addZeroRow(bool makeRestricted = false);
 
   /// Add a new row to the tableau and the associated data structures.
@@ -288,11 +295,7 @@ protected:
   /// con.
   ///
   /// Returns the index of the new Unknown in con.
-  unsigned addRow(ArrayRef<int64_t> coeffs, bool makeRestricted = false);
-
-  /// Normalize the given row by removing common factors between the numerator
-  /// and the denominator.
-  void normalizeRow(unsigned row);
+  unsigned addRow(ArrayRef<MPInt> coeffs, bool makeRestricted = false);
 
   /// Swap the two rows/columns in the tableau and associated data structures.
   void swapRows(unsigned i, unsigned j);
@@ -320,16 +323,11 @@ protected:
   /// Return the number of fixed columns, as described in the constructor above,
   /// this is the number of columns beyond those for the variables in var.
   unsigned getNumFixedCols() const { return usingBigM ? 3u : 2u; }
+  unsigned getNumRows() const { return tableau.getNumRows(); }
+  unsigned getNumColumns() const { return tableau.getNumColumns(); }
 
   /// Stores whether or not a big M column is present in the tableau.
   bool usingBigM;
-
-  /// The number of rows in the tableau.
-  unsigned nRow;
-
-  /// The number of columns in the tableau, including the common denominator
-  /// and the constant column.
-  unsigned nCol;
 
   /// The number of redundant rows in the tableau. These are the first
   /// nRedundant rows.
@@ -340,7 +338,7 @@ protected:
   unsigned nSymbol;
 
   /// The matrix representing the tableau.
-  Matrix tableau;
+  IntMatrix tableau;
 
   /// This is true if the tableau has been detected to be empty, false
   /// otherwise.
@@ -425,18 +423,22 @@ public:
   ///
   /// This just adds the inequality to the tableau and does not try to create a
   /// consistent tableau configuration.
-  void addInequality(ArrayRef<int64_t> coeffs) final;
+  void addInequality(ArrayRef<MPInt> coeffs) final;
 
   /// Get a snapshot of the current state. This is used for rolling back.
   unsigned getSnapshot() { return SimplexBase::getSnapshotBasis(); }
 
 protected:
-  LexSimplexBase(unsigned nVar, unsigned symbolOffset, unsigned nSymbol)
-      : SimplexBase(nVar, /*mustUseBigM=*/true, symbolOffset, nSymbol) {}
+  LexSimplexBase(unsigned nVar) : SimplexBase(nVar, /*mustUseBigM=*/true) {}
+  LexSimplexBase(unsigned nVar, const llvm::SmallBitVector &isSymbol)
+      : SimplexBase(nVar, /*mustUseBigM=*/true, isSymbol) {}
   explicit LexSimplexBase(const IntegerRelation &constraints)
-      : LexSimplexBase(constraints.getNumIds(),
-                       constraints.getIdKindOffset(IdKind::Symbol),
-                       constraints.getNumSymbolIds()) {
+      : LexSimplexBase(constraints.getNumVars()) {
+    intersectIntegerRelation(constraints);
+  }
+  explicit LexSimplexBase(const IntegerRelation &constraints,
+                          const llvm::SmallBitVector &isSymbol)
+      : LexSimplexBase(constraints.getNumVars(), isSymbol) {
     intersectIntegerRelation(constraints);
   }
 
@@ -444,10 +446,9 @@ protected:
   void appendSymbol();
 
   /// Try to move the specified row to column orientation while preserving the
-  /// lexicopositivity of the basis transform. The row must have a negative
-  /// sample value. If this is not possible, return failure. This only occurs
-  /// when the constraints have no solution; the tableau will be marked empty in
-  /// such a case.
+  /// lexicopositivity of the basis transform. The row must have a non-positive
+  /// sample value. If this is not possible, return failure. This occurs when
+  /// the constraints have no solution or the sample value is zero.
   LogicalResult moveRowUnknownToColumn(unsigned row);
 
   /// Given a row that has a non-integer sample value, add an inequality to cut
@@ -480,13 +481,12 @@ protected:
 /// provides support for integer-exact redundancy and separateness checks.
 class LexSimplex : public LexSimplexBase {
 public:
-  explicit LexSimplex(unsigned nVar)
-      : LexSimplexBase(nVar, /*symbolOffset=*/0, /*nSymbol=*/0) {}
+  explicit LexSimplex(unsigned nVar) : LexSimplexBase(nVar) {}
+  // Note that LexSimplex does NOT support symbolic lexmin;
+  // use SymbolicLexSimplex if that is required. LexSimplex ignores the VarKinds
+  // of the passed IntegerRelation. Symbols will be treated as ordinary vars.
   explicit LexSimplex(const IntegerRelation &constraints)
-      : LexSimplexBase(constraints) {
-    assert(constraints.getNumSymbolIds() == 0 &&
-           "LexSimplex does not support symbols!");
-  }
+      : LexSimplexBase(constraints) {}
 
   /// Return the lexicographically minimum rational solution to the constraints.
   MaybeOptimum<SmallVector<Fraction, 8>> findRationalLexMin();
@@ -495,15 +495,15 @@ public:
   ///
   /// Note: this should be used only when the lexmin is really needed. To obtain
   /// any integer sample, use Simplex::findIntegerSample as that is more robust.
-  MaybeOptimum<SmallVector<int64_t, 8>> findIntegerLexMin();
+  MaybeOptimum<SmallVector<MPInt, 8>> findIntegerLexMin();
 
   /// Return whether the specified inequality is redundant/separate for the
   /// polytope. Redundant means every point satisfies the given inequality, and
   /// separate means no point satisfies it.
   ///
   /// These checks are integer-exact.
-  bool isSeparateInequality(ArrayRef<int64_t> coeffs);
-  bool isRedundantInequality(ArrayRef<int64_t> coeffs);
+  bool isSeparateInequality(ArrayRef<MPInt> coeffs);
+  bool isRedundantInequality(ArrayRef<MPInt> coeffs);
 
 private:
   /// Returns the current sample point, which may contain non-integer (rational)
@@ -522,26 +522,25 @@ private:
 
   /// Get a constraint row that is violated, if one exists.
   /// Otherwise, return an empty optional.
-  Optional<unsigned> maybeGetViolatedRow() const;
+  std::optional<unsigned> maybeGetViolatedRow() const;
 
   /// Get a row corresponding to a var that has a non-integral sample value, if
   /// one exists. Otherwise, return an empty optional.
-  Optional<unsigned> maybeGetNonIntegralVarRow() const;
+  std::optional<unsigned> maybeGetNonIntegralVarRow() const;
 };
 
-/// Represents the result of a symbolic lexicographic minimization computation.
-struct SymbolicLexMin {
-  SymbolicLexMin(unsigned nSymbols, unsigned nNonSymbols)
-      : lexmin(PresburgerSpace::getSetSpace(nSymbols), nNonSymbols),
-        unboundedDomain(
-            PresburgerSet::getEmpty(PresburgerSpace::getSetSpace(nSymbols))) {}
+/// Represents the result of a symbolic lexicographic optimization computation.
+struct SymbolicLexOpt {
+  SymbolicLexOpt(const PresburgerSpace &space)
+      : lexopt(space),
+        unboundedDomain(PresburgerSet::getEmpty(space.getDomainSpace())) {}
 
-  /// This maps assignments of symbols to the corresponding lexmin.
+  /// This maps assignments of symbols to the corresponding lexopt.
   /// Takes no value when no integer sample exists for the assignment or if the
-  /// lexmin is unbounded.
-  PWMAFunction lexmin;
-  /// Contains all assignments to the symbols that made the lexmin unbounded.
-  /// Note that the symbols of the input set to the symbolic lexmin are dims
+  /// lexopt is unbounded.
+  PWMAFunction lexopt;
+  /// Contains all assignments to the symbols that made the lexopt unbounded.
+  /// Note that the symbols of the input set to the symbolic lexopt are dims
   /// of this PrebsurgerSet.
   PresburgerSet unboundedDomain;
 };
@@ -576,24 +575,54 @@ struct SymbolicLexMin {
 /// where it is.
 class SymbolicLexSimplex : public LexSimplexBase {
 public:
-  /// `constraints` is the set for which the symbolic lexmin will be computed.
-  /// `symbolDomain` is the set of values of the symbols for which the lexmin
-  /// will be computed. `symbolDomain` should have a dim id for every symbol in
-  /// `constraints`, and no other ids.
-  SymbolicLexSimplex(const IntegerPolyhedron &constraints,
-                     const IntegerPolyhedron &symbolDomain)
-      : LexSimplexBase(constraints), domainPoly(symbolDomain),
+  /// `constraints` is the set for which the symbolic lexopt will be computed.
+  /// `symbolDomain` is the set of values of the symbols for which the lexopt
+  /// will be computed. `symbolDomain` should have a dim var for every symbol in
+  /// `constraints`, and no other vars. `isSymbol` specifies which vars of
+  /// `constraints` should be considered as symbols.
+  ///
+  /// The resulting SymbolicLexOpt's space will be compatible with that of
+  /// symbolDomain.
+  SymbolicLexSimplex(const IntegerRelation &constraints,
+                     const IntegerPolyhedron &symbolDomain,
+                     const llvm::SmallBitVector &isSymbol)
+      : LexSimplexBase(constraints, isSymbol), domainPoly(symbolDomain),
         domainSimplex(symbolDomain) {
-    assert(domainPoly.getNumIds() == constraints.getNumSymbolIds());
-    assert(domainPoly.getNumDimIds() == constraints.getNumSymbolIds());
+    // TODO consider supporting this case. It amounts
+    // to just returning the input constraints.
+    assert(domainPoly.getNumVars() > 0 &&
+           "there must be some non-symbols to optimize!");
   }
 
-  /// The lexmin will be stored as a function `lexmin` from symbols to
+  /// An overload to select some subrange of ids as symbols for lexopt.
+  /// The symbol ids are the range of ids with absolute index
+  /// [symbolOffset, symbolOffset + symbolDomain.getNumVars())
+  SymbolicLexSimplex(const IntegerRelation &constraints, unsigned symbolOffset,
+                     const IntegerPolyhedron &symbolDomain)
+      : SymbolicLexSimplex(constraints, symbolDomain,
+                           getSubrangeBitVector(constraints.getNumVars(),
+                                                symbolOffset,
+                                                symbolDomain.getNumVars())) {}
+
+  /// An overload to select the symbols of `constraints` as symbols for lexopt.
+  SymbolicLexSimplex(const IntegerRelation &constraints,
+                     const IntegerPolyhedron &symbolDomain)
+      : SymbolicLexSimplex(constraints,
+                           constraints.getVarKindOffset(VarKind::Symbol),
+                           symbolDomain) {
+    assert(constraints.getNumSymbolVars() == symbolDomain.getNumVars() &&
+           "symbolDomain must have as many vars as constraints has symbols!");
+  }
+
+  /// The lexmin will be stored as a function `lexopt` from symbols to
   /// non-symbols in the result.
   ///
   /// For some values of the symbols, the lexmin may be unbounded.
   /// These parts of the symbol domain will be stored in `unboundedDomain`.
-  SymbolicLexMin computeSymbolicIntegerLexMin();
+  ///
+  /// The spaces of the sets in the result are compatible with the symbolDomain
+  /// passed in the SymbolicLexSimplex constructor.
+  SymbolicLexOpt computeSymbolicIntegerLexMin();
 
 private:
   /// Perform all pivots that do not require branching.
@@ -604,11 +633,11 @@ private:
   LogicalResult doNonBranchingPivots();
 
   /// Get a row that is always violated in the current domain, if one exists.
-  Optional<unsigned> maybeGetAlwaysViolatedRow();
+  std::optional<unsigned> maybeGetAlwaysViolatedRow();
 
   /// Get a row corresponding to a variable with non-integral sample value, if
   /// one exists.
-  Optional<unsigned> maybeGetNonIntegralVarRow();
+  std::optional<unsigned> maybeGetNonIntegralVarRow();
 
   /// Given a row that has a non-integer sample value, cut away this fractional
   /// sample value witahout removing any integer points, i.e., the integer
@@ -627,7 +656,11 @@ private:
   /// Get the numerator of the symbolic sample of the specific row.
   /// This is an affine expression in the symbols with integer coefficients.
   /// The last element is the constant term. This ignores the big M coefficient.
-  SmallVector<int64_t, 8> getSymbolicSampleNumerator(unsigned row) const;
+  SmallVector<MPInt, 8> getSymbolicSampleNumerator(unsigned row) const;
+
+  /// Get an affine inequality in the symbols with integer coefficients that
+  /// holds iff the symbolic sample of the specified row is non-negative.
+  SmallVector<MPInt, 8> getSymbolicSampleIneq(unsigned row) const;
 
   /// Return whether all the coefficients of the symbolic sample are integers.
   ///
@@ -637,7 +670,7 @@ private:
 
   /// Record a lexmin. The tableau must be consistent with all variables
   /// having symbolic samples with integer coefficients.
-  void recordOutput(SymbolicLexMin &result) const;
+  void recordOutput(SymbolicLexOpt &result) const;
 
   /// The symbol domain.
   IntegerPolyhedron domainPoly;
@@ -664,11 +697,9 @@ public:
   enum class Direction { Up, Down };
 
   Simplex() = delete;
-  explicit Simplex(unsigned nVar)
-      : SimplexBase(nVar, /*mustUseBigM=*/false, /*symbolOffset=*/0,
-                    /*nSymbol=*/0) {}
+  explicit Simplex(unsigned nVar) : SimplexBase(nVar, /*mustUseBigM=*/false) {}
   explicit Simplex(const IntegerRelation &constraints)
-      : Simplex(constraints.getNumIds()) {
+      : Simplex(constraints.getNumVars()) {
     intersectIntegerRelation(constraints);
   }
   ~Simplex() override = default;
@@ -679,7 +710,7 @@ public:
   ///
   /// This also tries to restore the tableau configuration to a consistent
   /// state and marks the Simplex empty if this is not possible.
-  void addInequality(ArrayRef<int64_t> coeffs) final;
+  void addInequality(ArrayRef<MPInt> coeffs) final;
 
   /// Compute the maximum or minimum value of the given row, depending on
   /// direction. The specified row is never pivoted. On return, the row may
@@ -695,7 +726,7 @@ public:
   /// Returns a Fraction denoting the optimum, or a null value if no optimum
   /// exists, i.e., if the expression is unbounded in this direction.
   MaybeOptimum<Fraction> computeOptimum(Direction direction,
-                                        ArrayRef<int64_t> coeffs);
+                                        ArrayRef<MPInt> coeffs);
 
   /// Returns whether the perpendicular of the specified constraint is a
   /// is a direction along which the polytope is bounded.
@@ -711,13 +742,40 @@ public:
   /// the set of solutions does not change if these constraints are removed.
   /// Marks these constraints as redundant. Whether a specific constraint has
   /// been marked redundant can be queried using isMarkedRedundant.
-  void detectRedundant();
+  ///
+  /// The first overload only tries to find redundant constraints with indices
+  /// in the range [offset, offset + count), by scanning constraints from left
+  /// to right in this range. If `count` is not provided, all constraints
+  /// starting at `offset` are scanned, and if neither are provided, all
+  /// constraints are scanned, starting from 0 and going to the last constraint.
+  ///
+  /// As an example, in the set (x) : (x >= 0, x >= 0, x >= 0), calling
+  /// `detectRedundant` with no parameters will result in the first two
+  /// constraints being marked redundant. All copies cannot be marked redundant
+  /// because removing all the constraints changes the set. The first two are
+  /// the ones marked redundant because we scan from left to right. Thus, when
+  /// there is some preference among the constraints as to which should be
+  /// marked redundant with priority when there are multiple possibilities, this
+  /// could be accomplished by succesive calls to detectRedundant(offset,
+  /// count).
+  void detectRedundant(unsigned offset, unsigned count);
+  void detectRedundant(unsigned offset) {
+    assert(offset <= con.size() && "invalid offset!");
+    detectRedundant(offset, con.size() - offset);
+  }
+  void detectRedundant() { detectRedundant(0, con.size()); }
 
   /// Returns a (min, max) pair denoting the minimum and maximum integer values
   /// of the given expression. If no integer value exists, both results will be
   /// of kind Empty.
-  std::pair<MaybeOptimum<int64_t>, MaybeOptimum<int64_t>>
-  computeIntegerBounds(ArrayRef<int64_t> coeffs);
+  std::pair<MaybeOptimum<MPInt>, MaybeOptimum<MPInt>>
+  computeIntegerBounds(ArrayRef<MPInt> coeffs);
+
+  /// Check if the simplex takes only one rational value along the
+  /// direction of `coeffs`.
+  ///
+  /// `this` must be nonempty.
+  bool isFlatAlong(ArrayRef<MPInt> coeffs);
 
   /// Returns true if the polytope is unbounded, i.e., extends to infinity in
   /// some direction. Otherwise, returns false.
@@ -727,9 +785,9 @@ public:
   /// tableau A and one in B.
   static Simplex makeProduct(const Simplex &a, const Simplex &b);
 
-  /// Returns an integer sample point if one exists, or None
+  /// Returns an integer sample point if one exists, or std::nullopt
   /// otherwise. This should only be called for bounded sets.
-  Optional<SmallVector<int64_t, 8>> findIntegerSample();
+  std::optional<SmallVector<MPInt, 8>> findIntegerSample();
 
   enum class IneqType { Redundant, Cut, Separate };
 
@@ -739,25 +797,25 @@ public:
   /// Redundant   The inequality is satisfied in the polytope
   /// Cut         The inequality is satisfied by some points, but not by others
   /// Separate    The inequality is not satisfied by any point
-  IneqType findIneqType(ArrayRef<int64_t> coeffs);
+  IneqType findIneqType(ArrayRef<MPInt> coeffs);
 
   /// Check if the specified inequality already holds in the polytope.
-  bool isRedundantInequality(ArrayRef<int64_t> coeffs);
+  bool isRedundantInequality(ArrayRef<MPInt> coeffs);
 
   /// Check if the specified equality already holds in the polytope.
-  bool isRedundantEquality(ArrayRef<int64_t> coeffs);
+  bool isRedundantEquality(ArrayRef<MPInt> coeffs);
 
   /// Returns true if this Simplex's polytope is a rational subset of `rel`.
   /// Otherwise, returns false.
   bool isRationalSubsetOf(const IntegerRelation &rel);
 
   /// Returns the current sample point if it is integral. Otherwise, returns
-  /// None.
-  Optional<SmallVector<int64_t, 8>> getSamplePointIfIntegral() const;
+  /// std::nullopt.
+  std::optional<SmallVector<MPInt, 8>> getSamplePointIfIntegral() const;
 
   /// Returns the current sample point, which may contain non-integer (rational)
   /// coordinates. Returns an empty optional when the tableau is empty.
-  Optional<SmallVector<Fraction, 8>> getRationalSample() const;
+  std::optional<SmallVector<Fraction, 8>> getRationalSample() const;
 
 private:
   friend class GBRSimplex;
@@ -776,7 +834,7 @@ private:
   ///
   /// Returns a (row, col) pair denoting a pivot, or an empty Optional if
   /// no valid pivot exists.
-  Optional<Pivot> findPivot(int row, Direction direction) const;
+  std::optional<Pivot> findPivot(int row, Direction direction) const;
 
   /// Find a row that can be used to pivot the column in the specified
   /// direction. If skipRow is not null, then this row is excluded
@@ -786,8 +844,8 @@ private:
   ///
   /// Returns the row to pivot to, or an empty Optional if the column
   /// is unbounded in the specified direction.
-  Optional<unsigned> findPivotRow(Optional<unsigned> skipRow,
-                                  Direction direction, unsigned col) const;
+  std::optional<unsigned> findPivotRow(std::optional<unsigned> skipRow,
+                                       Direction direction, unsigned col) const;
 
   /// Undo the addition of the last constraint while preserving tableau
   /// consistency.
@@ -809,7 +867,7 @@ private:
 
   /// Reduce the given basis, starting at the specified level, using general
   /// basis reduction.
-  void reduceBasis(Matrix &basis, unsigned level);
+  void reduceBasis(IntMatrix &basis, unsigned level);
 };
 
 /// Takes a snapshot of the simplex state on construction and rolls back to the

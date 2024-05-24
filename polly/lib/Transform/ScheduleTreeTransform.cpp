@@ -21,6 +21,7 @@
 #include "llvm/IR/Metadata.h"
 #include "llvm/Transforms/Utils/UnrollLoop.h"
 
+#include "polly/Support/PollyDebug.h"
 #define DEBUG_TYPE "polly-opt-isl"
 
 using namespace polly;
@@ -128,7 +129,7 @@ static isl::schedule rebuildBand(isl::schedule_node_band OldBand,
 /// AST build options must be set after the tree has been constructed.
 template <typename Derived, typename... Args>
 struct ScheduleTreeRewriter
-    : public RecursiveScheduleTreeVisitor<Derived, isl::schedule, Args...> {
+    : RecursiveScheduleTreeVisitor<Derived, isl::schedule, Args...> {
   Derived &getDerived() { return *static_cast<Derived *>(this); }
   const Derived &getDerived() const {
     return *static_cast<const Derived *>(this);
@@ -212,7 +213,7 @@ struct ScheduleTreeRewriter
 
 /// Rewrite the schedule tree without any changes. Useful to copy a subtree into
 /// a new schedule, discarding everything but.
-struct IdentityRewriter : public ScheduleTreeRewriter<IdentityRewriter> {};
+struct IdentityRewriter : ScheduleTreeRewriter<IdentityRewriter> {};
 
 /// Rewrite a schedule tree to an equivalent one without extension nodes.
 ///
@@ -225,9 +226,9 @@ struct IdentityRewriter : public ScheduleTreeRewriter<IdentityRewriter> {};
 ///    band nodes to schedule the additional domains at the same position as the
 ///    extension node would.
 ///
-struct ExtensionNodeRewriter
-    : public ScheduleTreeRewriter<ExtensionNodeRewriter, const isl::union_set &,
-                                  isl::union_map &> {
+struct ExtensionNodeRewriter final
+    : ScheduleTreeRewriter<ExtensionNodeRewriter, const isl::union_set &,
+                           isl::union_map &> {
   using BaseTy = ScheduleTreeRewriter<ExtensionNodeRewriter,
                                       const isl::union_set &, isl::union_map &>;
   BaseTy &getBase() { return *this; }
@@ -356,8 +357,8 @@ struct ExtensionNodeRewriter
 ///
 /// ScheduleTreeRewriter cannot apply the schedule tree options. This class
 /// collects these options to apply them later.
-struct CollectASTBuildOptions
-    : public RecursiveScheduleTreeVisitor<CollectASTBuildOptions> {
+struct CollectASTBuildOptions final
+    : RecursiveScheduleTreeVisitor<CollectASTBuildOptions> {
   using BaseTy = RecursiveScheduleTreeVisitor<CollectASTBuildOptions>;
   BaseTy &getBase() { return *this; }
   const BaseTy &getBase() const { return *this; }
@@ -376,8 +377,7 @@ struct CollectASTBuildOptions
 /// This rewrites a schedule tree with the AST build options applied. We assume
 /// that the band nodes are visited in the same order as they were when the
 /// build options were collected, typically by CollectASTBuildOptions.
-struct ApplyASTBuildOptions
-    : public ScheduleNodeRewriter<ApplyASTBuildOptions> {
+struct ApplyASTBuildOptions final : ScheduleNodeRewriter<ApplyASTBuildOptions> {
   using BaseTy = ScheduleNodeRewriter<ApplyASTBuildOptions>;
   BaseTy &getBase() { return *this; }
   const BaseTy &getBase() const { return *this; }
@@ -429,7 +429,7 @@ static bool containsExtensionNode(isl::schedule Schedule) {
 /// Find a named MDNode property in a LoopID.
 static MDNode *findOptionalNodeOperand(MDNode *LoopMD, StringRef Name) {
   return dyn_cast_or_null<MDNode>(
-      findMetadataOperand(LoopMD, Name).getValueOr(nullptr));
+      findMetadataOperand(LoopMD, Name).value_or(nullptr));
 }
 
 /// Is this node of type mark?
@@ -560,7 +560,8 @@ static isl::set addExtentConstraints(isl::set Set, int VectorWidth) {
 }
 
 /// Collapse perfectly nested bands into a single band.
-class BandCollapseRewriter : public ScheduleTreeRewriter<BandCollapseRewriter> {
+class BandCollapseRewriter final
+    : public ScheduleTreeRewriter<BandCollapseRewriter> {
 private:
   using BaseTy = ScheduleTreeRewriter<BandCollapseRewriter>;
   BaseTy &getBase() { return *this; }
@@ -573,7 +574,7 @@ public:
 
     // Do not merge permutable band to avoid loosing the permutability property.
     // Cannot collapse even two permutable loops, they might be permutable
-    // individually, but not necassarily accross.
+    // individually, but not necassarily across.
     if (unsignedFromIslSize(Band.n_member()) > 1u && Band.permutable())
       return getBase().visitBand(Band);
 
@@ -599,7 +600,7 @@ public:
     if (Nest.size() <= 1)
       return getBase().visitBand(Band);
 
-    LLVM_DEBUG({
+    POLLY_DEBUG({
       dbgs() << "Found loops to collapse between\n";
       dumpIslObj(RootBand, dbgs());
       dbgs() << "and\n";
@@ -644,7 +645,7 @@ public:
 };
 
 static isl::schedule collapseBands(isl::schedule Sched) {
-  LLVM_DEBUG(dbgs() << "Collapse bands in schedule\n");
+  POLLY_DEBUG(dbgs() << "Collapse bands in schedule\n");
   BandCollapseRewriter Rewriter;
   return Rewriter.visit(Sched);
 }
@@ -773,7 +774,7 @@ static isl::schedule tryGreedyFuse(isl::schedule_node_band LHS,
   if (!canFuseOutermost(LHS, RHS, Deps))
     return {};
 
-  LLVM_DEBUG({
+  POLLY_DEBUG({
     dbgs() << "Found loops for greedy fusion:\n";
     dumpIslObj(LHS, dbgs());
     dbgs() << "and\n";
@@ -833,7 +834,7 @@ static isl::schedule tryGreedyFuse(isl::schedule_node LHS,
 ///
 /// The isl::union_map parameters is the set of validity dependencies that have
 /// not been resolved/carried by a parent schedule node.
-class GreedyFusionRewriter
+class GreedyFusionRewriter final
     : public ScheduleTreeRewriter<GreedyFusionRewriter, isl::union_map> {
 private:
   using BaseTy = ScheduleTreeRewriter<GreedyFusionRewriter, isl::union_map>;
@@ -1185,7 +1186,7 @@ isl::schedule_node polly::applyRegisterTiling(isl::schedule_node Node,
 
 /// Find statements and sub-loops in (possibly nested) sequences.
 static void
-collectFussionableStmts(isl::schedule_node Node,
+collectFissionableStmts(isl::schedule_node Node,
                         SmallVectorImpl<isl::schedule_node> &ScheduleStmts) {
   if (isBand(Node) || isLeaf(Node)) {
     ScheduleStmts.push_back(Node);
@@ -1195,7 +1196,7 @@ collectFussionableStmts(isl::schedule_node Node,
   if (Node.has_children()) {
     isl::schedule_node C = Node.first_child();
     while (true) {
-      collectFussionableStmts(C, ScheduleStmts);
+      collectFissionableStmts(C, ScheduleStmts);
       if (!C.has_next_sibling())
         break;
       C = C.next_sibling();
@@ -1209,7 +1210,7 @@ isl::schedule polly::applyMaxFission(isl::schedule_node BandToFission) {
   isl::schedule_node BandBody = BandToFission.child(0);
 
   SmallVector<isl::schedule_node> FissionableStmts;
-  collectFussionableStmts(BandBody, FissionableStmts);
+  collectFissionableStmts(BandBody, FissionableStmts);
   size_t N = FissionableStmts.size();
 
   // Collect the domain for each of the statements that will get their own loop.
@@ -1228,12 +1229,12 @@ isl::schedule polly::applyMaxFission(isl::schedule_node BandToFission) {
 
 isl::schedule polly::applyGreedyFusion(isl::schedule Sched,
                                        const isl::union_map &Deps) {
-  LLVM_DEBUG(dbgs() << "Greedy loop fusion\n");
+  POLLY_DEBUG(dbgs() << "Greedy loop fusion\n");
 
   GreedyFusionRewriter Rewriter;
   isl::schedule Result = Rewriter.visit(Sched, Deps);
   if (!Rewriter.AnyChange) {
-    LLVM_DEBUG(dbgs() << "Found nothing to fuse\n");
+    POLLY_DEBUG(dbgs() << "Found nothing to fuse\n");
     return Sched;
   }
 

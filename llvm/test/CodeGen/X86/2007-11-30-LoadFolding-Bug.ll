@@ -3,19 +3,19 @@
 ; Increment in loop bb.i28.i adjusted to 2, to prevent loop reversal from
 ; kicking in.
 
-declare fastcc void @rdft(i32, i32, double*, i32*, double*)
+declare fastcc void @rdft(i32, i32, ptr, ptr, ptr)
 
-define fastcc void @mp_sqrt(i32 %n, i32 %radix, i32* %in, i32* %out, i32* %tmp1, i32* %tmp2, i32 %nfft, double* %tmp1fft, double* %tmp2fft, i32* %ip, double* %w) nounwind {
+define fastcc void @mp_sqrt(i32 %n, i32 %radix, ptr %in, ptr %out, ptr %tmp1, ptr %tmp2, i32 %nfft, ptr %tmp1fft, ptr %tmp2fft, ptr %ip, ptr %w) nounwind {
 ; CHECK-LABEL: mp_sqrt:
 ; CHECK:       # %bb.0: # %entry
 ; CHECK-NEXT:    pushl %ebp
 ; CHECK-NEXT:    pushl %ebx
 ; CHECK-NEXT:    pushl %edi
 ; CHECK-NEXT:    pushl %esi
-; CHECK-NEXT:    movl %edx, %esi
+; CHECK-NEXT:    pushl %eax
 ; CHECK-NEXT:    movb $1, %cl
 ; CHECK-NEXT:    movl $1, %ebx
-; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %edi
+; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %esi
 ; CHECK-NEXT:    .p2align 4, 0x90
 ; CHECK-NEXT:  .LBB0_1: # %bb.i5
 ; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
@@ -25,11 +25,11 @@ define fastcc void @mp_sqrt(i32 %n, i32 %radix, i32* %in, i32* %out, i32* %tmp1,
 ; CHECK-NEXT:    testb $1, %al
 ; CHECK-NEXT:    jne .LBB0_1
 ; CHECK-NEXT:  # %bb.2: # %mp_unexp_mp2d.exit.i
-; CHECK-NEXT:    je .LBB0_10
-; CHECK-NEXT:  # %bb.3: # %cond_next.i
+; CHECK-NEXT:    je .LBB0_3
+; CHECK-NEXT:  # %bb.5: # %cond_next.i
 ; CHECK-NEXT:    testb $1, %al
-; CHECK-NEXT:    jne .LBB0_10
-; CHECK-NEXT:  # %bb.4: # %cond_next36.i
+; CHECK-NEXT:    jne .LBB0_3
+; CHECK-NEXT:  # %bb.6: # %cond_next36.i
 ; CHECK-NEXT:    movl $0, 0
 ; CHECK-NEXT:    movzbl %al, %ebp
 ; CHECK-NEXT:    andl $1, %ebp
@@ -38,25 +38,26 @@ define fastcc void @mp_sqrt(i32 %n, i32 %radix, i32* %in, i32* %out, i32* %tmp1,
 ; CHECK-NEXT:    xorl %ecx, %ecx
 ; CHECK-NEXT:    xorpd %xmm1, %xmm1
 ; CHECK-NEXT:    .p2align 4, 0x90
-; CHECK-NEXT:  .LBB0_5: # %bb.i28.i
+; CHECK-NEXT:  .LBB0_7: # %bb.i28.i
 ; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    cvttsd2si %xmm1, %edx
-; CHECK-NEXT:    cmpl %esi, %edx
-; CHECK-NEXT:    cmovgel %eax, %edx
+; CHECK-NEXT:    cvttsd2si %xmm1, %edi
+; CHECK-NEXT:    cmpl %edx, %edi
+; CHECK-NEXT:    cmovgel %eax, %edi
 ; CHECK-NEXT:    addl $2, %ecx
 ; CHECK-NEXT:    xorps %xmm2, %xmm2
-; CHECK-NEXT:    cvtsi2sd %edx, %xmm2
+; CHECK-NEXT:    cvtsi2sd %edi, %xmm2
 ; CHECK-NEXT:    xorpd %xmm1, %xmm1
 ; CHECK-NEXT:    subsd %xmm2, %xmm1
 ; CHECK-NEXT:    mulsd %xmm0, %xmm1
 ; CHECK-NEXT:    addl $-2, %ebp
-; CHECK-NEXT:    jne .LBB0_5
-; CHECK-NEXT:  # %bb.6: # %mp_unexp_d2mp.exit29.i
+; CHECK-NEXT:    jne .LBB0_7
+; CHECK-NEXT:  # %bb.8: # %mp_unexp_d2mp.exit29.i
 ; CHECK-NEXT:    movl $0, 0
-; CHECK-NEXT:    je .LBB0_7
-; CHECK-NEXT:  # %bb.8: # %mp_sqrt_init.exit
+; CHECK-NEXT:    je .LBB0_9
+; CHECK-NEXT:  # %bb.10: # %mp_sqrt_init.exit
 ; CHECK-NEXT:    xorl %ecx, %ecx
-; CHECK-NEXT:    movl %edi, %edx
+; CHECK-NEXT:    movl %edx, %edi
+; CHECK-NEXT:    movl %esi, %edx
 ; CHECK-NEXT:    calll mp_mul_csqu@PLT
 ; CHECK-NEXT:    xorl %ecx, %ecx
 ; CHECK-NEXT:    movl $-1, %edx
@@ -66,61 +67,65 @@ define fastcc void @mp_sqrt(i32 %n, i32 %radix, i32* %in, i32* %out, i32* %tmp1,
 ; CHECK-NEXT:    calll rdft@PLT
 ; CHECK-NEXT:    addl $12, %esp
 ; CHECK-NEXT:    xorl %ecx, %ecx
-; CHECK-NEXT:    movl %esi, %edx
-; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %eax
-; CHECK-NEXT:    pushl %eax
+; CHECK-NEXT:    movl %edi, (%esp) # 4-byte Spill
+; CHECK-NEXT:    movl %edi, %edx
+; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %edi
 ; CHECK-NEXT:    pushl %edi
+; CHECK-NEXT:    pushl %esi
 ; CHECK-NEXT:    pushl $0
 ; CHECK-NEXT:    calll mp_mul_d2i@PLT
 ; CHECK-NEXT:    addl $12, %esp
 ; CHECK-NEXT:    testl %ebp, %ebp
-; CHECK-NEXT:    jne .LBB0_10
-; CHECK-NEXT:  # %bb.9: # %cond_false.i
-; CHECK-NEXT:    xorl %ecx, %ecx
-; CHECK-NEXT:    movl %esi, %edx
-; CHECK-NEXT:    pushl {{[0-9]+}}(%esp)
-; CHECK-NEXT:    pushl $0
-; CHECK-NEXT:    calll mp_round@PLT
-; CHECK-NEXT:    addl $8, %esp
-; CHECK-NEXT:    xorl %ecx, %ecx
-; CHECK-NEXT:    movl %esi, %edx
-; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %edi
-; CHECK-NEXT:    pushl %edi
-; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %ebp
-; CHECK-NEXT:    pushl %ebp
-; CHECK-NEXT:    pushl %edi
-; CHECK-NEXT:    calll mp_add@PLT
-; CHECK-NEXT:    addl $12, %esp
-; CHECK-NEXT:    xorl %ecx, %ecx
-; CHECK-NEXT:    movl %esi, %edx
-; CHECK-NEXT:    pushl %ebp
-; CHECK-NEXT:    pushl %ebp
-; CHECK-NEXT:    pushl {{[0-9]+}}(%esp)
-; CHECK-NEXT:    calll mp_sub@PLT
-; CHECK-NEXT:    addl $12, %esp
-; CHECK-NEXT:    xorl %ecx, %ecx
-; CHECK-NEXT:    movl %esi, %edx
-; CHECK-NEXT:    pushl %edi
-; CHECK-NEXT:    pushl $0
-; CHECK-NEXT:    calll mp_round@PLT
-; CHECK-NEXT:    addl $8, %esp
-; CHECK-NEXT:    xorl %ecx, %ecx
-; CHECK-NEXT:    movl %esi, %edx
-; CHECK-NEXT:    pushl %ebp
-; CHECK-NEXT:    pushl {{[0-9]+}}(%esp)
-; CHECK-NEXT:    pushl %ebx
-; CHECK-NEXT:    calll mp_mul_d2i@PLT
-; CHECK-NEXT:    addl $12, %esp
-; CHECK-NEXT:  .LBB0_10: # %cond_true.i
+; CHECK-NEXT:    je .LBB0_11
+; CHECK-NEXT:  .LBB0_3: # %cond_true.i
+; CHECK-NEXT:    addl $4, %esp
+; CHECK-NEXT:  .LBB0_4: # %cond_true.i
 ; CHECK-NEXT:    popl %esi
 ; CHECK-NEXT:    popl %edi
 ; CHECK-NEXT:    popl %ebx
 ; CHECK-NEXT:    popl %ebp
 ; CHECK-NEXT:    retl
 ; CHECK-NEXT:    .p2align 4, 0x90
-; CHECK-NEXT:  .LBB0_7: # %bb.i.i
+; CHECK-NEXT:  .LBB0_9: # %bb.i.i
 ; CHECK-NEXT:    # =>This Inner Loop Header: Depth=1
-; CHECK-NEXT:    jmp .LBB0_7
+; CHECK-NEXT:    jmp .LBB0_9
+; CHECK-NEXT:  .LBB0_11: # %cond_false.i
+; CHECK-NEXT:    xorl %ecx, %ecx
+; CHECK-NEXT:    movl (%esp), %esi # 4-byte Reload
+; CHECK-NEXT:    movl %esi, %edx
+; CHECK-NEXT:    pushl {{[0-9]+}}(%esp)
+; CHECK-NEXT:    pushl $0
+; CHECK-NEXT:    calll mp_round@PLT
+; CHECK-NEXT:    addl $8, %esp
+; CHECK-NEXT:    xorl %ecx, %ecx
+; CHECK-NEXT:    movl %esi, %edx
+; CHECK-NEXT:    movl {{[0-9]+}}(%esp), %ebp
+; CHECK-NEXT:    pushl %ebp
+; CHECK-NEXT:    pushl %edi
+; CHECK-NEXT:    pushl %ebp
+; CHECK-NEXT:    calll mp_add@PLT
+; CHECK-NEXT:    addl $12, %esp
+; CHECK-NEXT:    xorl %ecx, %ecx
+; CHECK-NEXT:    movl %esi, %edx
+; CHECK-NEXT:    pushl %edi
+; CHECK-NEXT:    pushl %edi
+; CHECK-NEXT:    pushl {{[0-9]+}}(%esp)
+; CHECK-NEXT:    calll mp_sub@PLT
+; CHECK-NEXT:    addl $12, %esp
+; CHECK-NEXT:    xorl %ecx, %ecx
+; CHECK-NEXT:    movl %esi, %edx
+; CHECK-NEXT:    pushl %ebp
+; CHECK-NEXT:    pushl $0
+; CHECK-NEXT:    calll mp_round@PLT
+; CHECK-NEXT:    addl $8, %esp
+; CHECK-NEXT:    xorl %ecx, %ecx
+; CHECK-NEXT:    movl %esi, %edx
+; CHECK-NEXT:    pushl %edi
+; CHECK-NEXT:    pushl {{[0-9]+}}(%esp)
+; CHECK-NEXT:    pushl %ebx
+; CHECK-NEXT:    calll mp_mul_d2i@PLT
+; CHECK-NEXT:    addl $16, %esp
+; CHECK-NEXT:    jmp .LBB0_4
 entry:
 	br label %bb.i5
 
@@ -144,7 +149,7 @@ cond_true29.i:		; preds = %cond_next.i
 	ret void
 
 cond_next36.i:		; preds = %cond_next.i
-	store i32 %tmp22.i, i32* null, align 4
+	store i32 %tmp22.i, ptr null, align 4
 	%tmp8.i14.i = select i1 %foo, i32 1, i32 0		; <i32> [#uses=1]
 	br label %bb.i28.i
 
@@ -164,36 +169,36 @@ bb.i28.i:		; preds = %bb.i28.i, %cond_next36.i
 
 mp_unexp_d2mp.exit29.i:		; preds = %bb.i28.i
 	%tmp46.i = sub i32 0, %tmp22.i		; <i32> [#uses=1]
-	store i32 %tmp46.i, i32* null, align 4
+	store i32 %tmp46.i, ptr null, align 4
 	br i1 %exitcond40.i, label %bb.i.i, label %mp_sqrt_init.exit
 
 bb.i.i:		; preds = %bb.i.i, %mp_unexp_d2mp.exit29.i
 	br label %bb.i.i
 
 mp_sqrt_init.exit:		; preds = %mp_unexp_d2mp.exit29.i
-	tail call fastcc void @mp_mul_csqu( i32 0, double* %tmp1fft )
-	tail call fastcc void @rdft( i32 0, i32 -1, double* null, i32* %ip, double* %w )
-	tail call fastcc void @mp_mul_d2i( i32 0, i32 %radix, i32 0, double* %tmp1fft, i32* %tmp2 )
+	tail call fastcc void @mp_mul_csqu( i32 0, ptr %tmp1fft )
+	tail call fastcc void @rdft( i32 0, i32 -1, ptr null, ptr %ip, ptr %w )
+	tail call fastcc void @mp_mul_d2i( i32 0, i32 %radix, i32 0, ptr %tmp1fft, ptr %tmp2 )
 	br i1 %exitcond40.i, label %cond_false.i, label %cond_true36.i
 
 cond_true36.i:		; preds = %mp_sqrt_init.exit
 	ret void
 
 cond_false.i:		; preds = %mp_sqrt_init.exit
-	tail call fastcc void @mp_round( i32 0, i32 %radix, i32 0, i32* %out )
-	tail call fastcc void @mp_add( i32 0, i32 %radix, i32* %tmp1, i32* %tmp2, i32* %tmp1 )
-	tail call fastcc void @mp_sub( i32 0, i32 %radix, i32* %in, i32* %tmp2, i32* %tmp2 )
-	tail call fastcc void @mp_round( i32 0, i32 %radix, i32 0, i32* %tmp1 )
-	tail call fastcc void @mp_mul_d2i( i32 0, i32 %radix, i32 %tmp7.i3, double* %tmp2fft, i32* %tmp2 )
+	tail call fastcc void @mp_round( i32 0, i32 %radix, i32 0, ptr %out )
+	tail call fastcc void @mp_add( i32 0, i32 %radix, ptr %tmp1, ptr %tmp2, ptr %tmp1 )
+	tail call fastcc void @mp_sub( i32 0, i32 %radix, ptr %in, ptr %tmp2, ptr %tmp2 )
+	tail call fastcc void @mp_round( i32 0, i32 %radix, i32 0, ptr %tmp1 )
+	tail call fastcc void @mp_mul_d2i( i32 0, i32 %radix, i32 %tmp7.i3, ptr %tmp2fft, ptr %tmp2 )
 	ret void
 }
 
-declare fastcc void @mp_add(i32, i32, i32*, i32*, i32*)
+declare fastcc void @mp_add(i32, i32, ptr, ptr, ptr)
 
-declare fastcc void @mp_sub(i32, i32, i32*, i32*, i32*)
+declare fastcc void @mp_sub(i32, i32, ptr, ptr, ptr)
 
-declare fastcc void @mp_round(i32, i32, i32, i32*)
+declare fastcc void @mp_round(i32, i32, i32, ptr)
 
-declare fastcc void @mp_mul_csqu(i32, double*)
+declare fastcc void @mp_mul_csqu(i32, ptr)
 
-declare fastcc void @mp_mul_d2i(i32, i32, i32, double*, i32*)
+declare fastcc void @mp_mul_d2i(i32, i32, i32, ptr, ptr)

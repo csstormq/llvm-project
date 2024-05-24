@@ -30,7 +30,7 @@ extern cl::opt<unsigned> Verbosity;
 cl::opt<std::string> AsmDump("asm-dump",
                              cl::desc("dump function into assembly"),
                              cl::value_desc("dump folder"), cl::ValueOptional,
-                             cl::ZeroOrMore, cl::Hidden, cl::cat(BoltCategory));
+                             cl::Hidden, cl::cat(BoltCategory));
 } // end namespace opts
 
 namespace llvm {
@@ -43,7 +43,7 @@ void dumpCFI(const BinaryFunction &BF, const MCInst &Instr, AsmPrinter &MAP) {
   case MCCFIInstruction::OpRememberState:
   case MCCFIInstruction::OpRestoreState:
     if (opts::Verbosity >= 2)
-      errs()
+      BF.getBinaryContext().errs()
           << "BOLT-WARNING: AsmDump: skipping unsupported CFI instruction in "
           << BF << ".\n";
 
@@ -53,35 +53,6 @@ void dumpCFI(const BinaryFunction &BF, const MCInst &Instr, AsmPrinter &MAP) {
     // Emit regular CFI instructions.
     MAP.emitCFIInstruction(*CFIInstr);
   }
-}
-
-void dumpJumpTableFdata(raw_ostream &OS, const BinaryFunction &BF,
-                        const MCInst &Instr, const std::string &BranchLabel) {
-  StringRef FunctionName = BF.getOneName();
-  const JumpTable *JT = BF.getJumpTable(Instr);
-  for (const uint64_t EntryOffset : JT->OffsetEntries) {
-    auto LI = JT->Labels.find(EntryOffset);
-    StringRef TargetName = LI->second->getName();
-    const uint64_t Mispreds = JT->Counts[EntryOffset].Mispreds;
-    const uint64_t Count = JT->Counts[EntryOffset].Count;
-    OS << "# FDATA: 1 " << FunctionName << " #" << BranchLabel << "# "
-       << "1 " << FunctionName << " #" << TargetName << "# " << Mispreds << " "
-       << Count << '\n';
-  }
-}
-
-void dumpTailCallFdata(raw_ostream &OS, const BinaryFunction &BF,
-                       const MCInst &Instr, const std::string &BranchLabel) {
-  const BinaryContext &BC = BF.getBinaryContext();
-  StringRef FunctionName = BF.getOneName();
-  auto CallFreq = BC.MIB->getAnnotationWithDefault<uint64_t>(Instr, "Count");
-  const MCSymbol *Target = BC.MIB->getTargetSymbol(Instr);
-  const BinaryFunction *TargetBF = BC.getFunctionForSymbol(Target);
-  if (!TargetBF)
-    return;
-  OS << "# FDATA: 1 " << FunctionName << " #" << BranchLabel << "# "
-     << "1 " << TargetBF->getPrintName() << " 0 "
-     << "0 " << CallFreq << '\n';
 }
 
 void dumpTargetFunctionStub(raw_ostream &OS, const BinaryContext &BC,
@@ -131,9 +102,9 @@ void dumpFunction(const BinaryFunction &BF) {
   // Make sure the new directory exists, creating it if necessary.
   if (!opts::AsmDump.empty()) {
     if (std::error_code EC = sys::fs::create_directories(opts::AsmDump)) {
-      errs() << "BOLT-ERROR: could not create directory '" << opts::AsmDump
-             << "': " << EC.message() << '\n';
-      exit(1);
+      BC.errs() << "BOLT-ERROR: could not create directory '" << opts::AsmDump
+                << "': " << EC.message() << '\n';
+      return;
     }
   }
 
@@ -144,14 +115,14 @@ void dumpFunction(const BinaryFunction &BF) {
           ? (PrintName + ".s")
           : (opts::AsmDump + sys::path::get_separator() + PrintName + ".s")
                 .str();
-  outs() << "BOLT-INFO: Dumping function assembly to " << Filename << "\n";
+  BC.outs() << "BOLT-INFO: Dumping function assembly to " << Filename << "\n";
 
   std::error_code EC;
   raw_fd_ostream OS(Filename, EC, sys::fs::OF_None);
   if (EC) {
-    errs() << "BOLT-ERROR: " << EC.message() << ", unable to open " << Filename
-           << " for output.\n";
-    exit(1);
+    BC.errs() << "BOLT-ERROR: " << EC.message() << ", unable to open "
+              << Filename << " for output.\n";
+    return;
   }
   OS.SetUnbuffered();
 
@@ -175,7 +146,7 @@ void dumpFunction(const BinaryFunction &BF) {
                         /*ShowInst=*/false));
   AsmStreamer->initSections(true, *BC.STI);
   std::unique_ptr<TargetMachine> TM(BC.TheTarget->createTargetMachine(
-      BC.TripleName, "", "", TargetOptions(), None));
+      BC.TripleName, "", "", TargetOptions(), std::nullopt));
   std::unique_ptr<AsmPrinter> MAP(
       BC.TheTarget->createAsmPrinter(*TM, std::move(AsmStreamer)));
 
@@ -196,7 +167,7 @@ void dumpFunction(const BinaryFunction &BF) {
   std::unordered_set<const MCSymbol *> CallReferences;
 
   MAP->OutStreamer->emitCFIStartProc(/*IsSimple=*/false);
-  for (BinaryBasicBlock *BB : BF.layout()) {
+  for (const BinaryBasicBlock *BB : BF.getLayout().blocks()) {
     OS << BB->getName() << ": \n";
 
     const std::string BranchLabel = Twine(BB->getName(), "_br").str();
@@ -212,9 +183,7 @@ void dumpFunction(const BinaryFunction &BF) {
 
       // Analyze symbol references (data, functions) from the instruction.
       bool IsCall = BC.MIB->isCall(Instr);
-      for (unsigned I = 0, E = MCPlus::getNumPrimeOperands(Instr); I != E;
-           ++I) {
-        MCOperand Operand = Instr.getOperand(I);
+      for (const MCOperand &Operand : MCPlus::primeOperands(Instr)) {
         if (Operand.isExpr() &&
             Operand.getExpr()->getKind() == MCExpr::SymbolRef) {
           std::pair<const MCSymbol *, uint64_t> TSI =
@@ -233,12 +202,6 @@ void dumpFunction(const BinaryFunction &BF) {
 
       BC.InstPrinter->printInst(&Instr, 0, "", *BC.STI, OS);
       OS << '\n';
-
-      // Dump profile data in FDATA format (as parsed by link_fdata).
-      if (BC.MIB->getJumpTable(Instr))
-        dumpJumpTableFdata(OS, BF, Instr, BranchLabel);
-      else if (BC.MIB->isTailCall(Instr))
-        dumpTailCallFdata(OS, BF, Instr, BranchLabel);
     }
 
     // Dump profile data in FDATA format (as parsed by link_fdata).
@@ -274,9 +237,10 @@ void dumpFunction(const BinaryFunction &BF) {
     dumpBinaryDataSymbols(OS, BD, LastSection);
 }
 
-void AsmDumpPass::runOnFunctions(BinaryContext &BC) {
+Error AsmDumpPass::runOnFunctions(BinaryContext &BC) {
   for (const auto &BFIt : BC.getBinaryFunctions())
     dumpFunction(BFIt.second);
+  return Error::success();
 }
 
 } // namespace bolt

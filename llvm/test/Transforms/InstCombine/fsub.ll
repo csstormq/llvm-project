@@ -153,12 +153,12 @@ define <2 x float> @constant_op1_vec(<2 x float> %x, <2 x float> %y) {
   ret <2 x float> %r
 }
 
-define <2 x float> @constant_op1_vec_undef(<2 x float> %x, <2 x float> %y) {
-; CHECK-LABEL: @constant_op1_vec_undef(
-; CHECK-NEXT:    [[R:%.*]] = fadd <2 x float> [[X:%.*]], <float undef, float 4.200000e+01>
+define <2 x float> @constant_op1_vec_poison(<2 x float> %x, <2 x float> %y) {
+; CHECK-LABEL: @constant_op1_vec_poison(
+; CHECK-NEXT:    [[R:%.*]] = fadd <2 x float> [[X:%.*]], <float poison, float 4.200000e+01>
 ; CHECK-NEXT:    ret <2 x float> [[R]]
 ;
-  %r = fsub <2 x float> %x, <float undef, float -42.0>
+  %r = fsub <2 x float> %x, <float poison, float -42.0>
   ret <2 x float> %r
 }
 
@@ -204,12 +204,12 @@ define <2 x float> @unary_neg_op1_vec(<2 x float> %x, <2 x float> %y) {
   ret <2 x float> %r
 }
 
-define <2 x float> @neg_op1_vec_undef(<2 x float> %x, <2 x float> %y) {
-; CHECK-LABEL: @neg_op1_vec_undef(
+define <2 x float> @neg_op1_vec_poison(<2 x float> %x, <2 x float> %y) {
+; CHECK-LABEL: @neg_op1_vec_poison(
 ; CHECK-NEXT:    [[R:%.*]] = fadd <2 x float> [[X:%.*]], [[Y:%.*]]
 ; CHECK-NEXT:    ret <2 x float> [[R]]
 ;
-  %negy = fsub <2 x float> <float -0.0, float undef>, %y
+  %negy = fsub <2 x float> <float -0.0, float poison>, %y
   %r = fsub <2 x float> %x, %negy
   ret <2 x float> %r
 }
@@ -397,10 +397,10 @@ define float @unary_neg_trunc_op1_extra_uses(double %a, float %b) {
 
 define float @PR37605(float %conv) {
 ; CHECK-LABEL: @PR37605(
-; CHECK-NEXT:    [[SUB:%.*]] = fsub float [[CONV:%.*]], bitcast (i32 ptrtoint (i16* @b to i32) to float)
+; CHECK-NEXT:    [[SUB:%.*]] = fsub float [[CONV:%.*]], bitcast (i32 ptrtoint (ptr @b to i32) to float)
 ; CHECK-NEXT:    ret float [[SUB]]
 ;
-  %sub = fsub float %conv, bitcast (i32 ptrtoint (i16* @b to i32) to float)
+  %sub = fsub float %conv, bitcast (i32 ptrtoint (ptr @b to i32) to float)
   ret float %sub
 }
 

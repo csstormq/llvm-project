@@ -12,7 +12,7 @@ corresponding `linalg.generic` IR for the composition.
 
 The tool is bundled with the MLIR Python bindings. To use from the CMake build
 tree, MLIR must be build with Python bindings enabled
-(`-DMLIR_ENALBE_BINDINGS_PYTHON=ON`). Then add the `python` directory in the
+(`-DMLIR_ENABLE_BINDINGS_PYTHON=ON`). Then add the `python` directory in the
 build tree to your `PYTHONPATH` environment variable (i.e. `export
 PYTHONPATH=$PWD/build/tools/mlir/python_packages/mlir_core`). Optionally, use an
 installed MLIR package, if available, to avoid building.
@@ -291,7 +291,7 @@ The following examples illustrate the lowering of signed and unsigned functions:
 *   cast_unsigned(I32 -> I64) -> `arith.ExtUIOp`
 *   cast_unsigned(F32 -> I32) -> `arith.FPToUIOp`
 *   max_signed -> `arith.MaxSIOp`
-*   max_unsinged -> `arith.MaxUIOp`
+*   max_unsigned -> `arith.MaxUIOp`
 
 Not all functions are applicable for all numeric types, and on mismatch, op
 verification will fail.
@@ -318,8 +318,8 @@ extends to a multi-dimensional pointwise computation. As a result, we may use
 `fill` with arbitrary ranked output tensors:
 
 ```python
-tensor_2d = linalg.InitTensorOp([4, 8], f32)
-tensor_3d = linalg.InitTensorOp([4, 8, 16], f32)
+tensor_2d = tensor.EmptyOp([4, 8], f32)
+tensor_3d = tensor.EmptyOp([4, 8, 16], f32)
 fill(value, outs=[tensor_2d])
 fill(value, outs=[tensor_3d])
 ```

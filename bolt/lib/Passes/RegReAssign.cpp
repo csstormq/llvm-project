@@ -26,14 +26,11 @@ namespace opts {
 extern cl::OptionCategory BoltOptCategory;
 extern cl::opt<bool> UpdateDebugSections;
 
-static cl::opt<bool>
-AggressiveReAssign("use-aggr-reg-reassign",
-  cl::desc("use register liveness analysis to try to find more opportunities "
-           "for -reg-reassign optimization"),
-  cl::init(false),
-  cl::ZeroOrMore,
-  cl::cat(BoltOptCategory));
-
+static cl::opt<bool> AggressiveReAssign(
+    "use-aggr-reg-reassign",
+    cl::desc("use register liveness analysis to try to find more opportunities "
+             "for -reg-reassign optimization"),
+    cl::cat(BoltOptCategory));
 }
 
 namespace llvm {
@@ -47,8 +44,7 @@ void RegReAssign::swap(BinaryFunction &Function, MCPhysReg A, MCPhysReg B) {
   // Regular instructions
   for (BinaryBasicBlock &BB : Function) {
     for (MCInst &Inst : BB) {
-      for (int I = 0, E = MCPlus::getNumPrimeOperands(Inst); I != E; ++I) {
-        MCOperand &Operand = Inst.getOperand(I);
+      for (MCOperand &Operand : MCPlus::primeOperands(Inst)) {
         if (!Operand.isReg())
           continue;
 
@@ -99,7 +95,7 @@ void RegReAssign::swap(BinaryFunction &Function, MCPhysReg A, MCPhysReg B) {
                             false)));
         }
       }
-      LLVM_FALLTHROUGH;
+      [[fallthrough]];
       case MCCFIInstruction::OpUndefined:
       case MCCFIInstruction::OpDefCfa:
       case MCCFIInstruction::OpOffset:
@@ -112,7 +108,7 @@ void RegReAssign::swap(BinaryFunction &Function, MCPhysReg A, MCPhysReg B) {
         if (CFI->getOperation() != MCCFIInstruction::OpEscape) {
           CFIReg = CFI->getRegister();
         } else {
-          Optional<uint8_t> Reg =
+          std::optional<uint8_t> Reg =
               readDWARFExpressionTargetReg(CFI->getValues());
           // Handle DW_CFA_def_cfa_expression
           if (!Reg)
@@ -144,29 +140,25 @@ void RegReAssign::rankRegisters(BinaryFunction &Function) {
   std::fill(RegScore.begin(), RegScore.end(), 0);
   std::fill(RankedRegs.begin(), RankedRegs.end(), 0);
 
-  for (BinaryBasicBlock &BB : Function) {
+  auto countRegScore = [&](BinaryBasicBlock &BB) {
     for (MCInst &Inst : BB) {
       const bool CannotUseREX = BC.MIB->cannotUseREX(Inst);
       const MCInstrDesc &Desc = BC.MII->get(Inst.getOpcode());
 
       // Disallow substituitions involving regs in implicit uses lists
-      const MCPhysReg *ImplicitUses = Desc.getImplicitUses();
-      while (ImplicitUses && *ImplicitUses) {
+      for (MCPhysReg ImplicitUse : Desc.implicit_uses()) {
         const size_t RegEC =
-            BC.MIB->getAliases(*ImplicitUses, false).find_first();
+            BC.MIB->getAliases(ImplicitUse, false).find_first();
         RegScore[RegEC] =
             std::numeric_limits<decltype(RegScore)::value_type>::min();
-        ++ImplicitUses;
       }
 
       // Disallow substituitions involving regs in implicit defs lists
-      const MCPhysReg *ImplicitDefs = Desc.getImplicitDefs();
-      while (ImplicitDefs && *ImplicitDefs) {
+      for (MCPhysReg ImplicitDef : Desc.implicit_defs()) {
         const size_t RegEC =
-            BC.MIB->getAliases(*ImplicitDefs, false).find_first();
+            BC.MIB->getAliases(ImplicitDef, false).find_first();
         RegScore[RegEC] =
             std::numeric_limits<decltype(RegScore)::value_type>::min();
-        ++ImplicitDefs;
       }
 
       for (int I = 0, E = MCPlus::getNumPrimeOperands(Inst); I != E; ++I) {
@@ -183,9 +175,25 @@ void RegReAssign::rankRegisters(BinaryFunction &Function) {
           continue;
 
         // Disallow substituitions involving regs in instrs that cannot use REX
+        // The relationship of X86 registers is shown in the diagram. BL and BH
+        // do not have a direct alias relationship. However, if the BH register
+        // cannot be swapped, then the BX/EBX/RBX registers cannot be swapped as
+        // well, which means that BL register also cannot be swapped. Therefore,
+        // in the presence of BX/EBX/RBX registers, BL and BH have an alias
+        // relationship.
+        // ┌─────────────────┐
+        // │  RBX            │
+        // ├─────┬───────────┤
+        // │     │  EBX      │
+        // ├─────┴──┬────────┤
+        // │        │   BX   │
+        // ├────────┼───┬────┤
+        // │        │BH │BL  │
+        // └────────┴───┴────┘
         if (CannotUseREX) {
           RegScore[RegEC] =
               std::numeric_limits<decltype(RegScore)::value_type>::min();
+          RegScore[BC.MIB->getAliasSized(Reg, 1)] = RegScore[RegEC];
           continue;
         }
 
@@ -193,16 +201,25 @@ void RegReAssign::rankRegisters(BinaryFunction &Function) {
         if (BC.MIB->isUpper8BitReg(Reg) && ClassicCSR.test(Reg)) {
           RegScore[RegEC] =
               std::numeric_limits<decltype(RegScore)::value_type>::min();
+          RegScore[BC.MIB->getAliasSized(Reg, 1)] = RegScore[RegEC];
           continue;
         }
 
         RegScore[RegEC] += BB.getKnownExecutionCount();
       }
     }
+  };
+  for (BinaryBasicBlock &BB : Function)
+    countRegScore(BB);
+
+  for (BinaryFunction *ChildFrag : Function.getFragments()) {
+    for (BinaryBasicBlock &BB : *ChildFrag)
+      countRegScore(BB);
   }
+
   std::iota(RankedRegs.begin(), RankedRegs.end(), 0); // 0, 1, 2, 3...
-  std::sort(RankedRegs.begin(), RankedRegs.end(),
-            [&](size_t A, size_t B) { return RegScore[A] > RegScore[B]; });
+  llvm::sort(RankedRegs,
+             [&](size_t A, size_t B) { return RegScore[A] > RegScore[B]; });
 
   LLVM_DEBUG({
     for (size_t Reg : RankedRegs) {
@@ -221,12 +238,22 @@ void RegReAssign::aggressivePassOverFunction(BinaryFunction &Function) {
   BinaryContext &BC = Function.getBinaryContext();
   rankRegisters(Function);
 
+  // If there is a situation where function:
+  //   A() -> A.cold()
+  //   A.localalias() -> A.cold()
+  // simply swapping these two calls can cause issues.
+  for (BinaryFunction *ChildFrag : Function.getFragments()) {
+    if (ChildFrag->getParentFragments()->size() > 1)
+      return;
+    if (ChildFrag->empty())
+      return;
+  }
+
   // Bail early if our registers are all black listed, before running expensive
   // analysis passes
   bool Bail = true;
   int64_t LowScoreClassic = std::numeric_limits<int64_t>::max();
-  for (int J = ClassicRegs.find_first(); J != -1;
-       J = ClassicRegs.find_next(J)) {
+  for (int J : ClassicRegs.set_bits()) {
     if (RegScore[J] <= 0)
       continue;
     Bail = false;
@@ -240,7 +267,7 @@ void RegReAssign::aggressivePassOverFunction(BinaryFunction &Function) {
   Extended &= GPRegs;
   Bail = true;
   int64_t HighScoreExtended = 0;
-  for (int J = Extended.find_first(); J != -1; J = Extended.find_next(J)) {
+  for (int J : Extended.set_bits()) {
     if (RegScore[J] <= 0)
       continue;
     Bail = false;
@@ -313,6 +340,10 @@ void RegReAssign::aggressivePassOverFunction(BinaryFunction &Function) {
                       << " with " << BC.MRI->getName(ExtReg) << "\n\n");
     swap(Function, ClassicReg, ExtReg);
     FuncsChanged.insert(&Function);
+    for (BinaryFunction *ChildFrag : Function.getFragments()) {
+      swap(*ChildFrag, ClassicReg, ExtReg);
+      FuncsChanged.insert(ChildFrag);
+    }
     ++Begin;
     if (Begin == End)
       break;
@@ -324,11 +355,17 @@ bool RegReAssign::conservativePassOverFunction(BinaryFunction &Function) {
   BinaryContext &BC = Function.getBinaryContext();
   rankRegisters(Function);
 
+  for (BinaryFunction *ChildFrag : Function.getFragments()) {
+    if (ChildFrag->getParentFragments()->size() > 1)
+      return false;
+    if (ChildFrag->empty())
+      return false;
+  }
+
   // Try swapping R12, R13, R14 or R15 with RBX (we work with all callee-saved
   // regs except RBP)
   MCPhysReg Candidate = 0;
-  for (int J = ExtendedCSR.find_first(); J != -1;
-       J = ExtendedCSR.find_next(J))
+  for (int J : ExtendedCSR.set_bits())
     if (RegScore[J] > RegScore[Candidate])
       Candidate = J;
 
@@ -338,7 +375,7 @@ bool RegReAssign::conservativePassOverFunction(BinaryFunction &Function) {
   // Check if our classic callee-saved reg (RBX is the only one) has lower
   // score / utilization rate
   MCPhysReg RBX = 0;
-  for (int I = ClassicCSR.find_first(); I != -1; I = ClassicCSR.find_next(I)) {
+  for (int I : ClassicCSR.set_bits()) {
     int64_t ScoreRBX = RegScore[I];
     if (ScoreRBX <= 0)
       continue;
@@ -350,10 +387,24 @@ bool RegReAssign::conservativePassOverFunction(BinaryFunction &Function) {
   if (!RBX)
     return false;
 
+  // The high 8 bits of the register will never be swapped. To prevent the high
+  // 8 bits from being swapped incorrectly, we should switched to swapping the
+  // low 8 bits of the register instead.
+  if (BC.MIB->isUpper8BitReg(RBX)) {
+    RBX = BC.MIB->getAliasSized(RBX, 1);
+    if (RegScore[RBX] < 0 || RegScore[RBX] > RegScore[Candidate])
+      return false;
+  }
+
   LLVM_DEBUG(dbgs() << "\n ** Swapping " << BC.MRI->getName(RBX) << " with "
                     << BC.MRI->getName(Candidate) << "\n\n");
+  (void)BC;
   swap(Function, RBX, Candidate);
   FuncsChanged.insert(&Function);
+  for (BinaryFunction *ChildFrag : Function.getFragments()) {
+    swap(*ChildFrag, RBX, Candidate);
+    FuncsChanged.insert(ChildFrag);
+  }
   return true;
 }
 
@@ -401,7 +452,7 @@ void RegReAssign::setupConservativePass(
   });
 }
 
-void RegReAssign::runOnFunctions(BinaryContext &BC) {
+Error RegReAssign::runOnFunctions(BinaryContext &BC) {
   RegScore = std::vector<int64_t>(BC.MRI->getNumRegs(), 0);
   RankedRegs = std::vector<size_t>(BC.MRI->getNumRegs(), 0);
 
@@ -413,7 +464,7 @@ void RegReAssign::runOnFunctions(BinaryContext &BC) {
   for (auto &I : BC.getBinaryFunctions()) {
     BinaryFunction &Function = I.second;
 
-    if (!Function.isSimple() || Function.isIgnored())
+    if (!Function.isSimple() || Function.isIgnored() || Function.isFragment())
       continue;
 
     LLVM_DEBUG(dbgs() << "====================================\n");
@@ -429,18 +480,20 @@ void RegReAssign::runOnFunctions(BinaryContext &BC) {
   }
 
   if (FuncsChanged.empty()) {
-    outs() << "BOLT-INFO: Reg Reassignment Pass: no changes were made.\n";
-    return;
+    BC.outs() << "BOLT-INFO: Reg Reassignment Pass: no changes were made.\n";
+    return Error::success();
   }
   if (opts::UpdateDebugSections)
-    outs() << "BOLT-WARNING: You used -reg-reassign and -update-debug-sections."
-           << " Some registers were changed but associated AT_LOCATION for "
-           << "impacted variables were NOT updated! This operation is "
-           << "currently unsupported by BOLT.\n";
-  outs() << "BOLT-INFO: Reg Reassignment Pass Stats:\n";
-  outs() << "\t   " << FuncsChanged.size() << " functions affected.\n";
-  outs() << "\t   " << StaticBytesSaved << " static bytes saved.\n";
-  outs() << "\t   " << DynBytesSaved << " dynamic bytes saved.\n";
+    BC.outs()
+        << "BOLT-WARNING: You used -reg-reassign and -update-debug-sections."
+        << " Some registers were changed but associated AT_LOCATION for "
+        << "impacted variables were NOT updated! This operation is "
+        << "currently unsupported by BOLT.\n";
+  BC.outs() << "BOLT-INFO: Reg Reassignment Pass Stats:\n";
+  BC.outs() << "\t   " << FuncsChanged.size() << " functions affected.\n";
+  BC.outs() << "\t   " << StaticBytesSaved << " static bytes saved.\n";
+  BC.outs() << "\t   " << DynBytesSaved << " dynamic bytes saved.\n";
+  return Error::success();
 }
 
 } // namespace bolt

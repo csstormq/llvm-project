@@ -7,7 +7,7 @@
 
 declare void @llvm.riscv.vse.nxv1i64(
   <vscale x 1 x i64>,
-  <vscale x 1 x i64>*,
+  ptr,
   i64);
 
 define i64 @test(<vscale x 1 x i64> %0) nounwind {
@@ -16,17 +16,18 @@ define i64 @test(<vscale x 1 x i64> %0) nounwind {
   ; CHECK-NEXT:   liveins: $v8
   ; CHECK-NEXT: {{  $}}
   ; CHECK-NEXT:   [[COPY:%[0-9]+]]:vr = COPY $v8
-  ; CHECK-NEXT:   PseudoVSE64_V_M1 [[COPY]], %stack.0.a, 1, 6
+  ; CHECK-NEXT:   [[ADDI:%[0-9]+]]:gpr = ADDI %stack.0.a, 0
+  ; CHECK-NEXT:   PseudoVSE64_V_M1 [[COPY]], killed [[ADDI]], 1, 6 /* e64 */
   ; CHECK-NEXT:   [[LD:%[0-9]+]]:gpr = LD %stack.0.a, 0 :: (dereferenceable load (s64) from %ir.a)
   ; CHECK-NEXT:   $x10 = COPY [[LD]]
   ; CHECK-NEXT:   PseudoRET implicit $x10
 entry:
   %a = alloca i64
-  %b = bitcast i64* %a to <vscale x 1 x i64>*
+  %b = bitcast ptr %a to ptr
   call void @llvm.riscv.vse.nxv1i64(
     <vscale x 1 x i64> %0,
-    <vscale x 1 x i64>* %b,
+    ptr %b,
     i64 1)
-  %c = load i64, i64* %a
+  %c = load i64, ptr %a
   ret i64 %c
 }

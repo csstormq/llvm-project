@@ -7,14 +7,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "ObjcopyOptions.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/ObjCopy/CommonConfig.h"
 #include "llvm/ObjCopy/ConfigManager.h"
 #include "llvm/ObjCopy/MachO/MachOConfig.h"
+#include "llvm/Object/Binary.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/CRC.h"
@@ -26,149 +27,129 @@
 
 using namespace llvm;
 using namespace llvm::objcopy;
+using namespace llvm::object;
+using namespace llvm::opt;
 
 namespace {
 enum ObjcopyID {
   OBJCOPY_INVALID = 0, // This is not an option ID.
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  OBJCOPY_##ID,
+#define OPTION(...) LLVM_MAKE_OPT_ID_WITH_ID_PREFIX(OBJCOPY_, __VA_ARGS__),
 #include "ObjcopyOpts.inc"
 #undef OPTION
 };
 
-#define PREFIX(NAME, VALUE) const char *const OBJCOPY_##NAME[] = VALUE;
+namespace objcopy_opt {
+#define PREFIX(NAME, VALUE)                                                    \
+  static constexpr StringLiteral NAME##_init[] = VALUE;                        \
+  static constexpr ArrayRef<StringLiteral> NAME(NAME##_init,                   \
+                                                std::size(NAME##_init) - 1);
 #include "ObjcopyOpts.inc"
 #undef PREFIX
 
-const opt::OptTable::Info ObjcopyInfoTable[] = {
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  {OBJCOPY_##PREFIX,                                                           \
-   NAME,                                                                       \
-   HELPTEXT,                                                                   \
-   METAVAR,                                                                    \
-   OBJCOPY_##ID,                                                               \
-   opt::Option::KIND##Class,                                                   \
-   PARAM,                                                                      \
-   FLAGS,                                                                      \
-   OBJCOPY_##GROUP,                                                            \
-   OBJCOPY_##ALIAS,                                                            \
-   ALIASARGS,                                                                  \
-   VALUES},
+static constexpr opt::OptTable::Info ObjcopyInfoTable[] = {
+#define OPTION(...)                                                            \
+  LLVM_CONSTRUCT_OPT_INFO_WITH_ID_PREFIX(OBJCOPY_, __VA_ARGS__),
 #include "ObjcopyOpts.inc"
 #undef OPTION
 };
+} // namespace objcopy_opt
 
-class ObjcopyOptTable : public opt::OptTable {
+class ObjcopyOptTable : public opt::GenericOptTable {
 public:
-  ObjcopyOptTable() : OptTable(ObjcopyInfoTable) {
+  ObjcopyOptTable() : opt::GenericOptTable(objcopy_opt::ObjcopyInfoTable) {
     setGroupedShortOptions(true);
   }
 };
 
 enum InstallNameToolID {
   INSTALL_NAME_TOOL_INVALID = 0, // This is not an option ID.
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  INSTALL_NAME_TOOL_##ID,
+#define OPTION(...)                                                            \
+  LLVM_MAKE_OPT_ID_WITH_ID_PREFIX(INSTALL_NAME_TOOL_, __VA_ARGS__),
 #include "InstallNameToolOpts.inc"
 #undef OPTION
 };
 
+namespace install_name_tool {
+
 #define PREFIX(NAME, VALUE)                                                    \
-  const char *const INSTALL_NAME_TOOL_##NAME[] = VALUE;
+  static constexpr StringLiteral NAME##_init[] = VALUE;                        \
+  static constexpr ArrayRef<StringLiteral> NAME(NAME##_init,                   \
+                                                std::size(NAME##_init) - 1);
 #include "InstallNameToolOpts.inc"
 #undef PREFIX
 
-const opt::OptTable::Info InstallNameToolInfoTable[] = {
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  {INSTALL_NAME_TOOL_##PREFIX,                                                 \
-   NAME,                                                                       \
-   HELPTEXT,                                                                   \
-   METAVAR,                                                                    \
-   INSTALL_NAME_TOOL_##ID,                                                     \
-   opt::Option::KIND##Class,                                                   \
-   PARAM,                                                                      \
-   FLAGS,                                                                      \
-   INSTALL_NAME_TOOL_##GROUP,                                                  \
-   INSTALL_NAME_TOOL_##ALIAS,                                                  \
-   ALIASARGS,                                                                  \
-   VALUES},
+static constexpr opt::OptTable::Info InstallNameToolInfoTable[] = {
+#define OPTION(...)                                                            \
+  LLVM_CONSTRUCT_OPT_INFO_WITH_ID_PREFIX(INSTALL_NAME_TOOL_, __VA_ARGS__),
 #include "InstallNameToolOpts.inc"
 #undef OPTION
 };
+} // namespace install_name_tool
 
-class InstallNameToolOptTable : public opt::OptTable {
+class InstallNameToolOptTable : public opt::GenericOptTable {
 public:
-  InstallNameToolOptTable() : OptTable(InstallNameToolInfoTable) {}
+  InstallNameToolOptTable()
+      : GenericOptTable(install_name_tool::InstallNameToolInfoTable) {}
 };
 
 enum BitcodeStripID {
   BITCODE_STRIP_INVALID = 0, // This is not an option ID.
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  BITCODE_STRIP_##ID,
+#define OPTION(...)                                                            \
+  LLVM_MAKE_OPT_ID_WITH_ID_PREFIX(BITCODE_STRIP_, __VA_ARGS__),
 #include "BitcodeStripOpts.inc"
 #undef OPTION
 };
 
-#define PREFIX(NAME, VALUE) const char *const BITCODE_STRIP_##NAME[] = VALUE;
+namespace bitcode_strip {
+
+#define PREFIX(NAME, VALUE)                                                    \
+  static constexpr StringLiteral NAME##_init[] = VALUE;                        \
+  static constexpr ArrayRef<StringLiteral> NAME(NAME##_init,                   \
+                                                std::size(NAME##_init) - 1);
 #include "BitcodeStripOpts.inc"
 #undef PREFIX
 
-const opt::OptTable::Info BitcodeStripInfoTable[] = {
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  {BITCODE_STRIP_##PREFIX,                                                     \
-   NAME,                                                                       \
-   HELPTEXT,                                                                   \
-   METAVAR,                                                                    \
-   BITCODE_STRIP_##ID,                                                         \
-   opt::Option::KIND##Class,                                                   \
-   PARAM,                                                                      \
-   FLAGS,                                                                      \
-   BITCODE_STRIP_##GROUP,                                                      \
-   BITCODE_STRIP_##ALIAS,                                                      \
-   ALIASARGS,                                                                  \
-   VALUES},
+static constexpr opt::OptTable::Info BitcodeStripInfoTable[] = {
+#define OPTION(...)                                                            \
+  LLVM_CONSTRUCT_OPT_INFO_WITH_ID_PREFIX(BITCODE_STRIP_, __VA_ARGS__),
 #include "BitcodeStripOpts.inc"
 #undef OPTION
 };
+} // namespace bitcode_strip
 
-class BitcodeStripOptTable : public opt::OptTable {
+class BitcodeStripOptTable : public opt::GenericOptTable {
 public:
-  BitcodeStripOptTable() : OptTable(BitcodeStripInfoTable) {}
+  BitcodeStripOptTable()
+      : opt::GenericOptTable(bitcode_strip::BitcodeStripInfoTable) {}
 };
 
 enum StripID {
   STRIP_INVALID = 0, // This is not an option ID.
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  STRIP_##ID,
+#define OPTION(...) LLVM_MAKE_OPT_ID_WITH_ID_PREFIX(STRIP_, __VA_ARGS__),
 #include "StripOpts.inc"
 #undef OPTION
 };
 
-#define PREFIX(NAME, VALUE) const char *const STRIP_##NAME[] = VALUE;
+namespace strip {
+#define PREFIX(NAME, VALUE)                                                    \
+  static constexpr StringLiteral NAME##_init[] = VALUE;                        \
+  static constexpr ArrayRef<StringLiteral> NAME(NAME##_init,                   \
+                                                std::size(NAME##_init) - 1);
 #include "StripOpts.inc"
 #undef PREFIX
 
-const opt::OptTable::Info StripInfoTable[] = {
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  {STRIP_##PREFIX, NAME,       HELPTEXT,                                       \
-   METAVAR,        STRIP_##ID, opt::Option::KIND##Class,                       \
-   PARAM,          FLAGS,      STRIP_##GROUP,                                  \
-   STRIP_##ALIAS,  ALIASARGS,  VALUES},
+static constexpr opt::OptTable::Info StripInfoTable[] = {
+#define OPTION(...) LLVM_CONSTRUCT_OPT_INFO_WITH_ID_PREFIX(STRIP_, __VA_ARGS__),
 #include "StripOpts.inc"
 #undef OPTION
 };
+} // namespace strip
 
-class StripOptTable : public opt::OptTable {
+class StripOptTable : public opt::GenericOptTable {
 public:
-  StripOptTable() : OptTable(StripInfoTable) { setGroupedShortOptions(true); }
+  StripOptTable() : GenericOptTable(strip::StripInfoTable) {
+    setGroupedShortOptions(true);
+  }
 };
 
 } // namespace
@@ -188,6 +169,7 @@ static SectionFlag parseSectionRenameFlag(StringRef SectionName) {
       .CaseLower("contents", SectionFlag::SecContents)
       .CaseLower("share", SectionFlag::SecShare)
       .CaseLower("exclude", SectionFlag::SecExclude)
+      .CaseLower("large", SectionFlag::SecLarge)
       .Default(SectionFlag::SecNone);
 }
 
@@ -201,7 +183,7 @@ parseSectionFlagSet(ArrayRef<StringRef> SectionFlags) {
           errc::invalid_argument,
           "unrecognized section flag '%s'. Flags supported for GNU "
           "compatibility: alloc, load, noload, readonly, exclude, debug, "
-          "code, data, rom, share, contents, merge, strings",
+          "code, data, rom, share, contents, merge, strings, large",
           Flag.str().c_str());
     ParsedFlags |= ParsedFlag;
   }
@@ -226,7 +208,7 @@ static Expected<SectionRename> parseRenameSectionValue(StringRef FlagValue) {
 
   if (NameAndFlags.size() > 1) {
     Expected<SectionFlag> ParsedFlagSet =
-        parseSectionFlagSet(makeArrayRef(NameAndFlags).drop_front());
+        parseSectionFlagSet(ArrayRef(NameAndFlags).drop_front());
     if (!ParsedFlagSet)
       return ParsedFlagSet.takeError();
     SR.NewFlags = *ParsedFlagSet;
@@ -236,23 +218,21 @@ static Expected<SectionRename> parseRenameSectionValue(StringRef FlagValue) {
 }
 
 static Expected<std::pair<StringRef, uint64_t>>
-parseSetSectionAlignment(StringRef FlagValue) {
+parseSetSectionAttribute(StringRef Option, StringRef FlagValue) {
   if (!FlagValue.contains('='))
-    return createStringError(
-        errc::invalid_argument,
-        "bad format for --set-section-alignment: missing '='");
+    return make_error<StringError>("bad format for " + Option + ": missing '='",
+                                   errc::invalid_argument);
   auto Split = StringRef(FlagValue).split('=');
   if (Split.first.empty())
-    return createStringError(
-        errc::invalid_argument,
-        "bad format for --set-section-alignment: missing section name");
-  uint64_t NewAlign;
-  if (Split.second.getAsInteger(0, NewAlign))
-    return createStringError(
-        errc::invalid_argument,
-        "invalid alignment for --set-section-alignment: '%s'",
-        Split.second.str().c_str());
-  return std::make_pair(Split.first, NewAlign);
+    return make_error<StringError>("bad format for " + Option +
+                                       ": missing section name",
+                                   errc::invalid_argument);
+  uint64_t Value;
+  if (Split.second.getAsInteger(0, Value))
+    return make_error<StringError>("invalid value for " + Option + ": '" +
+                                       Split.second + "'",
+                                   errc::invalid_argument);
+  return std::make_pair(Split.first, Value);
 }
 
 static Expected<SectionFlagsUpdate>
@@ -275,6 +255,21 @@ parseSetSectionFlagValue(StringRef FlagValue) {
   SFU.NewFlags = *ParsedFlagSet;
 
   return SFU;
+}
+
+static Expected<uint8_t> parseVisibilityType(StringRef VisType) {
+  const uint8_t Invalid = 0xff;
+  uint8_t type = StringSwitch<uint8_t>(VisType)
+                     .Case("default", ELF::STV_DEFAULT)
+                     .Case("hidden", ELF::STV_HIDDEN)
+                     .Case("internal", ELF::STV_INTERNAL)
+                     .Case("protected", ELF::STV_PROTECTED)
+                     .Default(Invalid);
+  if (type == Invalid)
+    return createStringError(errc::invalid_argument,
+                             "'%s' is not a valid symbol visibility",
+                             VisType.str().c_str());
+  return type;
 }
 
 namespace {
@@ -317,7 +312,13 @@ static const StringMap<MachineInfo> TargetMap{
     // SPARC
     {"elf32-sparc", {ELF::EM_SPARC, false, false}},
     {"elf32-sparcel", {ELF::EM_SPARC, false, true}},
+    // Hexagon
     {"elf32-hexagon", {ELF::EM_HEXAGON, false, true}},
+    // LoongArch
+    {"elf32-loongarch", {ELF::EM_LOONGARCH, false, true}},
+    {"elf64-loongarch", {ELF::EM_LOONGARCH, true, true}},
+    // SystemZ
+    {"elf64-s390", {ELF::EM_S390, true, false}},
 };
 
 static Expected<TargetInfo>
@@ -334,7 +335,7 @@ getOutputTargetInfoByTargetName(StringRef TargetName) {
     MI.OSABI = ELF::ELFOSABI_FREEBSD;
 
   FileFormat Format;
-  if (TargetName.startswith("elf"))
+  if (TargetName.starts_with("elf"))
     Format = FileFormat::ELF;
   else
     // This should never happen because `TargetName` is valid (it certainly
@@ -530,7 +531,7 @@ static Expected<NewSymbolInfo> parseNewSymbolInfo(StringRef FlagValue) {
 // ArgValue, loads data from the file, and stores section name and data
 // into the vector of new sections \p NewSections.
 static Error loadNewSectionData(StringRef ArgValue, StringRef OptionName,
-                                std::vector<NewSectionInfo> &NewSections) {
+                                SmallVector<NewSectionInfo, 0> &NewSections) {
   if (!ArgValue.contains('='))
     return createStringError(errc::invalid_argument,
                              "bad format for " + OptionName + ": missing '='");
@@ -551,8 +552,8 @@ static Error loadNewSectionData(StringRef ArgValue, StringRef OptionName,
   return Error::success();
 }
 
-// ParseObjcopyOptions returns the config and sets the input arguments. If a
-// help flag is set then ParseObjcopyOptions will print the help messege and
+// parseObjcopyOptions returns the config and sets the input arguments. If a
+// help flag is set then parseObjcopyOptions will print the help messege and
 // exit.
 Expected<DriverConfig>
 objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
@@ -561,15 +562,20 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
   ObjcopyOptTable T;
 
   const char *const *DashDash =
-      std::find_if(RawArgsArr.begin(), RawArgsArr.end(),
-                   [](StringRef Str) { return Str == "--"; });
-  ArrayRef<const char *> ArgsArr = makeArrayRef(RawArgsArr.begin(), DashDash);
+      llvm::find_if(RawArgsArr, [](StringRef Str) { return Str == "--"; });
+  ArrayRef<const char *> ArgsArr = ArrayRef(RawArgsArr.begin(), DashDash);
   if (DashDash != RawArgsArr.end())
     DashDash = std::next(DashDash);
 
   unsigned MissingArgumentIndex, MissingArgumentCount;
   llvm::opt::InputArgList InputArgs =
       T.ParseArgs(ArgsArr, MissingArgumentIndex, MissingArgumentCount);
+
+  if (MissingArgumentCount)
+    return createStringError(
+        errc::invalid_argument,
+        "argument to '%s' is missing (expected %d value(s))",
+        InputArgs.getArgString(MissingArgumentIndex), MissingArgumentCount);
 
   if (InputArgs.size() == 0 && DashDash == RawArgsArr.end()) {
     printHelp(T, errs(), ToolType::Objcopy);
@@ -589,11 +595,11 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
 
   SmallVector<const char *, 2> Positional;
 
-  for (auto Arg : InputArgs.filtered(OBJCOPY_UNKNOWN))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_UNKNOWN))
     return createStringError(errc::invalid_argument, "unknown argument '%s'",
                              Arg->getAsString(InputArgs).c_str());
 
-  for (auto Arg : InputArgs.filtered(OBJCOPY_INPUT))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_INPUT))
     Positional.push_back(Arg->getValue());
   std::copy(DashDash, RawArgsArr.end(), std::back_inserter(Positional));
 
@@ -707,6 +713,7 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
   Config.OutputFormat = StringSwitch<FileFormat>(OutputFormat)
                             .Case("binary", FileFormat::Binary)
                             .Case("ihex", FileFormat::IHex)
+                            .Case("srec", FileFormat::SREC)
                             .Default(FileFormat::Unspecified);
   if (Config.OutputFormat == FileFormat::Unspecified) {
     if (OutputFormat.empty()) {
@@ -721,29 +728,56 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
     }
   }
 
-  if (auto Arg = InputArgs.getLastArg(OBJCOPY_compress_debug_sections,
-                                      OBJCOPY_compress_debug_sections_eq)) {
-    Config.CompressionType = DebugCompressionType::Z;
-
-    if (Arg->getOption().getID() == OBJCOPY_compress_debug_sections_eq) {
-      Config.CompressionType =
-          StringSwitch<DebugCompressionType>(
-              InputArgs.getLastArgValue(OBJCOPY_compress_debug_sections_eq))
-              .Case("zlib-gnu", DebugCompressionType::GNU)
-              .Case("zlib", DebugCompressionType::Z)
-              .Default(DebugCompressionType::None);
-      if (Config.CompressionType == DebugCompressionType::None)
-        return createStringError(
-            errc::invalid_argument,
-            "invalid or unsupported --compress-debug-sections format: %s",
-            InputArgs.getLastArgValue(OBJCOPY_compress_debug_sections_eq)
-                .str()
-                .c_str());
-    }
-    if (!zlib::isAvailable())
+  if (const auto *A = InputArgs.getLastArg(OBJCOPY_compress_debug_sections)) {
+    Config.CompressionType = StringSwitch<DebugCompressionType>(A->getValue())
+                                 .Case("zlib", DebugCompressionType::Zlib)
+                                 .Case("zstd", DebugCompressionType::Zstd)
+                                 .Default(DebugCompressionType::None);
+    if (Config.CompressionType == DebugCompressionType::None) {
       return createStringError(
           errc::invalid_argument,
-          "LLVM was not compiled with LLVM_ENABLE_ZLIB: can not compress");
+          "invalid or unsupported --compress-debug-sections format: %s",
+          A->getValue());
+    }
+    if (const char *Reason = compression::getReasonIfUnsupported(
+            compression::formatFor(Config.CompressionType)))
+      return createStringError(errc::invalid_argument, Reason);
+  }
+
+  for (const auto *A : InputArgs.filtered(OBJCOPY_compress_sections)) {
+    SmallVector<StringRef, 0> Fields;
+    StringRef(A->getValue()).split(Fields, '=');
+    if (Fields.size() != 2 || Fields[1].empty()) {
+      return createStringError(
+          errc::invalid_argument,
+          A->getSpelling() +
+              ": parse error, not 'section-glob=[none|zlib|zstd]'");
+    }
+
+    auto Type = StringSwitch<DebugCompressionType>(Fields[1])
+                    .Case("zlib", DebugCompressionType::Zlib)
+                    .Case("zstd", DebugCompressionType::Zstd)
+                    .Default(DebugCompressionType::None);
+    if (Type == DebugCompressionType::None && Fields[1] != "none") {
+      return createStringError(
+          errc::invalid_argument,
+          "invalid or unsupported --compress-sections format: %s",
+          A->getValue());
+    }
+
+    auto &P = Config.compressSections.emplace_back();
+    P.second = Type;
+    auto Matcher =
+        NameOrPattern::create(Fields[0], SectionMatchStyle, ErrorCallback);
+    // =none allows overriding a previous =zlib or =zstd. Reject negative
+    // patterns, which would be confusing.
+    if (Matcher && !Matcher->isPositiveMatch()) {
+      return createStringError(
+          errc::invalid_argument,
+          "--compress-sections: negative pattern is unsupported");
+    }
+    if (Error E = P.first.addMatcher(std::move(Matcher)))
+      return std::move(E);
   }
 
   Config.AddGnuDebugLink = InputArgs.getLastArgValue(OBJCOPY_add_gnu_debuglink);
@@ -760,13 +794,46 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
         llvm::crc32(arrayRefFromStringRef(Debug->getBuffer()));
   }
   Config.SplitDWO = InputArgs.getLastArgValue(OBJCOPY_split_dwo);
+
   Config.SymbolsPrefix = InputArgs.getLastArgValue(OBJCOPY_prefix_symbols);
+  Config.SymbolsPrefixRemove =
+      InputArgs.getLastArgValue(OBJCOPY_remove_symbol_prefix);
+
   Config.AllocSectionsPrefix =
       InputArgs.getLastArgValue(OBJCOPY_prefix_alloc_sections);
   if (auto Arg = InputArgs.getLastArg(OBJCOPY_extract_partition))
     Config.ExtractPartition = Arg->getValue();
 
-  for (auto Arg : InputArgs.filtered(OBJCOPY_redefine_symbol)) {
+  if (const auto *A = InputArgs.getLastArg(OBJCOPY_gap_fill)) {
+    if (Config.OutputFormat != FileFormat::Binary)
+      return createStringError(
+          errc::invalid_argument,
+          "'--gap-fill' is only supported for binary output");
+    ErrorOr<uint64_t> Val = getAsInteger<uint64_t>(A->getValue());
+    if (!Val)
+      return createStringError(Val.getError(), "--gap-fill: bad number: %s",
+                               A->getValue());
+    uint8_t ByteVal = Val.get();
+    if (ByteVal != Val.get())
+      return createStringError(std::errc::value_too_large,
+                               "gap-fill value %s is out of range (0 to 0xff)",
+                               A->getValue());
+    Config.GapFill = ByteVal;
+  }
+
+  if (const auto *A = InputArgs.getLastArg(OBJCOPY_pad_to)) {
+    if (Config.OutputFormat != FileFormat::Binary)
+      return createStringError(
+          errc::invalid_argument,
+          "'--pad-to' is only supported for binary output");
+    ErrorOr<uint64_t> Addr = getAsInteger<uint64_t>(A->getValue());
+    if (!Addr)
+      return createStringError(Addr.getError(), "--pad-to: bad number: %s",
+                               A->getValue());
+    Config.PadTo = *Addr;
+  }
+
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_redefine_symbol)) {
     if (!StringRef(Arg->getValue()).contains('='))
       return createStringError(errc::invalid_argument,
                                "bad format for --redefine-sym");
@@ -777,12 +844,12 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
                                Old2New.first.str().c_str());
   }
 
-  for (auto Arg : InputArgs.filtered(OBJCOPY_redefine_symbols))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_redefine_symbols))
     if (Error E = addSymbolsToRenameFromFile(Config.SymbolsToRename, DC.Alloc,
                                              Arg->getValue()))
       return std::move(E);
 
-  for (auto Arg : InputArgs.filtered(OBJCOPY_rename_section)) {
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_rename_section)) {
     Expected<SectionRename> SR =
         parseRenameSectionValue(StringRef(Arg->getValue()));
     if (!SR)
@@ -792,14 +859,14 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
                                "multiple renames of section '%s'",
                                SR->OriginalName.str().c_str());
   }
-  for (auto Arg : InputArgs.filtered(OBJCOPY_set_section_alignment)) {
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_set_section_alignment)) {
     Expected<std::pair<StringRef, uint64_t>> NameAndAlign =
-        parseSetSectionAlignment(Arg->getValue());
+        parseSetSectionAttribute("--set-section-alignment", Arg->getValue());
     if (!NameAndAlign)
       return NameAndAlign.takeError();
     Config.SetSectionAlignment[NameAndAlign->first] = NameAndAlign->second;
   }
-  for (auto Arg : InputArgs.filtered(OBJCOPY_set_section_flags)) {
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_set_section_flags)) {
     Expected<SectionFlagsUpdate> SFU =
         parseSetSectionFlagValue(Arg->getValue());
     if (!SFU)
@@ -810,42 +877,48 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
           "--set-section-flags set multiple times for section '%s'",
           SFU->Name.str().c_str());
   }
-  // Prohibit combinations of --set-section-flags when the section name is used
-  // by --rename-section, either as a source or a destination.
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_set_section_type)) {
+    Expected<std::pair<StringRef, uint64_t>> NameAndType =
+        parseSetSectionAttribute("--set-section-type", Arg->getValue());
+    if (!NameAndType)
+      return NameAndType.takeError();
+    Config.SetSectionType[NameAndType->first] = NameAndType->second;
+  }
+  // Prohibit combinations of --set-section-{flags,type} when the section name
+  // is used as the destination of a --rename-section.
   for (const auto &E : Config.SectionsToRename) {
     const SectionRename &SR = E.second;
-    if (Config.SetSectionFlags.count(SR.OriginalName))
+    auto Err = [&](const char *Option) {
       return createStringError(
           errc::invalid_argument,
-          "--set-section-flags=%s conflicts with --rename-section=%s=%s",
-          SR.OriginalName.str().c_str(), SR.OriginalName.str().c_str(),
-          SR.NewName.str().c_str());
-    if (Config.SetSectionFlags.count(SR.NewName))
-      return createStringError(
-          errc::invalid_argument,
-          "--set-section-flags=%s conflicts with --rename-section=%s=%s",
+          "--set-section-%s=%s conflicts with --rename-section=%s=%s", Option,
           SR.NewName.str().c_str(), SR.OriginalName.str().c_str(),
           SR.NewName.str().c_str());
+    };
+    if (Config.SetSectionFlags.count(SR.NewName))
+      return Err("flags");
+    if (Config.SetSectionType.count(SR.NewName))
+      return Err("type");
   }
 
-  for (auto Arg : InputArgs.filtered(OBJCOPY_remove_section))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_remove_section))
     if (Error E = Config.ToRemove.addMatcher(NameOrPattern::create(
             Arg->getValue(), SectionMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_keep_section))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_keep_section))
     if (Error E = Config.KeepSection.addMatcher(NameOrPattern::create(
             Arg->getValue(), SectionMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_only_section))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_only_section))
     if (Error E = Config.OnlySection.addMatcher(NameOrPattern::create(
             Arg->getValue(), SectionMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_add_section)) {
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_add_section)) {
     if (Error Err = loadNewSectionData(Arg->getValue(), "--add-section",
                                        Config.AddSection))
       return std::move(Err);
   }
-  for (auto Arg : InputArgs.filtered(OBJCOPY_update_section)) {
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_update_section)) {
     if (Error Err = loadNewSectionData(Arg->getValue(), "--update-section",
                                        Config.UpdateSection))
       return std::move(Err);
@@ -885,68 +958,77 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
     Config.StripDebug = true;
     ELFConfig.KeepFileSymbols = true;
   }
-  for (auto Arg : InputArgs.filtered(OBJCOPY_localize_symbol))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_localize_symbol))
     if (Error E = Config.SymbolsToLocalize.addMatcher(NameOrPattern::create(
             Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_localize_symbols))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_localize_symbols))
     if (Error E = addSymbolsFromFile(Config.SymbolsToLocalize, DC.Alloc,
                                      Arg->getValue(), SymbolMatchStyle,
                                      ErrorCallback))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_keep_global_symbol))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_keep_global_symbol))
     if (Error E = Config.SymbolsToKeepGlobal.addMatcher(NameOrPattern::create(
             Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_keep_global_symbols))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_keep_global_symbols))
     if (Error E = addSymbolsFromFile(Config.SymbolsToKeepGlobal, DC.Alloc,
                                      Arg->getValue(), SymbolMatchStyle,
                                      ErrorCallback))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_globalize_symbol))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_globalize_symbol))
     if (Error E = Config.SymbolsToGlobalize.addMatcher(NameOrPattern::create(
             Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_globalize_symbols))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_globalize_symbols))
     if (Error E = addSymbolsFromFile(Config.SymbolsToGlobalize, DC.Alloc,
                                      Arg->getValue(), SymbolMatchStyle,
                                      ErrorCallback))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_weaken_symbol))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_weaken_symbol))
     if (Error E = Config.SymbolsToWeaken.addMatcher(NameOrPattern::create(
             Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_weaken_symbols))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_weaken_symbols))
     if (Error E = addSymbolsFromFile(Config.SymbolsToWeaken, DC.Alloc,
                                      Arg->getValue(), SymbolMatchStyle,
                                      ErrorCallback))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_strip_symbol))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_strip_symbol))
     if (Error E = Config.SymbolsToRemove.addMatcher(NameOrPattern::create(
             Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_strip_symbols))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_strip_symbols))
     if (Error E = addSymbolsFromFile(Config.SymbolsToRemove, DC.Alloc,
                                      Arg->getValue(), SymbolMatchStyle,
                                      ErrorCallback))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_strip_unneeded_symbol))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_strip_unneeded_symbol))
     if (Error E =
             Config.UnneededSymbolsToRemove.addMatcher(NameOrPattern::create(
                 Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_strip_unneeded_symbols))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_strip_unneeded_symbols))
     if (Error E = addSymbolsFromFile(Config.UnneededSymbolsToRemove, DC.Alloc,
                                      Arg->getValue(), SymbolMatchStyle,
                                      ErrorCallback))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_keep_symbol))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_keep_symbol))
     if (Error E = Config.SymbolsToKeep.addMatcher(NameOrPattern::create(
             Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
       return std::move(E);
-  for (auto Arg : InputArgs.filtered(OBJCOPY_keep_symbols))
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_keep_symbols))
     if (Error E =
             addSymbolsFromFile(Config.SymbolsToKeep, DC.Alloc, Arg->getValue(),
+                               SymbolMatchStyle, ErrorCallback))
+      return std::move(E);
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_skip_symbol))
+    if (Error E = Config.SymbolsToSkip.addMatcher(NameOrPattern::create(
+            Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
+      return std::move(E);
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_skip_symbols))
+    if (Error E =
+            addSymbolsFromFile(Config.SymbolsToSkip, DC.Alloc, Arg->getValue(),
                                SymbolMatchStyle, ErrorCallback))
       return std::move(E);
   for (auto *Arg : InputArgs.filtered(OBJCOPY_add_symbol)) {
@@ -955,6 +1037,33 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
       return SymInfo.takeError();
 
     Config.SymbolsToAdd.push_back(*SymInfo);
+  }
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_set_symbol_visibility)) {
+    if (!StringRef(Arg->getValue()).contains('='))
+      return createStringError(errc::invalid_argument,
+                               "bad format for --set-symbol-visibility");
+    auto [Sym, Visibility] = StringRef(Arg->getValue()).split('=');
+    Expected<uint8_t> Type = parseVisibilityType(Visibility);
+    if (!Type)
+      return Type.takeError();
+    ELFConfig.SymbolsToSetVisibility.emplace_back(NameMatcher(), *Type);
+    if (Error E = ELFConfig.SymbolsToSetVisibility.back().first.addMatcher(
+            NameOrPattern::create(Sym, SymbolMatchStyle, ErrorCallback)))
+      return std::move(E);
+  }
+  for (auto *Arg : InputArgs.filtered(OBJCOPY_set_symbols_visibility)) {
+    if (!StringRef(Arg->getValue()).contains('='))
+      return createStringError(errc::invalid_argument,
+                               "bad format for --set-symbols-visibility");
+    auto [File, Visibility] = StringRef(Arg->getValue()).split('=');
+    Expected<uint8_t> Type = parseVisibilityType(Visibility);
+    if (!Type)
+      return Type.takeError();
+    ELFConfig.SymbolsToSetVisibility.emplace_back(NameMatcher(), *Type);
+    if (Error E =
+            addSymbolsFromFile(ELFConfig.SymbolsToSetVisibility.back().first,
+                               DC.Alloc, File, SymbolMatchStyle, ErrorCallback))
+      return std::move(E);
   }
 
   ELFConfig.AllowBrokenLinks = InputArgs.hasArg(OBJCOPY_allow_broken_links);
@@ -970,7 +1079,7 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
     return createStringError(errc::invalid_argument,
                              "--preserve-dates requires a file");
 
-  for (auto Arg : InputArgs)
+  for (auto *Arg : InputArgs)
     if (Arg->getOption().matches(OBJCOPY_set_start)) {
       auto EAddr = getAsInteger<uint64_t>(Arg->getValue());
       if (!EAddr)
@@ -999,11 +1108,6 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
         "--decompress-debug-sections");
   }
 
-  if (Config.DecompressDebugSections && !zlib::isAvailable())
-    return createStringError(
-        errc::invalid_argument,
-        "LLVM was not compiled with LLVM_ENABLE_ZLIB: cannot decompress");
-
   if (Config.ExtractPartition && Config.ExtractMainPartition)
     return createStringError(errc::invalid_argument,
                              "cannot specify --extract-partition together with "
@@ -1013,8 +1117,8 @@ objcopy::parseObjcopyOptions(ArrayRef<const char *> RawArgsArr,
   return std::move(DC);
 }
 
-// ParseInstallNameToolOptions returns the config and sets the input arguments.
-// If a help flag is set then ParseInstallNameToolOptions will print the help
+// parseInstallNameToolOptions returns the config and sets the input arguments.
+// If a help flag is set then parseInstallNameToolOptions will print the help
 // messege and exit.
 Expected<DriverConfig>
 objcopy::parseInstallNameToolOptions(ArrayRef<const char *> ArgsArr) {
@@ -1051,13 +1155,13 @@ objcopy::parseInstallNameToolOptions(ArrayRef<const char *> ArgsArr) {
     exit(0);
   }
 
-  for (auto Arg : InputArgs.filtered(INSTALL_NAME_TOOL_add_rpath))
+  for (auto *Arg : InputArgs.filtered(INSTALL_NAME_TOOL_add_rpath))
     MachOConfig.RPathToAdd.push_back(Arg->getValue());
 
   for (auto *Arg : InputArgs.filtered(INSTALL_NAME_TOOL_prepend_rpath))
     MachOConfig.RPathToPrepend.push_back(Arg->getValue());
 
-  for (auto Arg : InputArgs.filtered(INSTALL_NAME_TOOL_delete_rpath)) {
+  for (auto *Arg : InputArgs.filtered(INSTALL_NAME_TOOL_delete_rpath)) {
     StringRef RPath = Arg->getValue();
 
     // Cannot add and delete the same rpath at the same time.
@@ -1132,10 +1236,10 @@ objcopy::parseInstallNameToolOptions(ArrayRef<const char *> ArgsArr) {
       InputArgs.hasArg(INSTALL_NAME_TOOL_delete_all_rpaths);
 
   SmallVector<StringRef, 2> Positional;
-  for (auto Arg : InputArgs.filtered(INSTALL_NAME_TOOL_UNKNOWN))
+  for (auto *Arg : InputArgs.filtered(INSTALL_NAME_TOOL_UNKNOWN))
     return createStringError(errc::invalid_argument, "unknown argument '%s'",
                              Arg->getAsString(InputArgs).c_str());
-  for (auto Arg : InputArgs.filtered(INSTALL_NAME_TOOL_INPUT))
+  for (auto *Arg : InputArgs.filtered(INSTALL_NAME_TOOL_INPUT))
     Positional.push_back(Arg->getValue());
   if (Positional.empty())
     return createStringError(errc::invalid_argument, "no input file specified");
@@ -1145,6 +1249,16 @@ objcopy::parseInstallNameToolOptions(ArrayRef<const char *> ArgsArr) {
         "llvm-install-name-tool expects a single input file");
   Config.InputFilename = Positional[0];
   Config.OutputFilename = Positional[0];
+
+  Expected<OwningBinary<Binary>> BinaryOrErr =
+      createBinary(Config.InputFilename);
+  if (!BinaryOrErr)
+    return createFileError(Config.InputFilename, BinaryOrErr.takeError());
+  auto *Binary = (*BinaryOrErr).getBinary();
+  if (!Binary->isMachO() && !Binary->isMachOUniversalBinary())
+    return createStringError(errc::invalid_argument,
+                             "input file: %s is not a Mach-O file",
+                             Config.InputFilename.str().c_str());
 
   DC.CopyConfigs.push_back(std::move(ConfigMgr));
   return std::move(DC);
@@ -1204,23 +1318,30 @@ objcopy::parseBitcodeStripOptions(ArrayRef<const char *> ArgsArr,
   // We only support -r for now, which removes all bitcode sections and
   // the __LLVM segment if it's now empty.
   cantFail(Config.ToRemove.addMatcher(NameOrPattern::create(
+      "__LLVM,__asm", MatchStyle::Literal, ErrorCallback)));
+  cantFail(Config.ToRemove.addMatcher(NameOrPattern::create(
+      "__LLVM,__bitcode", MatchStyle::Literal, ErrorCallback)));
+  cantFail(Config.ToRemove.addMatcher(NameOrPattern::create(
       "__LLVM,__bundle", MatchStyle::Literal, ErrorCallback)));
+  cantFail(Config.ToRemove.addMatcher(NameOrPattern::create(
+      "__LLVM,__cmdline", MatchStyle::Literal, ErrorCallback)));
+  cantFail(Config.ToRemove.addMatcher(NameOrPattern::create(
+      "__LLVM,__swift_cmdline", MatchStyle::Literal, ErrorCallback)));
   MachOConfig.EmptySegmentsToRemove.insert("__LLVM");
 
   DC.CopyConfigs.push_back(std::move(ConfigMgr));
   return std::move(DC);
 }
 
-// ParseStripOptions returns the config and sets the input arguments. If a
-// help flag is set then ParseStripOptions will print the help messege and
+// parseStripOptions returns the config and sets the input arguments. If a
+// help flag is set then parseStripOptions will print the help messege and
 // exit.
 Expected<DriverConfig>
 objcopy::parseStripOptions(ArrayRef<const char *> RawArgsArr,
                            function_ref<Error(Error)> ErrorCallback) {
   const char *const *DashDash =
-      std::find_if(RawArgsArr.begin(), RawArgsArr.end(),
-                   [](StringRef Str) { return Str == "--"; });
-  ArrayRef<const char *> ArgsArr = makeArrayRef(RawArgsArr.begin(), DashDash);
+      llvm::find_if(RawArgsArr, [](StringRef Str) { return Str == "--"; });
+  ArrayRef<const char *> ArgsArr = ArrayRef(RawArgsArr.begin(), DashDash);
   if (DashDash != RawArgsArr.end())
     DashDash = std::next(DashDash);
 
@@ -1246,10 +1367,10 @@ objcopy::parseStripOptions(ArrayRef<const char *> RawArgsArr,
   }
 
   SmallVector<StringRef, 2> Positional;
-  for (auto Arg : InputArgs.filtered(STRIP_UNKNOWN))
+  for (auto *Arg : InputArgs.filtered(STRIP_UNKNOWN))
     return createStringError(errc::invalid_argument, "unknown argument '%s'",
                              Arg->getAsString(InputArgs).c_str());
-  for (auto Arg : InputArgs.filtered(STRIP_INPUT))
+  for (auto *Arg : InputArgs.filtered(STRIP_INPUT))
     Positional.push_back(Arg->getValue());
   std::copy(DashDash, RawArgsArr.end(), std::back_inserter(Positional));
 
@@ -1292,29 +1413,30 @@ objcopy::parseStripOptions(ArrayRef<const char *> RawArgsArr,
   ELFConfig.KeepFileSymbols = InputArgs.hasArg(STRIP_keep_file_symbols);
   MachOConfig.KeepUndefined = InputArgs.hasArg(STRIP_keep_undefined);
 
-  for (auto Arg : InputArgs.filtered(STRIP_keep_section))
+  for (auto *Arg : InputArgs.filtered(STRIP_keep_section))
     if (Error E = Config.KeepSection.addMatcher(NameOrPattern::create(
             Arg->getValue(), SectionMatchStyle, ErrorCallback)))
       return std::move(E);
 
-  for (auto Arg : InputArgs.filtered(STRIP_remove_section))
+  for (auto *Arg : InputArgs.filtered(STRIP_remove_section))
     if (Error E = Config.ToRemove.addMatcher(NameOrPattern::create(
             Arg->getValue(), SectionMatchStyle, ErrorCallback)))
       return std::move(E);
 
-  for (auto Arg : InputArgs.filtered(STRIP_strip_symbol))
+  for (auto *Arg : InputArgs.filtered(STRIP_strip_symbol))
     if (Error E = Config.SymbolsToRemove.addMatcher(NameOrPattern::create(
             Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
       return std::move(E);
 
-  for (auto Arg : InputArgs.filtered(STRIP_keep_symbol))
+  for (auto *Arg : InputArgs.filtered(STRIP_keep_symbol))
     if (Error E = Config.SymbolsToKeep.addMatcher(NameOrPattern::create(
             Arg->getValue(), SymbolMatchStyle, ErrorCallback)))
       return std::move(E);
 
   if (!InputArgs.hasArg(STRIP_no_strip_all) && !Config.StripDebug &&
-      !Config.StripUnneeded && Config.DiscardMode == DiscardType::None &&
-      !Config.StripAllGNU && Config.SymbolsToRemove.empty())
+      !Config.OnlyKeepDebug && !Config.StripUnneeded &&
+      Config.DiscardMode == DiscardType::None && !Config.StripAllGNU &&
+      Config.SymbolsToRemove.empty())
     Config.StripAll = true;
 
   if (Config.DiscardMode == DiscardType::All) {

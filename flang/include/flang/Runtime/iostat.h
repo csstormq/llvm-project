@@ -11,6 +11,7 @@
 
 #ifndef FORTRAN_RUNTIME_IOSTAT_H_
 #define FORTRAN_RUNTIME_IOSTAT_H_
+#include "flang/Common/api-attrs.h"
 #include "flang/Runtime/magic-numbers.h"
 namespace Fortran::runtime::io {
 
@@ -68,9 +69,27 @@ enum Iostat {
   IostatBadUnformattedRecord,
   IostatUTF8Decoding,
   IostatUnitOverflow,
+  IostatBadRealInput,
+  IostatBadScaleFactor,
+  IostatBadAsynchronous,
+  IostatBadWaitUnit,
+  IostatBOZInputOverflow,
+  IostatIntegerInputOverflow,
+  IostatRealInputOverflow,
+  IostatOpenAlreadyConnected,
+  IostatCannotReposition,
+  IostatBadWaitId,
+  IostatTooManyAsyncOps,
+  IostatBadBackspaceUnit,
+  IostatBadUnitNumber,
+  IostatBadFlushUnit,
+  IostatBadOpOnChildUnit,
+  IostatBadNewUnit,
+  IostatBadListDirectedInputSeparator,
+  IostatNonExternalDefinedUnformattedIo,
 };
 
-const char *IostatErrorString(int);
+RT_API_ATTRS const char *IostatErrorString(int);
 
 } // namespace Fortran::runtime::io
 #endif // FORTRAN_RUNTIME_IOSTAT_H_

@@ -23,10 +23,12 @@ set(ASAN_UNITTEST_HEADERS
 set(ASAN_UNITTEST_COMMON_CFLAGS
   ${COMPILER_RT_UNITTEST_CFLAGS}
   ${COMPILER_RT_GTEST_CFLAGS}
+  ${SANITIZER_TEST_CXX_CFLAGS}
   -I${COMPILER_RT_SOURCE_DIR}/include
   -I${COMPILER_RT_SOURCE_DIR}/lib
   -I${COMPILER_RT_SOURCE_DIR}/lib/asan
   -I${COMPILER_RT_SOURCE_DIR}/lib/sanitizer_common/tests
+  -DSANITIZER_COMMON_NO_REDEFINE_BUILTINS
   -fno-rtti
   -O2
   -Wno-format
@@ -36,7 +38,9 @@ append_list_if(COMPILER_RT_HAS_WVARIADIC_MACROS_FLAG -Wno-variadic-macros ASAN_U
 # This will ensure the target linker is used
 # during cross compilation
 set(ASAN_UNITTEST_COMMON_LINK_FLAGS
-  ${COMPILER_RT_UNITTEST_LINK_FLAGS})
+  ${COMPILER_RT_UNITTEST_LINK_FLAGS}
+  ${COMPILER_RT_UNWINDER_LINK_LIBS}
+  ${SANITIZER_TEST_CXX_LIBRARIES})
 
 # -gline-tables-only must be enough for ASan, so use it if possible.
 if(COMPILER_RT_TEST_COMPILER_ID MATCHES "Clang")
@@ -98,8 +102,6 @@ set(ASAN_DYNAMIC_UNITTEST_INSTRUMENTED_LINK_FLAGS
   -shared-libasan)
 
 set(ASAN_UNITTEST_INSTRUMENTED_LIBS)
-# NDK r10 requires -latomic almost always.
-append_list_if(ANDROID atomic ASAN_UNITTEST_INSTRUMENTED_LIBS)
 
 set(ASAN_UNITTEST_NOINST_LINK_FLAGS ${ASAN_UNITTEST_COMMON_LINK_FLAGS})
 if(NOT APPLE)
@@ -113,8 +115,6 @@ endif()
 # TODO(eugenis): move all -l flags above to _LIBS?
 set(ASAN_UNITTEST_NOINST_LIBS)
 append_list_if(COMPILER_RT_HAS_LIBLOG log ASAN_UNITTEST_NOINST_LIBS)
-# NDK r10 requires -latomic almost always.
-append_list_if(ANDROID atomic ASAN_UNITTEST_NOINST_LIBS)
 
 # Main AddressSanitizer unit tests.
 add_custom_target(AsanUnitTests)
@@ -172,7 +172,7 @@ function(add_asan_tests arch test_runtime)
   function(generate_asan_tests test_objects test_suite testname)
     generate_compiler_rt_tests(${test_objects} ${test_suite} ${testname} ${arch}
       COMPILE_DEPS ${ASAN_UNITTEST_HEADERS} ${ASAN_IGNORELIST_FILE}
-      DEPS llvm_gtest asan
+      DEPS asan
       KIND ${TEST_KIND}
       ${ARGN}
       )
@@ -270,6 +270,7 @@ if(COMPILER_RT_CAN_EXECUTE_TESTS AND NOT ANDROID)
         $<TARGET_OBJECTS:RTSanitizerCommonLibc.${arch}>
         $<TARGET_OBJECTS:RTSanitizerCommonCoverage.${arch}>
         $<TARGET_OBJECTS:RTSanitizerCommonSymbolizer.${arch}>
+        $<TARGET_OBJECTS:RTSanitizerCommonSymbolizerInternal.${arch}>
         $<TARGET_OBJECTS:RTLSanCommon.${arch}>
         $<TARGET_OBJECTS:RTUbsan.${arch}>
         $<TARGET_OBJECTS:RTUbsan_cxx.${arch}>)
@@ -296,6 +297,7 @@ if(ANDROID)
       $<TARGET_OBJECTS:RTSanitizerCommonLibc.${arch}>
       $<TARGET_OBJECTS:RTSanitizerCommonCoverage.${arch}>
       $<TARGET_OBJECTS:RTSanitizerCommonSymbolizer.${arch}>
+      $<TARGET_OBJECTS:RTSanitizerCommonSymbolizerInternal.${arch}>
       $<TARGET_OBJECTS:RTLSanCommon.${arch}>
       $<TARGET_OBJECTS:RTUbsan.${arch}>
       $<TARGET_OBJECTS:RTUbsan_cxx.${arch}>

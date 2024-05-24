@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "TestDialect.h"
+#include "TestOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -18,13 +18,13 @@ using namespace test;
 //===----------------------------------------------------------------------===//
 
 OpFoldResult TestInvolutionTraitFailingOperationFolderOp::fold(
-    ArrayRef<Attribute> operands) {
+    FoldAdaptor adaptor) {
   // This failure should cause the trait fold to run instead.
   return {};
 }
 
 OpFoldResult TestInvolutionTraitSuccesfulOperationFolderOp::fold(
-    ArrayRef<Attribute> operands) {
+    FoldAdaptor adaptor) {
   auto argumentOp = getOperand();
   // The success case should cause the trait fold to be supressed.
   return argumentOp.getDefiningOp() ? argumentOp : OpFoldResult{};
@@ -32,7 +32,7 @@ OpFoldResult TestInvolutionTraitSuccesfulOperationFolderOp::fold(
 
 namespace {
 struct TestTraitFolder
-    : public PassWrapper<TestTraitFolder, OperationPass<FuncOp>> {
+    : public PassWrapper<TestTraitFolder, OperationPass<func::FuncOp>> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestTraitFolder)
 
   StringRef getArgument() const final { return "test-trait-folder"; }

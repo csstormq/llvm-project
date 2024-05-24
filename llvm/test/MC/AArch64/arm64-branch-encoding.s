@@ -137,17 +137,33 @@ L1:
 ; CHECK: encoding: [0x41,0x00,0xa0,0xd4]
   dcps2 #3
 ; CHECK: encoding: [0x62,0x00,0xa0,0xd4]
+  dcps3 #4
+; CHECK: encoding: [0x83,0x00,0xa0,0xd4]
   hlt   #5
 ; CHECK: encoding: [0xa0,0x00,0x40,0xd4]
   hvc   #6
 ; CHECK: encoding: [0xc2,0x00,0x00,0xd4]
+  smc   #7
+; CHECK: encoding: [0xe3,0x00,0x00,0xd4]
   svc   #8
 ; CHECK: encoding: [0x01,0x01,0x00,0xd4]
 
 ; The immediate defaults to zero for DCPSn
   dcps1
   dcps2
+  dcps3
 
 ; CHECK: dcps1                     ; encoding: [0x01,0x00,0xa0,0xd4]
 ; CHECK: dcps2                     ; encoding: [0x02,0x00,0xa0,0xd4]
+; CHECK: dcps3                     ; encoding: [0x03,0x00,0xa0,0xd4]
 
+;; Test "bad" names
+  bl lsl
+  b.eq lsr
+  b.ne uxth
+; CHECK:      bl lsl     ; encoding: [A,A,A,0b100101AA]
+; CHECK-NEXT:   fixup A - offset: 0, value: lsl, kind: fixup_aarch64_pcrel_call26
+; CHECK-NEXT: b.eq lsr   ; encoding: [0bAAA00000,A,A,0x54]
+; CHECK-NEXT:   fixup A - offset: 0, value: lsr, kind: fixup_aarch64_pcrel_branch19
+; CHECK-NEXT: b.ne uxth  ; encoding: [0bAAA00001,A,A,0x54]
+; CHECK-NEXT:   fixup A - offset: 0, value: uxth, kind: fixup_aarch64_pcrel_branch19

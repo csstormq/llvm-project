@@ -43,9 +43,9 @@ template <typename B>
 void genCharacterCopy(mlir::Value src, mlir::Value srcLen, mlir::Value dst,
                       mlir::Value dstLen, B &builder, mlir::Location loc) {
   auto srcTy =
-      fir::dyn_cast_ptrEleTy(src.getType()).template cast<fir::CharacterType>();
+      mlir::cast<fir::CharacterType>(fir::dyn_cast_ptrEleTy(src.getType()));
   auto dstTy =
-      fir::dyn_cast_ptrEleTy(dst.getType()).template cast<fir::CharacterType>();
+      mlir::cast<fir::CharacterType>(fir::dyn_cast_ptrEleTy(dst.getType()));
   if (!srcLen && !dstLen && srcTy.getFKind() == dstTy.getFKind() &&
       srcTy.getLen() == dstTy.getLen()) {
     // same size, so just use load and store
@@ -61,8 +61,8 @@ void genCharacterCopy(mlir::Value src, mlir::Value srcLen, mlir::Value dst,
         fir::CharacterType::getSingleton(ty.getContext(), ty.getFKind())));
   };
   auto toEleTy = [&](fir::ReferenceType ty) {
-    auto seqTy = ty.getEleTy().cast<fir::SequenceType>();
-    return seqTy.getEleTy().cast<fir::CharacterType>();
+    auto seqTy = mlir::cast<fir::SequenceType>(ty.getEleTy());
+    return mlir::cast<fir::CharacterType>(seqTy.getEleTy());
   };
   auto toCoorTy = [&](fir::ReferenceType ty) {
     return fir::ReferenceType::get(toEleTy(ty));
@@ -144,26 +144,30 @@ void genCharacterCopy(mlir::Value src, mlir::Value srcLen, mlir::Value dst,
 
 /// Get extents from fir.shape/fir.shape_shift op. Empty result if
 /// \p shapeVal is empty or is a fir.shift.
-inline std::vector<mlir::Value> getExtents(mlir::Value shapeVal) {
+inline llvm::SmallVector<mlir::Value> getExtents(mlir::Value shapeVal) {
   if (shapeVal)
     if (auto *shapeOp = shapeVal.getDefiningOp()) {
       if (auto shOp = mlir::dyn_cast<fir::ShapeOp>(shapeOp)) {
         auto operands = shOp.getExtents();
         return {operands.begin(), operands.end()};
       }
-      if (auto shOp = mlir::dyn_cast<fir::ShapeShiftOp>(shapeOp))
-        return shOp.getExtents();
+      if (auto shOp = mlir::dyn_cast<fir::ShapeShiftOp>(shapeOp)) {
+        auto operands = shOp.getExtents();
+        return {operands.begin(), operands.end()};
+      }
     }
   return {};
 }
 
 /// Get origins from fir.shape_shift/fir.shift op. Empty result if
 /// \p shapeVal is empty or is a fir.shape.
-inline std::vector<mlir::Value> getOrigins(mlir::Value shapeVal) {
+inline llvm::SmallVector<mlir::Value> getOrigins(mlir::Value shapeVal) {
   if (shapeVal)
     if (auto *shapeOp = shapeVal.getDefiningOp()) {
-      if (auto shOp = mlir::dyn_cast<fir::ShapeShiftOp>(shapeOp))
-        return shOp.getOrigins();
+      if (auto shOp = mlir::dyn_cast<fir::ShapeShiftOp>(shapeOp)) {
+        auto operands = shOp.getOrigins();
+        return {operands.begin(), operands.end()};
+      }
       if (auto shOp = mlir::dyn_cast<fir::ShiftOp>(shapeOp)) {
         auto operands = shOp.getOrigins();
         return {operands.begin(), operands.end()};
@@ -186,8 +190,8 @@ originateIndices(mlir::Location loc, B &builder, mlir::Type memTy,
   if (origins.empty()) {
     assert(!shapeVal || mlir::isa<fir::ShapeOp>(shapeVal.getDefiningOp()));
     auto ty = fir::dyn_cast_ptrOrBoxEleTy(memTy);
-    assert(ty && ty.isa<fir::SequenceType>());
-    auto seqTy = ty.cast<fir::SequenceType>();
+    assert(ty && mlir::isa<fir::SequenceType>(ty));
+    auto seqTy = mlir::cast<fir::SequenceType>(ty);
     auto one = builder.template create<mlir::arith::ConstantIndexOp>(loc, 1);
     const auto dimension = seqTy.getDimension();
     if (shapeVal) {

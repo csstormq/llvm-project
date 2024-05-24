@@ -20,6 +20,7 @@
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SmallString.h"
+#include <optional>
 
 using namespace mlir;
 using namespace mlir::bufferization;
@@ -67,7 +68,7 @@ void BufferPlacementAllocs::build(Operation *op) {
         [=](MemoryEffects::EffectInstance &it) {
           Value value = it.getValue();
           return isa<MemoryEffects::Allocate>(it.getEffect()) && value &&
-                 value.isa<OpResult>() &&
+                 isa<OpResult>(value) &&
                  it.getResource() !=
                      SideEffects::AutomaticAllocationScopeResource::get();
         });
@@ -78,9 +79,9 @@ void BufferPlacementAllocs::build(Operation *op) {
     // Get allocation result.
     Value allocValue = allocateResultEffects[0].getValue();
     // Find the associated dealloc value and register the allocation entry.
-    llvm::Optional<Operation *> dealloc = memref::findDealloc(allocValue);
+    std::optional<Operation *> dealloc = memref::findDealloc(allocValue);
     // If the allocation has > 1 dealloc associated with it, skip handling it.
-    if (!dealloc.hasValue())
+    if (!dealloc)
       return;
     allocs.push_back(std::make_tuple(allocValue, *dealloc));
   });
@@ -95,59 +96,14 @@ BufferPlacementTransformationBase::BufferPlacementTransformationBase(
     Operation *op)
     : aliases(op), allocs(op), liveness(op) {}
 
-/// Returns true if the given operation represents a loop by testing whether it
-/// implements the `LoopLikeOpInterface` or the `RegionBranchOpInterface`. In
-/// the case of a `RegionBranchOpInterface`, it checks all region-based control-
-/// flow edges for cycles.
-bool BufferPlacementTransformationBase::isLoop(Operation *op) {
-  // If the operation implements the `LoopLikeOpInterface` it can be considered
-  // a loop.
-  if (isa<LoopLikeOpInterface>(op))
-    return true;
-
-  // If the operation does not implement the `RegionBranchOpInterface`, it is
-  // (currently) not possible to detect a loop.
-  RegionBranchOpInterface regionInterface;
-  if (!(regionInterface = dyn_cast<RegionBranchOpInterface>(op)))
-    return false;
-
-  // Recurses into a region using the current region interface to find potential
-  // cycles.
-  SmallPtrSet<Region *, 4> visitedRegions;
-  std::function<bool(Region *)> recurse = [&](Region *current) {
-    if (!current)
-      return false;
-    // If we have found a back edge, the parent operation induces a loop.
-    if (!visitedRegions.insert(current).second)
-      return true;
-    // Recurses into all region successors.
-    SmallVector<RegionSuccessor, 2> successors;
-    regionInterface.getSuccessorRegions(current->getRegionNumber(), successors);
-    for (RegionSuccessor &regionEntry : successors)
-      if (recurse(regionEntry.getSuccessor()))
-        return true;
-    return false;
-  };
-
-  // Start with all entry regions and test whether they induce a loop.
-  SmallVector<RegionSuccessor, 2> successorRegions;
-  regionInterface.getSuccessorRegions(/*index=*/llvm::None, successorRegions);
-  for (RegionSuccessor &regionEntry : successorRegions) {
-    if (recurse(regionEntry.getSuccessor()))
-      return true;
-    visitedRegions.clear();
-  }
-
-  return false;
-}
-
 //===----------------------------------------------------------------------===//
 // BufferPlacementTransformationBase
 //===----------------------------------------------------------------------===//
 
 FailureOr<memref::GlobalOp>
-bufferization::getGlobalFor(arith::ConstantOp constantOp, uint64_t alignment) {
-  auto type = constantOp.getType().cast<RankedTensorType>();
+bufferization::getGlobalFor(arith::ConstantOp constantOp, uint64_t alignment,
+                            Attribute memorySpace) {
+  auto type = cast<RankedTensorType>(constantOp.getType());
   auto moduleOp = constantOp->getParentOfType<ModuleOp>();
   if (!moduleOp)
     return failure();
@@ -158,11 +114,10 @@ bufferization::getGlobalFor(arith::ConstantOp constantOp, uint64_t alignment) {
     auto globalOp = dyn_cast<memref::GlobalOp>(&op);
     if (!globalOp)
       continue;
-    if (!globalOp.initial_value().hasValue())
+    if (!globalOp.getInitialValue().has_value())
       continue;
-    uint64_t opAlignment =
-        globalOp.alignment().hasValue() ? globalOp.alignment().getValue() : 0;
-    Attribute initialValue = globalOp.initial_value().getValue();
+    uint64_t opAlignment = globalOp.getAlignment().value_or(0);
+    Attribute initialValue = globalOp.getInitialValue().value();
     if (opAlignment == alignment && initialValue == constantOp.getValue())
       return globalOp;
   }
@@ -184,11 +139,14 @@ bufferization::getGlobalFor(arith::ConstantOp constantOp, uint64_t alignment) {
                     : IntegerAttr();
 
   BufferizeTypeConverter typeConverter;
+  auto memrefType = cast<MemRefType>(typeConverter.convertType(type));
+  if (memorySpace)
+    memrefType = MemRefType::Builder(memrefType).setMemorySpace(memorySpace);
   auto global = globalBuilder.create<memref::GlobalOp>(
       constantOp.getLoc(), (Twine("__constant_") + os.str()).str(),
       /*sym_visibility=*/globalBuilder.getStringAttr("private"),
-      /*type=*/typeConverter.convertType(type).cast<MemRefType>(),
-      /*initial_value=*/constantOp.getValue().cast<ElementsAttr>(),
+      /*type=*/memrefType,
+      /*initial_value=*/cast<ElementsAttr>(constantOp.getValue()),
       /*constant=*/true,
       /*alignment=*/memrefAlignment);
   symbolTable.insert(global);

@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "unit-map.h"
+#include "flang/Common/optional.h"
 
 namespace Fortran::runtime::io {
 
@@ -29,7 +30,7 @@ void UnitMap::Initialize() {
 ExternalFileUnit &UnitMap::NewUnit(const Terminator &terminator) {
   CriticalSection critical{lock_};
   Initialize();
-  std::optional<int> n{freeNewUnits_.PopValue()};
+  Fortran::common::optional<int> n{freeNewUnits_.PopValue()};
   if (!n) {
     n = emergencyNewUnit_++;
   }
@@ -111,12 +112,13 @@ void UnitMap::FlushAll(IoErrorHandler &handler) {
   }
 }
 
-ExternalFileUnit *UnitMap::Find(const char *path) {
+ExternalFileUnit *UnitMap::Find(const char *path, std::size_t pathLen) {
   if (path) {
     // TODO: Faster data structure
     for (int j{0}; j < buckets_; ++j) {
       for (Chain *p{bucket_[j].get()}; p; p = p->next.get()) {
-        if (p->unit.path() && std::strcmp(p->unit.path(), path) == 0) {
+        if (p->unit.path() && p->unit.pathLength() == pathLen &&
+            std::memcmp(p->unit.path(), path, pathLen) == 0) {
           return &p->unit;
         }
       }

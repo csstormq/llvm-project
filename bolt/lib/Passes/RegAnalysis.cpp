@@ -24,12 +24,9 @@ namespace opts {
 extern cl::opt<unsigned> Verbosity;
 extern cl::OptionCategory BoltOptCategory;
 
-cl::opt<bool> AssumeABI(
-    "assume-abi",
-    cl::desc("assume the ABI is never violated"),
-    cl::ZeroOrMore,
-    cl::init(false),
-    cl::cat(BoltOptCategory));
+cl::opt<bool> AssumeABI("assume-abi",
+                        cl::desc("assume the ABI is never violated"),
+                        cl::cat(BoltOptCategory));
 }
 
 namespace llvm {
@@ -235,11 +232,11 @@ BitVector RegAnalysis::getFunctionClobberList(const BinaryFunction *Func) {
 }
 
 void RegAnalysis::printStats() {
-  outs() << "BOLT-INFO REG ANALYSIS: Number of functions conservatively "
-            "treated as clobbering all registers: "
-         << NumFunctionsAllClobber
-         << format(" (%.1lf%% dyn cov)\n",
-                   (100.0 * CountFunctionsAllClobber / CountDenominator));
+  BC.outs() << "BOLT-INFO REG ANALYSIS: Number of functions conservatively "
+               "treated as clobbering all registers: "
+            << NumFunctionsAllClobber
+            << format(" (%.1lf%% dyn cov)\n",
+                      (100.0 * CountFunctionsAllClobber / CountDenominator));
 }
 
 } // namespace bolt

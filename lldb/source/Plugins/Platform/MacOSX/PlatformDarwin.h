@@ -10,25 +10,25 @@
 #define LLDB_SOURCE_PLUGINS_PLATFORM_MACOSX_PLATFORMDARWIN_H
 
 #include "Plugins/Platform/POSIX/PlatformPOSIX.h"
-#include "lldb/Core/FileSpecList.h"
 #include "lldb/Host/FileSystem.h"
 #include "lldb/Host/ProcessLaunchInfo.h"
 #include "lldb/Utility/ArchSpec.h"
 #include "lldb/Utility/ConstString.h"
 #include "lldb/Utility/FileSpec.h"
+#include "lldb/Utility/FileSpecList.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/Utility/StructuredData.h"
 #include "lldb/Utility/XcodeSDK.h"
 #include "lldb/lldb-forward.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/VersionTuple.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -48,6 +48,18 @@ public:
 
   ~PlatformDarwin() override;
 
+  static lldb::PlatformSP CreateInstance(bool force, const ArchSpec *arch);
+
+  static void DebuggerInitialize(lldb_private::Debugger &debugger);
+
+  static void Initialize();
+
+  static void Terminate();
+
+  static llvm::StringRef GetPluginNameStatic() { return "darwin"; }
+
+  static llvm::StringRef GetDescriptionStatic();
+
   Status PutFile(const FileSpec &source, const FileSpec &destination,
                  uint32_t uid = UINT32_MAX, uint32_t gid = UINT32_MAX) override;
 
@@ -57,7 +69,7 @@ public:
 
   FileSpecList
   LocateExecutableScriptingResources(Target *target, Module &module,
-                                     Stream *feedback_stream) override;
+                                     Stream &feedback_stream) override;
 
   Status GetSharedModule(const ModuleSpec &module_spec, Process *process,
                          lldb::ModuleSP &module_sp,
@@ -75,7 +87,7 @@ public:
 
   void
   ARMGetSupportedArchitectures(std::vector<ArchSpec> &archs,
-                               llvm::Optional<llvm::Triple::OSType> os = {});
+                               std::optional<llvm::Triple::OSType> os = {});
 
   void x86GetSupportedArchitectures(std::vector<ArchSpec> &archs);
 
@@ -97,6 +109,8 @@ public:
 
   Status LaunchProcess(ProcessLaunchInfo &launch_info) override;
 
+  Args GetExtraStartupCommands() override;
+
   static std::tuple<llvm::VersionTuple, llvm::StringRef>
   ParseVersionBuildDir(llvm::StringRef str);
 
@@ -109,6 +123,33 @@ public:
   /// Return the command line tools directory the current LLDB instance is
   /// located in.
   static FileSpec GetCurrentCommandLineToolsDirectory();
+
+  /// Search each CU associated with the specified 'module' for
+  /// the SDK paths the CUs were compiled against. In the presence
+  /// of different SDKs, we try to pick the most appropriate one
+  /// using \ref XcodeSDK::Merge.
+  ///
+  /// \param[in] module Module whose debug-info CUs to parse for
+  ///                   which SDK they were compiled against.
+  ///
+  /// \returns If successful, returns a pair of a parsed XcodeSDK
+  ///          object and a boolean that is 'true' if we encountered
+  ///          a conflicting combination of SDKs when parsing the CUs
+  ///          (e.g., a public and internal SDK).
+  static llvm::Expected<std::pair<XcodeSDK, bool>>
+  GetSDKPathFromDebugInfo(Module &module);
+
+  /// Returns the full path of the most appropriate SDK for the
+  /// specified 'module'. This function gets this path by parsing
+  /// debug-info (see \ref `GetSDKPathFromDebugInfo`).
+  ///
+  /// \param[in] module Module whose debug-info to parse for
+  ///                   which SDK it was compiled against.
+  ///
+  /// \returns If successful, returns the full path to an
+  ///          Xcode SDK.
+  static llvm::Expected<std::string>
+  ResolveSDKPathFromDebugInfo(Module &module);
 
 protected:
   static const char *GetCompatibleArch(ArchSpec::Core core, size_t idx);
@@ -124,7 +165,7 @@ protected:
     uint64_t abort_cause;      // unsigned int
   };
 
-  /// Extract the `__crash_info` annotations from each of of the target's
+  /// Extract the `__crash_info` annotations from each of the target's
   /// modules.
   ///
   /// If the platform have a crashed processes with a `__crash_info` section,
@@ -140,14 +181,13 @@ protected:
   ///     \b nullptr if process has no crash information annotations.
   StructuredData::ArraySP ExtractCrashInfoAnnotations(Process &process);
 
+  /// Extract the `Application Specific Information` messages from a crash
+  /// report.
+  StructuredData::DictionarySP ExtractAppSpecificInfo(Process &process);
+
   void ReadLibdispatchOffsetsAddress(Process *process);
 
   void ReadLibdispatchOffsets(Process *process);
-
-  virtual Status GetSharedModuleWithLocalCache(
-      const ModuleSpec &module_spec, lldb::ModuleSP &module_sp,
-      const FileSpecList *module_search_paths_ptr,
-      llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules, bool *did_create_ptr);
 
   virtual bool CheckLocalSharedCache() const { return IsHost(); }
 

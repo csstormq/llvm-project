@@ -7,94 +7,109 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Interfaces/LoopLikeInterface.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
-#include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/Support/Debug.h"
+
+#include "mlir/Interfaces/FunctionInterfaces.h"
+#include "llvm/ADT/DenseSet.h"
 
 using namespace mlir;
-
-#define DEBUG_TYPE "loop-like"
-
-//===----------------------------------------------------------------------===//
-// LoopLike Interfaces
-//===----------------------------------------------------------------------===//
 
 /// Include the definitions of the loop-like interfaces.
 #include "mlir/Interfaces/LoopLikeInterface.cpp.inc"
 
-//===----------------------------------------------------------------------===//
-// LoopLike Utilities
-//===----------------------------------------------------------------------===//
+bool LoopLikeOpInterface::blockIsInLoop(Block *block) {
+  Operation *parent = block->getParentOp();
 
-// Checks whether the given op can be hoisted by checking that
-// - the op and any of its contained operations do not depend on SSA values
-//   defined inside of the loop (by means of calling definedOutside).
-// - the op has no side-effects. If sideEffecting is Never, sideeffects of this
-//   op and its nested ops are ignored.
-static bool canBeHoisted(Operation *op,
-                         function_ref<bool(Value)> definedOutside) {
-  // Check that dependencies are defined outside of loop.
-  if (!llvm::all_of(op->getOperands(), definedOutside))
-    return false;
-  // Check whether this op is side-effect free. If we already know that there
-  // can be no side-effects because the surrounding op has claimed so, we can
-  // (and have to) skip this step.
-  if (auto memInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
-    if (!memInterface.hasNoEffect())
-      return false;
-    // If the operation doesn't have side effects and it doesn't recursively
-    // have side effects, it can always be hoisted.
-    if (!op->hasTrait<OpTrait::HasRecursiveSideEffects>())
-      return true;
+  // The block could be inside a loop-like operation
+  if (isa<LoopLikeOpInterface>(parent) ||
+      parent->getParentOfType<LoopLikeOpInterface>())
+    return true;
 
-    // Otherwise, if the operation doesn't provide the memory effect interface
-    // and it doesn't have recursive side effects we treat it conservatively as
-    // side-effecting.
-  } else if (!op->hasTrait<OpTrait::HasRecursiveSideEffects>()) {
-    return false;
-  }
+  // This block might be nested inside another block, which is in a loop
+  if (!isa<FunctionOpInterface>(parent))
+    if (mlir::Block *parentBlock = parent->getBlock())
+      if (blockIsInLoop(parentBlock))
+        return true;
 
-  // Recurse into the regions for this op and check whether the contained ops
-  // can be hoisted.
-  for (auto &region : op->getRegions()) {
-    for (auto &block : region) {
-      for (auto &innerOp : block)
-        if (!canBeHoisted(&innerOp, definedOutside))
-          return false;
+  // Or the block could be inside a control flow graph loop:
+  // A block is in a control flow graph loop if it can reach itself in a graph
+  // traversal
+  DenseSet<Block *> visited;
+  SmallVector<Block *> stack;
+  stack.push_back(block);
+  while (!stack.empty()) {
+    Block *current = stack.pop_back_val();
+    auto [it, inserted] = visited.insert(current);
+    if (!inserted) {
+      // loop detected
+      if (current == block)
+        return true;
+      continue;
     }
+
+    stack.reserve(stack.size() + current->getNumSuccessors());
+    for (Block *successor : current->getSuccessors())
+      stack.push_back(successor);
   }
-  return true;
+  return false;
 }
 
-void mlir::moveLoopInvariantCode(LoopLikeOpInterface looplike) {
-  auto &loopBody = looplike.getLoopBody();
+LogicalResult detail::verifyLoopLikeOpInterface(Operation *op) {
+  // Note: These invariants are also verified by the RegionBranchOpInterface,
+  // but the LoopLikeOpInterface provides better error messages.
+  auto loopLikeOp = cast<LoopLikeOpInterface>(op);
 
-  // We use two collections here as we need to preserve the order for insertion
-  // and this is easiest.
-  SmallPtrSet<Operation *, 8> willBeMovedSet;
-  SmallVector<Operation *, 8> opsToMove;
+  // Verify number of inits/iter_args/yielded values/loop results.
+  if (loopLikeOp.getInits().size() != loopLikeOp.getRegionIterArgs().size())
+    return op->emitOpError("different number of inits and region iter_args: ")
+           << loopLikeOp.getInits().size()
+           << " != " << loopLikeOp.getRegionIterArgs().size();
+  if (!loopLikeOp.getYieldedValues().empty() &&
+      loopLikeOp.getRegionIterArgs().size() !=
+          loopLikeOp.getYieldedValues().size())
+    return op->emitOpError(
+               "different number of region iter_args and yielded values: ")
+           << loopLikeOp.getRegionIterArgs().size()
+           << " != " << loopLikeOp.getYieldedValues().size();
+  if (loopLikeOp.getLoopResults() && loopLikeOp.getLoopResults()->size() !=
+                                         loopLikeOp.getRegionIterArgs().size())
+    return op->emitOpError(
+               "different number of loop results and region iter_args: ")
+           << loopLikeOp.getLoopResults()->size()
+           << " != " << loopLikeOp.getRegionIterArgs().size();
 
-  // Helper to check whether an operation is loop invariant wrt. SSA properties.
-  auto isDefinedOutsideOfBody = [&](Value value) {
-    auto *definingOp = value.getDefiningOp();
-    return (definingOp && !!willBeMovedSet.count(definingOp)) ||
-           looplike.isDefinedOutsideOfLoop(value);
-  };
-
-  // Do not use walk here, as we do not want to go into nested regions and hoist
-  // operations from there. These regions might have semantics unknown to this
-  // rewriting. If the nested regions are loops, they will have been processed.
-  for (auto &block : loopBody) {
-    for (auto &op : block.without_terminator()) {
-      if (canBeHoisted(&op, isDefinedOutsideOfBody)) {
-        opsToMove.push_back(&op);
-        willBeMovedSet.insert(&op);
-      }
+  // Verify types of inits/iter_args/yielded values/loop results.
+  int64_t i = 0;
+  auto yieldedValues = loopLikeOp.getYieldedValues();
+  for (const auto [index, init, regionIterArg] :
+       llvm::enumerate(loopLikeOp.getInits(), loopLikeOp.getRegionIterArgs())) {
+    if (init.getType() != regionIterArg.getType())
+      return op->emitOpError(std::to_string(index))
+             << "-th init and " << index
+             << "-th region iter_arg have different type: " << init.getType()
+             << " != " << regionIterArg.getType();
+    if (!yieldedValues.empty()) {
+      if (regionIterArg.getType() != yieldedValues[index].getType())
+        return op->emitOpError(std::to_string(index))
+               << "-th region iter_arg and " << index
+               << "-th yielded value have different type: "
+               << regionIterArg.getType()
+               << " != " << yieldedValues[index].getType();
     }
+    ++i;
+  }
+  i = 0;
+  if (loopLikeOp.getLoopResults()) {
+    for (const auto it : llvm::zip_equal(loopLikeOp.getRegionIterArgs(),
+                                         *loopLikeOp.getLoopResults())) {
+      if (std::get<0>(it).getType() != std::get<1>(it).getType())
+        return op->emitOpError(std::to_string(i))
+               << "-th region iter_arg and " << i
+               << "-th loop result have different type: "
+               << std::get<0>(it).getType()
+               << " != " << std::get<1>(it).getType();
+    }
+    ++i;
   }
 
-  // For all instructions that we found to be invariant, move outside of the
-  // loop.
-  for (Operation *op : opsToMove)
-    looplike.moveOutOfLoop(op);
+  return success();
 }

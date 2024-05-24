@@ -5,11 +5,14 @@ set(LLVM_LINK_COMPONENTS
 
 add_clang_unittest(StaticAnalysisTests
   AnalyzerOptionsTest.cpp
+  APSIntTypeTest.cpp
   BugReportInterestingnessTest.cpp
   CallDescriptionTest.cpp
   CallEventTest.cpp
   ConflictingEvalCallsTest.cpp
   FalsePositiveRefutationBRVisitorTest.cpp
+  IsCLibraryFunctionTest.cpp
+  MemRegionDescriptiveNameTest.cpp
   NoStateChangeFuncVisitorTest.cpp
   ParamRegionTest.cpp
   RangeSetTest.cpp
@@ -31,6 +34,10 @@ clang_target_link_libraries(StaticAnalysisTests
   clangSerialization
   clangStaticAnalyzerCore
   clangStaticAnalyzerFrontend
-  clangTesting
   clangTooling
+  )
+
+target_link_libraries(StaticAnalysisTests
+  PRIVATE
+  clangTesting
   )

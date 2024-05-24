@@ -10,21 +10,15 @@
 #define MLIR_BINDINGS_PYTHON_PYBINDUTILS_H
 
 #include "mlir-c/Support.h"
-#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/DataTypes.h"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 namespace mlir {
 namespace python {
-
-// Sets a python error, ready to be thrown to return control back to the
-// python runtime.
-// Correct usage:
-//   throw SetPyError(PyExc_ValueError, "Foobar'd");
-pybind11::error_already_set SetPyError(PyObject *excClass,
-                                       const llvm::Twine &message);
 
 /// CRTP template for special wrapper types that are allowed to be passed in as
 /// 'None' function arguments and can be resolved by some global mechanic if
@@ -94,9 +88,6 @@ struct MlirDefaultingCaster {
     return pybind11::cast(src, policy);
   }
 };
-
-template <typename T>
-struct type_caster<llvm::Optional<T>> : optional_caster<llvm::Optional<T>> {};
 } // namespace detail
 } // namespace pybind11
 
@@ -199,15 +190,17 @@ private:
 /// A derived class must provide the following:
 ///   - a `static const char *pyClassName ` field containing the name of the
 ///     Python class to bind;
-///   - an instance method `intptr_t getNumElements()` that returns the number
+///   - an instance method `intptr_t getRawNumElements()` that returns the
+///   number
 ///     of elements in the backing container (NOT that of the slice);
-///   - an instance method `ElementTy getElement(intptr_t)` that returns a
-///     single element at the given index.
+///   - an instance method `ElementTy getRawElement(intptr_t)` that returns a
+///     single element at the given linear index (NOT slice index);
 ///   - an instance method `Derived slice(intptr_t, intptr_t, intptr_t)` that
 ///     constructs a new instance of the derived pseudo-container with the
 ///     given slice parameters (to be forwarded to the Sliceable constructor).
 ///
-/// The getNumElements() and getElement(intptr_t) callbacks must not throw.
+/// The getRawNumElements() and getRawElement(intptr_t) callbacks must not
+/// throw.
 ///
 /// A derived class may additionally define:
 ///   - a `static void bindDerived(ClassTy &)` method to bind additional methods
@@ -217,8 +210,8 @@ class Sliceable {
 protected:
   using ClassTy = pybind11::class_<Derived>;
 
-  // Transforms `index` into a legal value to access the underlying sequence.
-  // Returns <0 on failure.
+  /// Transforms `index` into a legal value to access the underlying sequence.
+  /// Returns <0 on failure.
   intptr_t wrapIndex(intptr_t index) {
     if (index < 0)
       index = length + index;
@@ -226,6 +219,20 @@ protected:
       return -1;
     return index;
   }
+
+  /// Computes the linear index given the current slice properties.
+  intptr_t linearizeIndex(intptr_t index) {
+    intptr_t linearIndex = index * step + startIndex;
+    assert(linearIndex >= 0 &&
+           linearIndex < static_cast<Derived *>(this)->getRawNumElements() &&
+           "linear index out of bounds, the slice is ill-formed");
+    return linearIndex;
+  }
+
+  /// Trait to check if T provides a `maybeDownCast` method.
+  /// Note, you need the & to detect inherited members.
+  template <typename T, typename... Args>
+  using has_maybe_downcast = decltype(&T::maybeDownCast);
 
   /// Returns the element at the given slice index. Supports negative indices
   /// by taking elements in inverse order. Returns a nullptr object if out
@@ -238,13 +245,13 @@ protected:
       return {};
     }
 
-    // Compute the linear index given the current slice properties.
-    int linearIndex = index * step + startIndex;
-    assert(linearIndex >= 0 &&
-           linearIndex < static_cast<Derived *>(this)->getNumElements() &&
-           "linear index out of bounds, the slice is ill-formed");
-    return pybind11::cast(
-        static_cast<Derived *>(this)->getElement(linearIndex));
+    if constexpr (llvm::is_detected<has_maybe_downcast, ElementTy>::value)
+      return static_cast<Derived *>(this)
+          ->getRawElement(linearizeIndex(index))
+          .maybeDownCast();
+    else
+      return pybind11::cast(
+          static_cast<Derived *>(this)->getRawElement(linearizeIndex(index)));
   }
 
   /// Returns a new instance of the pseudo-container restricted to the given
@@ -266,6 +273,21 @@ public:
     assert(length >= 0 && "expected non-negative slice length");
   }
 
+  /// Returns the `index`-th element in the slice, supports negative indices.
+  /// Throws if the index is out of bounds.
+  ElementTy getElement(intptr_t index) {
+    // Negative indices mean we count from the end.
+    index = wrapIndex(index);
+    if (index < 0) {
+      throw pybind11::index_error("index out of range");
+    }
+
+    return static_cast<Derived *>(this)->getRawElement(linearizeIndex(index));
+  }
+
+  /// Returns the size of slice.
+  intptr_t size() { return length; }
+
   /// Returns a new vector (mapped to Python list) containing elements from two
   /// slices. The new vector is necessary because slices may not be contiguous
   /// or even come from the same original sequence.
@@ -276,7 +298,7 @@ public:
       elements.push_back(static_cast<Derived *>(this)->getElement(i));
     }
     for (intptr_t i = 0; i < other.length; ++i) {
-      elements.push_back(static_cast<Derived *>(this)->getElement(i));
+      elements.push_back(static_cast<Derived *>(&other)->getElement(i));
     }
     return elements;
   }
@@ -342,5 +364,26 @@ private:
 };
 
 } // namespace mlir
+
+namespace llvm {
+
+template <>
+struct DenseMapInfo<MlirTypeID> {
+  static inline MlirTypeID getEmptyKey() {
+    auto *pointer = llvm::DenseMapInfo<void *>::getEmptyKey();
+    return mlirTypeIDCreate(pointer);
+  }
+  static inline MlirTypeID getTombstoneKey() {
+    auto *pointer = llvm::DenseMapInfo<void *>::getTombstoneKey();
+    return mlirTypeIDCreate(pointer);
+  }
+  static inline unsigned getHashValue(const MlirTypeID &val) {
+    return mlirTypeIDHashValue(val);
+  }
+  static inline bool isEqual(const MlirTypeID &lhs, const MlirTypeID &rhs) {
+    return mlirTypeIDEqual(lhs, rhs);
+  }
+};
+} // namespace llvm
 
 #endif // MLIR_BINDINGS_PYTHON_PYBINDUTILS_H

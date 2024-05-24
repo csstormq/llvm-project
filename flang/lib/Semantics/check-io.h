@@ -87,7 +87,7 @@ private:
 
   template <typename R, typename T> std::optional<R> GetConstExpr(const T &x) {
     using DefaultCharConstantType = evaluate::Ascii;
-    if (const SomeExpr * expr{GetExpr(x)}) {
+    if (const SomeExpr * expr{GetExpr(context_, x)}) {
       const auto foldExpr{
           evaluate::Fold(context_.foldingContext(), common::Clone(*expr))};
       if constexpr (std::is_same_v<R, std::string>) {
@@ -126,8 +126,15 @@ private:
 
   void CheckForPureSubprogram() const;
 
-  void CheckForBadIoComponent(
-      const SomeExpr &, GenericKind::DefinedIo, parser::CharBlock) const;
+  parser::Message *CheckForBadIoType(const evaluate::DynamicType &,
+      common::DefinedIo, parser::CharBlock) const;
+  void CheckForBadIoType(
+      const SomeExpr &, common::DefinedIo, parser::CharBlock) const;
+  parser::Message *CheckForBadIoType(
+      const Symbol &, common::DefinedIo, parser::CharBlock) const;
+
+  void CheckNamelist(
+      const Symbol &, common::DefinedIo, parser::CharBlock) const;
 
   void Init(IoStmtKind s) {
     stmt_ = s;

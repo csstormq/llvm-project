@@ -15,6 +15,7 @@
 #include "parse-tree.h"
 #include "provenance.h"
 #include "flang/Common/Fortran-features.h"
+#include "flang/Parser/preprocessor.h"
 #include "llvm/Support/raw_ostream.h"
 #include <optional>
 #include <string>
@@ -39,6 +40,7 @@ struct Options {
   bool needProvenanceRangeToCharBlockMappings{false};
   Fortran::parser::Encoding encoding{Fortran::parser::Encoding::UTF_8};
   bool prescanAndReformat{false}; // -E
+  bool showColors{false};
 };
 
 class Parsing {
@@ -58,6 +60,7 @@ public:
   const SourceFile *Prescan(const std::string &path, Options);
   void EmitPreprocessedSource(
       llvm::raw_ostream &, bool lineDirectives = true) const;
+  void EmitPreprocessorMacros(llvm::raw_ostream &) const;
   void DumpCookedChars(llvm::raw_ostream &) const;
   void DumpProvenance(llvm::raw_ostream &) const;
   void DumpParsingLog(llvm::raw_ostream &) const;
@@ -65,9 +68,12 @@ public:
   void ClearLog();
 
   void EmitMessage(llvm::raw_ostream &o, const char *at,
-      const std::string &message, bool echoSourceLine = false) const {
+      const std::string &message, const std::string &prefix,
+      llvm::raw_ostream::Colors color = llvm::raw_ostream::SAVEDCOLOR,
+      bool echoSourceLine = false) const {
     allCooked_.allSources().EmitMessage(o,
-        allCooked_.GetProvenanceRange(CharBlock(at)), message, echoSourceLine);
+        allCooked_.GetProvenanceRange(CharBlock(at)), message, prefix, color,
+        echoSourceLine);
   }
 
 private:
@@ -79,6 +85,7 @@ private:
   const char *finalRestingPlace_{nullptr};
   std::optional<Program> parseTree_;
   ParsingLog log_;
+  Preprocessor preprocessor_{allCooked_.allSources()};
 };
 } // namespace Fortran::parser
 #endif // FORTRAN_PARSER_PARSING_H_

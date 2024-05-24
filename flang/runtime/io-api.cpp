@@ -8,24 +8,32 @@
 
 // Implements the I/O statement API
 
+// template function BeginExternalListIo<> is in runtime/io-api-common.h.
+// APIs BeginExternalListOutput, OutputInteger{8,16,32,64,128},
+// OutputReal{32,64}, OutputComplex{32,64}, OutputAscii, & EndIoStatement()
+// are in runtime/io-api-minimal.cpp.
+
 #include "flang/Runtime/io-api.h"
 #include "descriptor-io.h"
 #include "edit-input.h"
 #include "edit-output.h"
 #include "environment.h"
 #include "format.h"
+#include "io-api-common.h"
 #include "io-stmt.h"
 #include "terminator.h"
 #include "tools.h"
 #include "unit.h"
+#include "flang/Common/optional.h"
 #include "flang/Runtime/descriptor.h"
 #include "flang/Runtime/memory.h"
 #include <cstdlib>
 #include <memory>
 
 namespace Fortran::runtime::io {
+RT_EXT_API_GROUP_BEGIN
 
-const char *InquiryKeywordHashDecode(
+RT_API_ATTRS const char *InquiryKeywordHashDecode(
     char *buffer, std::size_t n, InquiryKeywordHash hash) {
   if (n < 1) {
     return nullptr;
@@ -43,7 +51,7 @@ const char *InquiryKeywordHashDecode(
 }
 
 template <Direction DIR>
-Cookie BeginInternalArrayListIO(const Descriptor &descriptor,
+RT_API_ATTRS Cookie BeginInternalArrayListIO(const Descriptor &descriptor,
     void ** /*scratchArea*/, std::size_t /*scratchBytes*/,
     const char *sourceFile, int sourceLine) {
   Terminator oom{sourceFile, sourceLine};
@@ -53,14 +61,14 @@ Cookie BeginInternalArrayListIO(const Descriptor &descriptor,
               ->ioStatementState();
 }
 
-Cookie IONAME(BeginInternalArrayListOutput)(const Descriptor &descriptor,
+Cookie IODEF(BeginInternalArrayListOutput)(const Descriptor &descriptor,
     void **scratchArea, std::size_t scratchBytes, const char *sourceFile,
     int sourceLine) {
   return BeginInternalArrayListIO<Direction::Output>(
       descriptor, scratchArea, scratchBytes, sourceFile, sourceLine);
 }
 
-Cookie IONAME(BeginInternalArrayListInput)(const Descriptor &descriptor,
+Cookie IODEF(BeginInternalArrayListInput)(const Descriptor &descriptor,
     void **scratchArea, std::size_t scratchBytes, const char *sourceFile,
     int sourceLine) {
   return BeginInternalArrayListIO<Direction::Input>(
@@ -68,32 +76,37 @@ Cookie IONAME(BeginInternalArrayListInput)(const Descriptor &descriptor,
 }
 
 template <Direction DIR>
-Cookie BeginInternalArrayFormattedIO(const Descriptor &descriptor,
-    const char *format, std::size_t formatLength, void ** /*scratchArea*/,
+RT_API_ATTRS Cookie BeginInternalArrayFormattedIO(const Descriptor &descriptor,
+    const char *format, std::size_t formatLength,
+    const Descriptor *formatDescriptor, void ** /*scratchArea*/,
     std::size_t /*scratchBytes*/, const char *sourceFile, int sourceLine) {
   Terminator oom{sourceFile, sourceLine};
-  return &New<InternalFormattedIoStatementState<DIR>>{oom}(
-      descriptor, format, formatLength, sourceFile, sourceLine)
+  return &New<InternalFormattedIoStatementState<DIR>>{oom}(descriptor, format,
+      formatLength, formatDescriptor, sourceFile, sourceLine)
               .release()
               ->ioStatementState();
 }
 
-Cookie IONAME(BeginInternalArrayFormattedOutput)(const Descriptor &descriptor,
-    const char *format, std::size_t formatLength, void **scratchArea,
+Cookie IODEF(BeginInternalArrayFormattedOutput)(const Descriptor &descriptor,
+    const char *format, std::size_t formatLength,
+    const Descriptor *formatDescriptor, void **scratchArea,
     std::size_t scratchBytes, const char *sourceFile, int sourceLine) {
   return BeginInternalArrayFormattedIO<Direction::Output>(descriptor, format,
-      formatLength, scratchArea, scratchBytes, sourceFile, sourceLine);
+      formatLength, formatDescriptor, scratchArea, scratchBytes, sourceFile,
+      sourceLine);
 }
 
-Cookie IONAME(BeginInternalArrayFormattedInput)(const Descriptor &descriptor,
-    const char *format, std::size_t formatLength, void **scratchArea,
+Cookie IODEF(BeginInternalArrayFormattedInput)(const Descriptor &descriptor,
+    const char *format, std::size_t formatLength,
+    const Descriptor *formatDescriptor, void **scratchArea,
     std::size_t scratchBytes, const char *sourceFile, int sourceLine) {
   return BeginInternalArrayFormattedIO<Direction::Input>(descriptor, format,
-      formatLength, scratchArea, scratchBytes, sourceFile, sourceLine);
+      formatLength, formatDescriptor, scratchArea, scratchBytes, sourceFile,
+      sourceLine);
 }
 
 template <Direction DIR>
-Cookie BeginInternalListIO(
+RT_API_ATTRS Cookie BeginInternalListIO(
     std::conditional_t<DIR == Direction::Input, const char, char> *internal,
     std::size_t internalLength, void ** /*scratchArea*/,
     std::size_t /*scratchBytes*/, const char *sourceFile, int sourceLine) {
@@ -104,14 +117,14 @@ Cookie BeginInternalListIO(
               ->ioStatementState();
 }
 
-Cookie IONAME(BeginInternalListOutput)(char *internal,
+Cookie IODEF(BeginInternalListOutput)(char *internal,
     std::size_t internalLength, void **scratchArea, std::size_t scratchBytes,
     const char *sourceFile, int sourceLine) {
   return BeginInternalListIO<Direction::Output>(internal, internalLength,
       scratchArea, scratchBytes, sourceFile, sourceLine);
 }
 
-Cookie IONAME(BeginInternalListInput)(const char *internal,
+Cookie IODEF(BeginInternalListInput)(const char *internal,
     std::size_t internalLength, void **scratchArea, std::size_t scratchBytes,
     const char *sourceFile, int sourceLine) {
   return BeginInternalListIO<Direction::Input>(internal, internalLength,
@@ -119,159 +132,120 @@ Cookie IONAME(BeginInternalListInput)(const char *internal,
 }
 
 template <Direction DIR>
-Cookie BeginInternalFormattedIO(
+RT_API_ATTRS Cookie BeginInternalFormattedIO(
     std::conditional_t<DIR == Direction::Input, const char, char> *internal,
     std::size_t internalLength, const char *format, std::size_t formatLength,
-    void ** /*scratchArea*/, std::size_t /*scratchBytes*/,
-    const char *sourceFile, int sourceLine) {
+    const Descriptor *formatDescriptor, void ** /*scratchArea*/,
+    std::size_t /*scratchBytes*/, const char *sourceFile, int sourceLine) {
   Terminator oom{sourceFile, sourceLine};
-  return &New<InternalFormattedIoStatementState<DIR>>{oom}(
-      internal, internalLength, format, formatLength, sourceFile, sourceLine)
+  return &New<InternalFormattedIoStatementState<DIR>>{oom}(internal,
+      internalLength, format, formatLength, formatDescriptor, sourceFile,
+      sourceLine)
               .release()
               ->ioStatementState();
 }
 
-Cookie IONAME(BeginInternalFormattedOutput)(char *internal,
+Cookie IODEF(BeginInternalFormattedOutput)(char *internal,
     std::size_t internalLength, const char *format, std::size_t formatLength,
-    void **scratchArea, std::size_t scratchBytes, const char *sourceFile,
-    int sourceLine) {
+    const Descriptor *formatDescriptor, void **scratchArea,
+    std::size_t scratchBytes, const char *sourceFile, int sourceLine) {
   return BeginInternalFormattedIO<Direction::Output>(internal, internalLength,
-      format, formatLength, scratchArea, scratchBytes, sourceFile, sourceLine);
+      format, formatLength, formatDescriptor, scratchArea, scratchBytes,
+      sourceFile, sourceLine);
 }
 
-Cookie IONAME(BeginInternalFormattedInput)(const char *internal,
+Cookie IODEF(BeginInternalFormattedInput)(const char *internal,
     std::size_t internalLength, const char *format, std::size_t formatLength,
-    void **scratchArea, std::size_t scratchBytes, const char *sourceFile,
-    int sourceLine) {
+    const Descriptor *formatDescriptor, void **scratchArea,
+    std::size_t scratchBytes, const char *sourceFile, int sourceLine) {
   return BeginInternalFormattedIO<Direction::Input>(internal, internalLength,
-      format, formatLength, scratchArea, scratchBytes, sourceFile, sourceLine);
+      format, formatLength, formatDescriptor, scratchArea, scratchBytes,
+      sourceFile, sourceLine);
 }
 
-template <Direction DIR, template <Direction> class STATE, typename... A>
-Cookie BeginExternalListIO(
-    int unitNumber, const char *sourceFile, int sourceLine, A &&...xs) {
-  Terminator terminator{sourceFile, sourceLine};
-  if (unitNumber == DefaultUnit) {
-    unitNumber = DIR == Direction::Input ? 5 : 6;
-  }
-  ExternalFileUnit &unit{ExternalFileUnit::LookUpOrCreateAnonymous(
-      unitNumber, DIR, false /*!unformatted*/, terminator)};
-  if (!unit.isUnformatted.has_value()) {
-    unit.isUnformatted = false;
-  }
-  Iostat iostat{IostatOk};
-  if (*unit.isUnformatted) {
-    iostat = IostatFormattedIoOnUnformattedUnit;
-  }
-  if (ChildIo * child{unit.GetChildIo()}) {
-    if (iostat == IostatOk) {
-      iostat = child->CheckFormattingAndDirection(false, DIR);
-    }
-    if (iostat == IostatOk) {
-      return &child->BeginIoStatement<ChildListIoStatementState<DIR>>(
-          *child, sourceFile, sourceLine);
-    } else {
-      return &child->BeginIoStatement<ErroneousIoStatementState>(
-          iostat, sourceFile, sourceLine);
-    }
-  } else {
-    if (iostat == IostatOk && unit.access == Access::Direct) {
-      iostat = IostatListIoOnDirectAccessUnit;
-    }
-    if (iostat == IostatOk) {
-      iostat = unit.SetDirection(DIR);
-    }
-    if (iostat == IostatOk) {
-      return &unit.BeginIoStatement<STATE<DIR>>(
-          std::forward<A>(xs)..., unit, sourceFile, sourceLine);
-    } else {
-      return &unit.BeginIoStatement<ErroneousIoStatementState>(
-          iostat, sourceFile, sourceLine);
-    }
-  }
-}
-
-Cookie IONAME(BeginExternalListOutput)(
-    ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
-  return BeginExternalListIO<Direction::Output, ExternalListIoStatementState>(
-      unitNumber, sourceFile, sourceLine);
-}
-
-Cookie IONAME(BeginExternalListInput)(
+Cookie IODEF(BeginExternalListInput)(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
   return BeginExternalListIO<Direction::Input, ExternalListIoStatementState>(
       unitNumber, sourceFile, sourceLine);
 }
 
 template <Direction DIR>
-Cookie BeginExternalFormattedIO(const char *format, std::size_t formatLength,
+RT_API_ATTRS Cookie BeginExternalFormattedIO(const char *format,
+    std::size_t formatLength, const Descriptor *formatDescriptor,
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
   Terminator terminator{sourceFile, sourceLine};
-  if (unitNumber == DefaultUnit) {
-    unitNumber = DIR == Direction::Input ? 5 : 6;
+  Cookie errorCookie{nullptr};
+  ExternalFileUnit *unit{GetOrCreateUnit(
+      unitNumber, DIR, false /*!unformatted*/, terminator, errorCookie)};
+  if (!unit) {
+    return errorCookie;
   }
-  ExternalFileUnit &unit{ExternalFileUnit::LookUpOrCreateAnonymous(
-      unitNumber, DIR, false /*!unformatted*/, terminator)};
   Iostat iostat{IostatOk};
-  if (!unit.isUnformatted.has_value()) {
-    unit.isUnformatted = false;
+  if (!unit->isUnformatted.has_value()) {
+    unit->isUnformatted = false;
   }
-  if (*unit.isUnformatted) {
+  if (*unit->isUnformatted) {
     iostat = IostatFormattedIoOnUnformattedUnit;
   }
-  if (ChildIo * child{unit.GetChildIo()}) {
+  if (ChildIo * child{unit->GetChildIo()}) {
     if (iostat == IostatOk) {
       iostat = child->CheckFormattingAndDirection(false, DIR);
     }
     if (iostat == IostatOk) {
       return &child->BeginIoStatement<ChildFormattedIoStatementState<DIR>>(
-          *child, format, formatLength, sourceFile, sourceLine);
+          *child, format, formatLength, formatDescriptor, sourceFile,
+          sourceLine);
     } else {
       return &child->BeginIoStatement<ErroneousIoStatementState>(
-          iostat, sourceFile, sourceLine);
+          iostat, nullptr /* no unit */, sourceFile, sourceLine);
     }
   } else {
     if (iostat == IostatOk) {
-      iostat = unit.SetDirection(DIR);
+      iostat = unit->SetDirection(DIR);
     }
     if (iostat == IostatOk) {
-      return &unit.BeginIoStatement<ExternalFormattedIoStatementState<DIR>>(
-          unit, format, formatLength, sourceFile, sourceLine);
+      return &unit->BeginIoStatement<ExternalFormattedIoStatementState<DIR>>(
+          terminator, *unit, format, formatLength, formatDescriptor, sourceFile,
+          sourceLine);
     } else {
-      return &unit.BeginIoStatement<ErroneousIoStatementState>(
-          iostat, sourceFile, sourceLine);
+      return &unit->BeginIoStatement<ErroneousIoStatementState>(
+          terminator, iostat, unit, sourceFile, sourceLine);
     }
   }
 }
 
-Cookie IONAME(BeginExternalFormattedOutput)(const char *format,
-    std::size_t formatLength, ExternalUnit unitNumber, const char *sourceFile,
-    int sourceLine) {
-  return BeginExternalFormattedIO<Direction::Output>(
-      format, formatLength, unitNumber, sourceFile, sourceLine);
+Cookie IODEF(BeginExternalFormattedOutput)(const char *format,
+    std::size_t formatLength, const Descriptor *formatDescriptor,
+    ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
+  return BeginExternalFormattedIO<Direction::Output>(format, formatLength,
+      formatDescriptor, unitNumber, sourceFile, sourceLine);
 }
 
-Cookie IONAME(BeginExternalFormattedInput)(const char *format,
-    std::size_t formatLength, ExternalUnit unitNumber, const char *sourceFile,
-    int sourceLine) {
-  return BeginExternalFormattedIO<Direction::Input>(
-      format, formatLength, unitNumber, sourceFile, sourceLine);
+Cookie IODEF(BeginExternalFormattedInput)(const char *format,
+    std::size_t formatLength, const Descriptor *formatDescriptor,
+    ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
+  return BeginExternalFormattedIO<Direction::Input>(format, formatLength,
+      formatDescriptor, unitNumber, sourceFile, sourceLine);
 }
 
 template <Direction DIR>
-Cookie BeginUnformattedIO(
+RT_API_ATTRS Cookie BeginUnformattedIO(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
   Terminator terminator{sourceFile, sourceLine};
-  ExternalFileUnit &unit{ExternalFileUnit::LookUpOrCreateAnonymous(
-      unitNumber, DIR, true /*unformatted*/, terminator)};
-  Iostat iostat{IostatOk};
-  if (!unit.isUnformatted.has_value()) {
-    unit.isUnformatted = true;
+  Cookie errorCookie{nullptr};
+  ExternalFileUnit *unit{GetOrCreateUnit(
+      unitNumber, DIR, true /*unformatted*/, terminator, errorCookie)};
+  if (!unit) {
+    return errorCookie;
   }
-  if (!*unit.isUnformatted) {
+  Iostat iostat{IostatOk};
+  if (!unit->isUnformatted.has_value()) {
+    unit->isUnformatted = true;
+  }
+  if (!*unit->isUnformatted) {
     iostat = IostatUnformattedIoOnFormattedUnit;
   }
-  if (ChildIo * child{unit.GetChildIo()}) {
+  if (ChildIo * child{unit->GetChildIo()}) {
     if (iostat == IostatOk) {
       iostat = child->CheckFormattingAndDirection(true, DIR);
     }
@@ -280,155 +254,235 @@ Cookie BeginUnformattedIO(
           *child, sourceFile, sourceLine);
     } else {
       return &child->BeginIoStatement<ErroneousIoStatementState>(
-          iostat, sourceFile, sourceLine);
+          iostat, nullptr /* no unit */, sourceFile, sourceLine);
     }
   } else {
     if (iostat == IostatOk) {
-      iostat = unit.SetDirection(DIR);
+      iostat = unit->SetDirection(DIR);
     }
     if (iostat == IostatOk) {
       IoStatementState &io{
-          unit.BeginIoStatement<ExternalUnformattedIoStatementState<DIR>>(
-              unit, sourceFile, sourceLine)};
+          unit->BeginIoStatement<ExternalUnformattedIoStatementState<DIR>>(
+              terminator, *unit, sourceFile, sourceLine)};
       if constexpr (DIR == Direction::Output) {
-        if (unit.access == Access::Sequential) {
+        if (unit->access == Access::Sequential) {
           // Create space for (sub)record header to be completed by
           // ExternalFileUnit::AdvanceRecord()
-          unit.recordLength.reset(); // in case of prior BACKSPACE
+          unit->recordLength.reset(); // in case of prior BACKSPACE
           io.Emit("\0\0\0\0", 4); // placeholder for record length header
         }
       }
       return &io;
     } else {
-      return &unit.BeginIoStatement<ErroneousIoStatementState>(
-          iostat, sourceFile, sourceLine);
+      return &unit->BeginIoStatement<ErroneousIoStatementState>(
+          terminator, iostat, unit, sourceFile, sourceLine);
     }
   }
 }
 
-Cookie IONAME(BeginUnformattedOutput)(
+Cookie IODEF(BeginUnformattedOutput)(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
   return BeginUnformattedIO<Direction::Output>(
       unitNumber, sourceFile, sourceLine);
 }
 
-Cookie IONAME(BeginUnformattedInput)(
+Cookie IODEF(BeginUnformattedInput)(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
   return BeginUnformattedIO<Direction::Input>(
       unitNumber, sourceFile, sourceLine);
 }
 
-Cookie IONAME(BeginOpenUnit)( // OPEN(without NEWUNIT=)
+Cookie IODEF(BeginOpenUnit)( // OPEN(without NEWUNIT=)
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
-  bool wasExtant{false};
   Terminator terminator{sourceFile, sourceLine};
-  ExternalFileUnit &unit{
-      ExternalFileUnit::LookUpOrCreate(unitNumber, terminator, wasExtant)};
-  return &unit.BeginIoStatement<OpenStatementState>(
-      unit, wasExtant, sourceFile, sourceLine);
+  bool wasExtant{false};
+  if (ExternalFileUnit *
+      unit{ExternalFileUnit::LookUpOrCreate(
+          unitNumber, terminator, wasExtant)}) {
+    if (ChildIo * child{unit->GetChildIo()}) {
+      return &child->BeginIoStatement<ErroneousIoStatementState>(
+          IostatBadOpOnChildUnit, nullptr /* no unit */, sourceFile,
+          sourceLine);
+    } else {
+      return &unit->BeginIoStatement<OpenStatementState>(terminator, *unit,
+          wasExtant, false /*not NEWUNIT=*/, sourceFile, sourceLine);
+    }
+  } else {
+    return NoopUnit(terminator, unitNumber, IostatBadUnitNumber);
+  }
 }
 
-Cookie IONAME(BeginOpenNewUnit)( // OPEN(NEWUNIT=j)
+Cookie IODEF(BeginOpenNewUnit)( // OPEN(NEWUNIT=j)
     const char *sourceFile, int sourceLine) {
   Terminator terminator{sourceFile, sourceLine};
   ExternalFileUnit &unit{
       ExternalFileUnit::NewUnit(terminator, false /*not child I/O*/)};
-  return &unit.BeginIoStatement<OpenStatementState>(
-      unit, false /*was an existing file*/, sourceFile, sourceLine);
+  return &unit.BeginIoStatement<OpenStatementState>(terminator, unit,
+      false /*was an existing file*/, true /*NEWUNIT=*/, sourceFile,
+      sourceLine);
 }
 
-Cookie IONAME(BeginClose)(
+Cookie IODEF(BeginWait)(ExternalUnit unitNumber, AsynchronousId id,
+    const char *sourceFile, int sourceLine) {
+  Terminator terminator{sourceFile, sourceLine};
+  if (ExternalFileUnit * unit{ExternalFileUnit::LookUp(unitNumber)}) {
+    if (unit->Wait(id)) {
+      return &unit->BeginIoStatement<ExternalMiscIoStatementState>(terminator,
+          *unit, ExternalMiscIoStatementState::Wait, sourceFile, sourceLine);
+    } else {
+      return &unit->BeginIoStatement<ErroneousIoStatementState>(
+          terminator, IostatBadWaitId, unit, sourceFile, sourceLine);
+    }
+  } else {
+    return NoopUnit(
+        terminator, unitNumber, id == 0 ? IostatOk : IostatBadWaitUnit);
+  }
+}
+Cookie IODEF(BeginWaitAll)(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
+  return IONAME(BeginWait)(unitNumber, 0 /*no ID=*/, sourceFile, sourceLine);
+}
+
+Cookie IODEF(BeginClose)(
+    ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
+  Terminator terminator{sourceFile, sourceLine};
+  if (ExternalFileUnit * unit{ExternalFileUnit::LookUp(unitNumber)}) {
+    if (ChildIo * child{unit->GetChildIo()}) {
+      return &child->BeginIoStatement<ErroneousIoStatementState>(
+          IostatBadOpOnChildUnit, nullptr /* no unit */, sourceFile,
+          sourceLine);
+    }
+  }
   if (ExternalFileUnit * unit{ExternalFileUnit::LookUpForClose(unitNumber)}) {
     return &unit->BeginIoStatement<CloseStatementState>(
-        *unit, sourceFile, sourceLine);
+        terminator, *unit, sourceFile, sourceLine);
   } else {
     // CLOSE(UNIT=bad unit) is just a no-op
-    Terminator oom{sourceFile, sourceLine};
-    return &New<NoopStatementState>{oom}(sourceFile, sourceLine)
-                .release()
-                ->ioStatementState();
+    return NoopUnit(terminator, unitNumber);
   }
 }
 
-Cookie IONAME(BeginFlush)(
+Cookie IODEF(BeginFlush)(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
+  Terminator terminator{sourceFile, sourceLine};
   if (ExternalFileUnit * unit{ExternalFileUnit::LookUp(unitNumber)}) {
-    return &unit->BeginIoStatement<ExternalMiscIoStatementState>(
-        *unit, ExternalMiscIoStatementState::Flush, sourceFile, sourceLine);
+    if (ChildIo * child{unit->GetChildIo()}) {
+      return &child->BeginIoStatement<ExternalMiscIoStatementState>(
+          *unit, ExternalMiscIoStatementState::Flush, sourceFile, sourceLine);
+    } else {
+      return &unit->BeginIoStatement<ExternalMiscIoStatementState>(terminator,
+          *unit, ExternalMiscIoStatementState::Flush, sourceFile, sourceLine);
+    }
   } else {
-    // FLUSH(UNIT=unknown) is a no-op
-    Terminator oom{sourceFile, sourceLine};
-    return &New<NoopStatementState>{oom}(sourceFile, sourceLine)
-                .release()
-                ->ioStatementState();
+    // FLUSH(UNIT=bad unit) is an error; an unconnected unit is a no-op
+    return NoopUnit(terminator, unitNumber,
+        unitNumber >= 0 ? IostatOk : IostatBadFlushUnit);
   }
 }
 
-Cookie IONAME(BeginBackspace)(
+Cookie IODEF(BeginBackspace)(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
   Terminator terminator{sourceFile, sourceLine};
-  ExternalFileUnit &unit{
-      ExternalFileUnit::LookUpOrCrash(unitNumber, terminator)};
-  return &unit.BeginIoStatement<ExternalMiscIoStatementState>(
-      unit, ExternalMiscIoStatementState::Backspace, sourceFile, sourceLine);
+  if (ExternalFileUnit * unit{ExternalFileUnit::LookUp(unitNumber)}) {
+    if (ChildIo * child{unit->GetChildIo()}) {
+      return &child->BeginIoStatement<ErroneousIoStatementState>(
+          IostatBadOpOnChildUnit, nullptr /* no unit */, sourceFile,
+          sourceLine);
+    } else {
+      return &unit->BeginIoStatement<ExternalMiscIoStatementState>(terminator,
+          *unit, ExternalMiscIoStatementState::Backspace, sourceFile,
+          sourceLine);
+    }
+  } else {
+    return NoopUnit(terminator, unitNumber, IostatBadBackspaceUnit);
+  }
 }
 
-Cookie IONAME(BeginEndfile)(
+Cookie IODEF(BeginEndfile)(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
   Terminator terminator{sourceFile, sourceLine};
-  ExternalFileUnit &unit{ExternalFileUnit::LookUpOrCreateAnonymous(
-      unitNumber, Direction::Output, std::nullopt, terminator)};
-  return &unit.BeginIoStatement<ExternalMiscIoStatementState>(
-      unit, ExternalMiscIoStatementState::Endfile, sourceFile, sourceLine);
+  Cookie errorCookie{nullptr};
+  if (ExternalFileUnit *
+      unit{GetOrCreateUnit(unitNumber, Direction::Output,
+          Fortran::common::nullopt, terminator, errorCookie)}) {
+    if (ChildIo * child{unit->GetChildIo()}) {
+      return &child->BeginIoStatement<ErroneousIoStatementState>(
+          IostatBadOpOnChildUnit, nullptr /* no unit */, sourceFile,
+          sourceLine);
+    } else {
+      return &unit->BeginIoStatement<ExternalMiscIoStatementState>(terminator,
+          *unit, ExternalMiscIoStatementState::Endfile, sourceFile, sourceLine);
+    }
+  } else {
+    return errorCookie;
+  }
 }
 
-Cookie IONAME(BeginRewind)(
+Cookie IODEF(BeginRewind)(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
   Terminator terminator{sourceFile, sourceLine};
-  ExternalFileUnit &unit{ExternalFileUnit::LookUpOrCreateAnonymous(
-      unitNumber, Direction::Input, std::nullopt, terminator)};
-  return &unit.BeginIoStatement<ExternalMiscIoStatementState>(
-      unit, ExternalMiscIoStatementState::Rewind, sourceFile, sourceLine);
+  Cookie errorCookie{nullptr};
+  if (ExternalFileUnit *
+      unit{GetOrCreateUnit(unitNumber, Direction::Input,
+          Fortran::common::nullopt, terminator, errorCookie)}) {
+    if (ChildIo * child{unit->GetChildIo()}) {
+      return &child->BeginIoStatement<ErroneousIoStatementState>(
+          IostatBadOpOnChildUnit, nullptr /* no unit */, sourceFile,
+          sourceLine);
+    } else {
+      return &unit->BeginIoStatement<ExternalMiscIoStatementState>(terminator,
+          *unit, ExternalMiscIoStatementState::Rewind, sourceFile, sourceLine);
+    }
+  } else {
+    return errorCookie;
+  }
 }
 
-Cookie IONAME(BeginInquireUnit)(
+Cookie IODEF(BeginInquireUnit)(
     ExternalUnit unitNumber, const char *sourceFile, int sourceLine) {
+  Terminator terminator{sourceFile, sourceLine};
   if (ExternalFileUnit * unit{ExternalFileUnit::LookUp(unitNumber)}) {
     if (ChildIo * child{unit->GetChildIo()}) {
       return &child->BeginIoStatement<InquireUnitState>(
           *unit, sourceFile, sourceLine);
     } else {
       return &unit->BeginIoStatement<InquireUnitState>(
-          *unit, sourceFile, sourceLine);
+          terminator, *unit, sourceFile, sourceLine);
     }
   } else {
     // INQUIRE(UNIT=unrecognized unit)
-    Terminator oom{sourceFile, sourceLine};
-    return &New<InquireNoUnitState>{oom}(sourceFile, sourceLine)
+    return &New<InquireNoUnitState>{terminator}(
+        sourceFile, sourceLine, unitNumber)
                 .release()
                 ->ioStatementState();
   }
 }
 
-Cookie IONAME(BeginInquireFile)(const char *path, std::size_t pathLength,
+Cookie IODEF(BeginInquireFile)(const char *path, std::size_t pathLength,
     const char *sourceFile, int sourceLine) {
-  Terminator oom{sourceFile, sourceLine};
-  auto trimmed{
-      SaveDefaultCharacter(path, TrimTrailingSpaces(path, pathLength), oom)};
-  if (ExternalFileUnit * unit{ExternalFileUnit::LookUp(trimmed.get())}) {
+  Terminator terminator{sourceFile, sourceLine};
+  auto trimmed{SaveDefaultCharacter(
+      path, TrimTrailingSpaces(path, pathLength), terminator)};
+  if (ExternalFileUnit *
+      unit{ExternalFileUnit::LookUp(
+          trimmed.get(), Fortran::runtime::strlen(trimmed.get()))}) {
     // INQUIRE(FILE=) to a connected unit
-    return &unit->BeginIoStatement<InquireUnitState>(
-        *unit, sourceFile, sourceLine);
+    if (ChildIo * child{unit->GetChildIo()}) {
+      return &child->BeginIoStatement<InquireUnitState>(
+          *unit, sourceFile, sourceLine);
+    } else {
+      return &unit->BeginIoStatement<InquireUnitState>(
+          terminator, *unit, sourceFile, sourceLine);
+    }
   } else {
-    return &New<InquireUnconnectedFileState>{oom}(
+    return &New<InquireUnconnectedFileState>{terminator}(
         std::move(trimmed), sourceFile, sourceLine)
                 .release()
                 ->ioStatementState();
   }
 }
 
-Cookie IONAME(BeginInquireIoLength)(const char *sourceFile, int sourceLine) {
+Cookie IODEF(BeginInquireIoLength)(const char *sourceFile, int sourceLine) {
   Terminator oom{sourceFile, sourceLine};
   return &New<InquireIOLengthState>{oom}(sourceFile, sourceLine)
               .release()
@@ -437,7 +491,7 @@ Cookie IONAME(BeginInquireIoLength)(const char *sourceFile, int sourceLine) {
 
 // Control list items
 
-void IONAME(EnableHandlers)(Cookie cookie, bool hasIoStat, bool hasErr,
+void IODEF(EnableHandlers)(Cookie cookie, bool hasIoStat, bool hasErr,
     bool hasEnd, bool hasEor, bool hasIoMsg) {
   IoErrorHandler &handler{cookie->GetIoErrorHandler()};
   if (hasIoStat) {
@@ -457,8 +511,8 @@ void IONAME(EnableHandlers)(Cookie cookie, bool hasIoStat, bool hasErr,
   }
 }
 
-static bool YesOrNo(const char *keyword, std::size_t length, const char *what,
-    IoErrorHandler &handler) {
+static RT_API_ATTRS bool YesOrNo(const char *keyword, std::size_t length,
+    const char *what, IoErrorHandler &handler) {
   static const char *keywords[]{"YES", "NO", nullptr};
   switch (IdentifyValue(keyword, length, keywords)) {
   case 0:
@@ -472,21 +526,24 @@ static bool YesOrNo(const char *keyword, std::size_t length, const char *what,
   }
 }
 
-bool IONAME(SetAdvance)(
-    Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetAdvance)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
-  bool nonAdvancing{
-      !YesOrNo(keyword, length, "ADVANCE", io.GetIoErrorHandler())};
+  IoErrorHandler &handler{io.GetIoErrorHandler()};
+  bool nonAdvancing{!YesOrNo(keyword, length, "ADVANCE", handler)};
   if (nonAdvancing && io.GetConnectionState().access == Access::Direct) {
-    io.GetIoErrorHandler().SignalError(
-        "Non-advancing I/O attempted on direct access file");
+    handler.SignalError("Non-advancing I/O attempted on direct access file");
   } else {
-    io.mutableModes().nonAdvancing = nonAdvancing;
+    auto *unit{io.GetExternalFileUnit()};
+    if (unit && unit->GetChildIo()) {
+      // ADVANCE= is ignored for child I/O (12.6.4.8.3 p3)
+    } else {
+      io.mutableModes().nonAdvancing = nonAdvancing;
+    }
   }
-  return true;
+  return !handler.InError();
 }
 
-bool IONAME(SetBlank)(Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetBlank)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   static const char *keywords[]{"NULL", "ZERO", nullptr};
   switch (IdentifyValue(keyword, length, keywords)) {
@@ -503,8 +560,7 @@ bool IONAME(SetBlank)(Cookie cookie, const char *keyword, std::size_t length) {
   }
 }
 
-bool IONAME(SetDecimal)(
-    Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetDecimal)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   static const char *keywords[]{"COMMA", "POINT", nullptr};
   switch (IdentifyValue(keyword, length, keywords)) {
@@ -521,7 +577,7 @@ bool IONAME(SetDecimal)(
   }
 }
 
-bool IONAME(SetDelim)(Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetDelim)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   static const char *keywords[]{"APOSTROPHE", "QUOTE", "NONE", nullptr};
   switch (IdentifyValue(keyword, length, keywords)) {
@@ -541,57 +597,41 @@ bool IONAME(SetDelim)(Cookie cookie, const char *keyword, std::size_t length) {
   }
 }
 
-bool IONAME(SetPad)(Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetPad)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
-  io.mutableModes().pad =
-      YesOrNo(keyword, length, "PAD", io.GetIoErrorHandler());
-  return true;
+  IoErrorHandler &handler{io.GetIoErrorHandler()};
+  io.mutableModes().pad = YesOrNo(keyword, length, "PAD", handler);
+  return !handler.InError();
 }
 
-bool IONAME(SetPos)(Cookie cookie, std::int64_t pos) {
+bool IODEF(SetPos)(Cookie cookie, std::int64_t pos) {
   IoStatementState &io{*cookie};
-  ConnectionState &connection{io.GetConnectionState()};
   IoErrorHandler &handler{io.GetIoErrorHandler()};
-  if (connection.access != Access::Stream) {
-    handler.SignalError("POS= may not appear unless ACCESS='STREAM'");
-    return false;
-  }
-  if (pos < 1) { // POS=1 is beginning of file (12.6.2.11)
-    handler.SignalError("POS=%zd is invalid", static_cast<std::intmax_t>(pos));
-    return false;
-  }
   if (auto *unit{io.GetExternalFileUnit()}) {
-    unit->SetPosition(pos - 1, handler);
-    return true;
+    return unit->SetStreamPos(pos, handler);
+  } else if (!io.get_if<ErroneousIoStatementState>()) {
+    handler.Crash("SetPos() called on internal unit");
   }
-  io.GetIoErrorHandler().Crash("SetPos() called on internal unit");
   return false;
 }
 
-bool IONAME(SetRec)(Cookie cookie, std::int64_t rec) {
+bool IODEF(SetRec)(Cookie cookie, std::int64_t rec) {
   IoStatementState &io{*cookie};
-  ConnectionState &connection{io.GetConnectionState()};
   IoErrorHandler &handler{io.GetIoErrorHandler()};
-  if (connection.access != Access::Direct) {
-    handler.SignalError("REC= may not appear unless ACCESS='DIRECT'");
-    return false;
-  }
-  if (!connection.openRecl) {
-    handler.SignalError("RECL= was not specified");
-    return false;
-  }
-  if (rec < 1) {
-    handler.SignalError("REC=%zd is invalid", static_cast<std::intmax_t>(rec));
-    return false;
-  }
-  connection.currentRecordNumber = rec;
   if (auto *unit{io.GetExternalFileUnit()}) {
-    unit->SetPosition((rec - 1) * *connection.openRecl, handler);
+    if (unit->GetChildIo()) {
+      handler.SignalError(
+          IostatBadOpOnChildUnit, "REC= specifier on child I/O");
+    } else {
+      unit->SetDirectRec(rec, handler);
+    }
+  } else if (!io.get_if<ErroneousIoStatementState>()) {
+    handler.Crash("SetRec() called on internal unit");
   }
   return true;
 }
 
-bool IONAME(SetRound)(Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetRound)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   static const char *keywords[]{"UP", "DOWN", "ZERO", "NEAREST", "COMPATIBLE",
       "PROCESSOR_DEFINED", nullptr};
@@ -621,7 +661,7 @@ bool IONAME(SetRound)(Cookie cookie, const char *keyword, std::size_t length) {
   }
 }
 
-bool IONAME(SetSign)(Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetSign)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   static const char *keywords[]{
       "PLUS", "SUPPRESS", "PROCESSOR_DEFINED", nullptr};
@@ -640,12 +680,16 @@ bool IONAME(SetSign)(Cookie cookie, const char *keyword, std::size_t length) {
   }
 }
 
-bool IONAME(SetAccess)(Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetAccess)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   auto *open{io.get_if<OpenStatementState>()};
   if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "SetAccess() called when not in an OPEN statement");
+    if (!io.get_if<NoopStatementState>() &&
+        !io.get_if<ErroneousIoStatementState>()) {
+      io.GetIoErrorHandler().Crash(
+          "SetAccess() called when not in an OPEN statement");
+    }
+    return false;
   } else if (open->completedOperation()) {
     io.GetIoErrorHandler().Crash(
         "SetAccess() called after GetNewUnit() for an OPEN statement");
@@ -672,17 +716,21 @@ bool IONAME(SetAccess)(Cookie cookie, const char *keyword, std::size_t length) {
   return true;
 }
 
-bool IONAME(SetAction)(Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetAction)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   auto *open{io.get_if<OpenStatementState>()};
   if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "SetAction() called when not in an OPEN statement");
+    if (!io.get_if<NoopStatementState>() &&
+        !io.get_if<ErroneousIoStatementState>()) {
+      io.GetIoErrorHandler().Crash(
+          "SetAction() called when not in an OPEN statement");
+    }
+    return false;
   } else if (open->completedOperation()) {
     io.GetIoErrorHandler().Crash(
         "SetAction() called after GetNewUnit() for an OPEN statement");
   }
-  std::optional<Action> action;
+  Fortran::common::optional<Action> action;
   static const char *keywords[]{"READ", "WRITE", "READWRITE", nullptr};
   switch (IdentifyValue(keyword, length, keywords)) {
   case 0:
@@ -710,39 +758,44 @@ bool IONAME(SetAction)(Cookie cookie, const char *keyword, std::size_t length) {
   return true;
 }
 
-bool IONAME(SetAsynchronous)(
+bool IODEF(SetAsynchronous)(
     Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
-  auto *open{io.get_if<OpenStatementState>()};
-  if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "SetAsynchronous() called when not in an OPEN statement");
-  } else if (open->completedOperation()) {
-    io.GetIoErrorHandler().Crash(
-        "SetAsynchronous() called after GetNewUnit() for an OPEN statement");
+  IoErrorHandler &handler{io.GetIoErrorHandler()};
+  bool isYes{YesOrNo(keyword, length, "ASYNCHRONOUS", handler)};
+  if (auto *open{io.get_if<OpenStatementState>()}) {
+    if (open->completedOperation()) {
+      handler.Crash(
+          "SetAsynchronous() called after GetNewUnit() for an OPEN statement");
+    }
+    open->unit().set_mayAsynchronous(isYes);
+  } else if (auto *ext{io.get_if<ExternalIoStatementBase>()}) {
+    if (isYes) {
+      if (ext->unit().mayAsynchronous()) {
+        ext->SetAsynchronous();
+      } else {
+        handler.SignalError(IostatBadAsynchronous);
+      }
+    }
+  } else if (!io.get_if<NoopStatementState>() &&
+      !io.get_if<ErroneousIoStatementState>()) {
+    handler.Crash("SetAsynchronous() called when not in an OPEN or external "
+                  "I/O statement");
   }
-  static const char *keywords[]{"YES", "NO", nullptr};
-  switch (IdentifyValue(keyword, length, keywords)) {
-  case 0:
-    open->unit().set_mayAsynchronous(true);
-    return true;
-  case 1:
-    open->unit().set_mayAsynchronous(false);
-    return true;
-  default:
-    open->SignalError(IostatErrorInKeyword, "Invalid ASYNCHRONOUS='%.*s'",
-        static_cast<int>(length), keyword);
-    return false;
-  }
+  return !handler.InError();
 }
 
-bool IONAME(SetCarriagecontrol)(
+bool IODEF(SetCarriagecontrol)(
     Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   auto *open{io.get_if<OpenStatementState>()};
   if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "SetCarriageControl() called when not in an OPEN statement");
+    if (!io.get_if<NoopStatementState>() &&
+        !io.get_if<ErroneousIoStatementState>()) {
+      io.GetIoErrorHandler().Crash(
+          "SetCarriageControl() called when not in an OPEN statement");
+    }
+    return false;
   } else if (open->completedOperation()) {
     io.GetIoErrorHandler().Crash(
         "SetCarriageControl() called after GetNewUnit() for an OPEN statement");
@@ -764,13 +817,16 @@ bool IONAME(SetCarriagecontrol)(
   }
 }
 
-bool IONAME(SetConvert)(
-    Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetConvert)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   auto *open{io.get_if<OpenStatementState>()};
   if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "SetConvert() called when not in an OPEN statement");
+    if (!io.get_if<NoopStatementState>() &&
+        !io.get_if<ErroneousIoStatementState>()) {
+      io.GetIoErrorHandler().Crash(
+          "SetConvert() called when not in an OPEN statement");
+    }
+    return false;
   } else if (open->completedOperation()) {
     io.GetIoErrorHandler().Crash(
         "SetConvert() called after GetNewUnit() for an OPEN statement");
@@ -785,45 +841,47 @@ bool IONAME(SetConvert)(
   }
 }
 
-bool IONAME(SetEncoding)(
+bool IODEF(SetEncoding)(
     Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   auto *open{io.get_if<OpenStatementState>()};
   if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "SetEncoding() called when not in an OPEN statement");
+    if (!io.get_if<NoopStatementState>() &&
+        !io.get_if<ErroneousIoStatementState>()) {
+      io.GetIoErrorHandler().Crash(
+          "SetEncoding() called when not in an OPEN statement");
+    }
+    return false;
   } else if (open->completedOperation()) {
     io.GetIoErrorHandler().Crash(
         "SetEncoding() called after GetNewUnit() for an OPEN statement");
   }
-  bool isUTF8{false};
+  // Allow the encoding to be changed on an open unit -- it's
+  // useful and safe.
   static const char *keywords[]{"UTF-8", "DEFAULT", nullptr};
   switch (IdentifyValue(keyword, length, keywords)) {
   case 0:
-    isUTF8 = true;
+    open->unit().isUTF8 = true;
     break;
   case 1:
-    isUTF8 = false;
+    open->unit().isUTF8 = false;
     break;
   default:
     open->SignalError(IostatErrorInKeyword, "Invalid ENCODING='%.*s'",
         static_cast<int>(length), keyword);
   }
-  if (isUTF8 != open->unit().isUTF8) {
-    if (open->wasExtant()) {
-      open->SignalError("ENCODING= may not be changed on an open unit");
-    }
-    open->unit().isUTF8 = isUTF8;
-  }
   return true;
 }
 
-bool IONAME(SetForm)(Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetForm)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   auto *open{io.get_if<OpenStatementState>()};
   if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "SetForm() called when not in an OPEN statement");
+    if (!io.get_if<NoopStatementState>() &&
+        !io.get_if<ErroneousIoStatementState>()) {
+      io.GetIoErrorHandler().Crash(
+          "SetForm() called when not in an OPEN statement");
+    }
   } else if (open->completedOperation()) {
     io.GetIoErrorHandler().Crash(
         "SetForm() called after GetNewUnit() for an OPEN statement");
@@ -843,13 +901,17 @@ bool IONAME(SetForm)(Cookie cookie, const char *keyword, std::size_t length) {
   return true;
 }
 
-bool IONAME(SetPosition)(
+bool IODEF(SetPosition)(
     Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   auto *open{io.get_if<OpenStatementState>()};
   if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "SetPosition() called when not in an OPEN statement");
+    if (!io.get_if<NoopStatementState>() &&
+        !io.get_if<ErroneousIoStatementState>()) {
+      io.GetIoErrorHandler().Crash(
+          "SetPosition() called when not in an OPEN statement");
+    }
+    return false;
   } else if (open->completedOperation()) {
     io.GetIoErrorHandler().Crash(
         "SetPosition() called after GetNewUnit() for an OPEN statement");
@@ -872,12 +934,16 @@ bool IONAME(SetPosition)(
   return true;
 }
 
-bool IONAME(SetRecl)(Cookie cookie, std::size_t n) {
+bool IODEF(SetRecl)(Cookie cookie, std::size_t n) {
   IoStatementState &io{*cookie};
   auto *open{io.get_if<OpenStatementState>()};
   if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "SetRecl() called when not in an OPEN statement");
+    if (!io.get_if<NoopStatementState>() &&
+        !io.get_if<ErroneousIoStatementState>()) {
+      io.GetIoErrorHandler().Crash(
+          "SetRecl() called when not in an OPEN statement");
+    }
+    return false;
   } else if (open->completedOperation()) {
     io.GetIoErrorHandler().Crash(
         "SetRecl() called after GetNewUnit() for an OPEN statement");
@@ -895,7 +961,7 @@ bool IONAME(SetRecl)(Cookie cookie, std::size_t n) {
   }
 }
 
-bool IONAME(SetStatus)(Cookie cookie, const char *keyword, std::size_t length) {
+bool IODEF(SetStatus)(Cookie cookie, const char *keyword, std::size_t length) {
   IoStatementState &io{*cookie};
   if (auto *open{io.get_if<OpenStatementState>()}) {
     if (open->completedOperation()) {
@@ -941,14 +1007,15 @@ bool IONAME(SetStatus)(Cookie cookie, const char *keyword, std::size_t length) {
     }
     return false;
   }
-  if (io.get_if<NoopStatementState>()) {
+  if (io.get_if<NoopStatementState>() ||
+      io.get_if<ErroneousIoStatementState>()) {
     return true; // don't bother validating STATUS= in a no-op CLOSE
   }
   io.GetIoErrorHandler().Crash(
       "SetStatus() called when not in an OPEN or CLOSE statement");
 }
 
-bool IONAME(SetFile)(Cookie cookie, const char *path, std::size_t chars) {
+bool IODEF(SetFile)(Cookie cookie, const char *path, std::size_t chars) {
   IoStatementState &io{*cookie};
   if (auto *open{io.get_if<OpenStatementState>()}) {
     if (open->completedOperation()) {
@@ -957,18 +1024,24 @@ bool IONAME(SetFile)(Cookie cookie, const char *path, std::size_t chars) {
     }
     open->set_path(path, chars);
     return true;
+  } else if (!io.get_if<NoopStatementState>() &&
+      !io.get_if<ErroneousIoStatementState>()) {
+    io.GetIoErrorHandler().Crash(
+        "SetFile() called when not in an OPEN statement");
   }
-  io.GetIoErrorHandler().Crash(
-      "SetFile() called when not in an OPEN statement");
   return false;
 }
 
-bool IONAME(GetNewUnit)(Cookie cookie, int &unit, int kind) {
+bool IODEF(GetNewUnit)(Cookie cookie, int &unit, int kind) {
   IoStatementState &io{*cookie};
   auto *open{io.get_if<OpenStatementState>()};
   if (!open) {
-    io.GetIoErrorHandler().Crash(
-        "GetNewUnit() called when not in an OPEN statement");
+    if (!io.get_if<NoopStatementState>() &&
+        !io.get_if<ErroneousIoStatementState>()) {
+      io.GetIoErrorHandler().Crash(
+          "GetNewUnit() called when not in an OPEN statement");
+    }
+    return false;
   } else if (!open->InError()) {
     open->CompleteOperation();
   }
@@ -987,217 +1060,116 @@ bool IONAME(GetNewUnit)(Cookie cookie, int &unit, int kind) {
 
 // Data transfers
 
-bool IONAME(OutputDescriptor)(Cookie cookie, const Descriptor &descriptor) {
+bool IODEF(OutputDescriptor)(Cookie cookie, const Descriptor &descriptor) {
   return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
 }
 
-bool IONAME(InputDescriptor)(Cookie cookie, const Descriptor &descriptor) {
+bool IODEF(InputDescriptor)(Cookie cookie, const Descriptor &descriptor) {
   return descr::DescriptorIO<Direction::Input>(*cookie, descriptor);
 }
 
-bool IONAME(OutputUnformattedBlock)(Cookie cookie, const char *x,
-    std::size_t length, std::size_t elementBytes) {
-  IoStatementState &io{*cookie};
-  if (auto *unf{io.get_if<
-          ExternalUnformattedIoStatementState<Direction::Output>>()}) {
-    return unf->Emit(x, length, elementBytes);
-  } else if (auto *inq{io.get_if<InquireIOLengthState>()}) {
-    return inq->Emit(x, length, elementBytes);
-  }
-  io.GetIoErrorHandler().Crash("OutputUnformattedBlock() called for an I/O "
-                               "statement that is not unformatted output");
-  return false;
-}
-
-bool IONAME(InputUnformattedBlock)(
-    Cookie cookie, char *x, std::size_t length, std::size_t elementBytes) {
-  IoStatementState &io{*cookie};
-  IoErrorHandler &handler{io.GetIoErrorHandler()};
-  io.BeginReadingRecord();
-  if (handler.InError()) {
+bool IODEF(InputInteger)(Cookie cookie, std::int64_t &n, int kind) {
+  if (!cookie->CheckFormattedStmtType<Direction::Input>("InputInteger")) {
     return false;
   }
-  if (auto *unf{
-          io.get_if<ExternalUnformattedIoStatementState<Direction::Input>>()}) {
-    return unf->Receive(x, length, elementBytes);
-  }
-  handler.Crash("InputUnformattedBlock() called for an I/O statement that is "
-                "not unformatted input");
-  return false;
-}
-
-bool IONAME(OutputInteger8)(Cookie cookie, std::int8_t n) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputInteger8");
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(
-      TypeCategory::Integer, 1, reinterpret_cast<void *>(&n), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-
-bool IONAME(OutputInteger16)(Cookie cookie, std::int16_t n) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputInteger16");
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(
-      TypeCategory::Integer, 2, reinterpret_cast<void *>(&n), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-
-bool IONAME(OutputInteger32)(Cookie cookie, std::int32_t n) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputInteger32");
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(
-      TypeCategory::Integer, 4, reinterpret_cast<void *>(&n), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-
-bool IONAME(OutputInteger64)(Cookie cookie, std::int64_t n) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputInteger64");
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(
-      TypeCategory::Integer, 8, reinterpret_cast<void *>(&n), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-
-#ifdef __SIZEOF_INT128__
-bool IONAME(OutputInteger128)(Cookie cookie, common::int128_t n) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputInteger128");
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(
-      TypeCategory::Integer, 16, reinterpret_cast<void *>(&n), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-#endif
-
-bool IONAME(InputInteger)(Cookie cookie, std::int64_t &n, int kind) {
-  cookie->CheckFormattedStmtType<Direction::Input>("InputInteger");
-  StaticDescriptor staticDescriptor;
+  StaticDescriptor<0> staticDescriptor;
   Descriptor &descriptor{staticDescriptor.descriptor()};
   descriptor.Establish(
       TypeCategory::Integer, kind, reinterpret_cast<void *>(&n), 0);
   return descr::DescriptorIO<Direction::Input>(*cookie, descriptor);
 }
 
-bool IONAME(OutputReal32)(Cookie cookie, float x) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputReal32");
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(TypeCategory::Real, 4, reinterpret_cast<void *>(&x), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-
-bool IONAME(OutputReal64)(Cookie cookie, double x) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputReal64");
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(TypeCategory::Real, 8, reinterpret_cast<void *>(&x), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-
-bool IONAME(InputReal32)(Cookie cookie, float &x) {
-  cookie->CheckFormattedStmtType<Direction::Input>("InputReal32");
-  StaticDescriptor staticDescriptor;
+bool IODEF(InputReal32)(Cookie cookie, float &x) {
+  if (!cookie->CheckFormattedStmtType<Direction::Input>("InputReal32")) {
+    return false;
+  }
+  StaticDescriptor<0> staticDescriptor;
   Descriptor &descriptor{staticDescriptor.descriptor()};
   descriptor.Establish(TypeCategory::Real, 4, reinterpret_cast<void *>(&x), 0);
   return descr::DescriptorIO<Direction::Input>(*cookie, descriptor);
 }
 
-bool IONAME(InputReal64)(Cookie cookie, double &x) {
-  cookie->CheckFormattedStmtType<Direction::Input>("InputReal64");
-  StaticDescriptor staticDescriptor;
+bool IODEF(InputReal64)(Cookie cookie, double &x) {
+  if (!cookie->CheckFormattedStmtType<Direction::Input>("InputReal64")) {
+    return false;
+  }
+  StaticDescriptor<0> staticDescriptor;
   Descriptor &descriptor{staticDescriptor.descriptor()};
   descriptor.Establish(TypeCategory::Real, 8, reinterpret_cast<void *>(&x), 0);
   return descr::DescriptorIO<Direction::Input>(*cookie, descriptor);
 }
 
-bool IONAME(OutputComplex32)(Cookie cookie, float r, float i) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputComplex32");
-  float z[2]{r, i};
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(
-      TypeCategory::Complex, 4, reinterpret_cast<void *>(&z), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-
-bool IONAME(OutputComplex64)(Cookie cookie, double r, double i) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputComplex64");
-  double z[2]{r, i};
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(
-      TypeCategory::Complex, 8, reinterpret_cast<void *>(&z), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-
-bool IONAME(InputComplex32)(Cookie cookie, float z[2]) {
-  cookie->CheckFormattedStmtType<Direction::Input>("InputComplex32");
-  StaticDescriptor staticDescriptor;
+bool IODEF(InputComplex32)(Cookie cookie, float z[2]) {
+  if (!cookie->CheckFormattedStmtType<Direction::Input>("InputComplex32")) {
+    return false;
+  }
+  StaticDescriptor<0> staticDescriptor;
   Descriptor &descriptor{staticDescriptor.descriptor()};
   descriptor.Establish(
       TypeCategory::Complex, 4, reinterpret_cast<void *>(z), 0);
   return descr::DescriptorIO<Direction::Input>(*cookie, descriptor);
 }
 
-bool IONAME(InputComplex64)(Cookie cookie, double z[2]) {
-  cookie->CheckFormattedStmtType<Direction::Input>("InputComplex64");
-  StaticDescriptor staticDescriptor;
+bool IODEF(InputComplex64)(Cookie cookie, double z[2]) {
+  if (!cookie->CheckFormattedStmtType<Direction::Input>("InputComplex64")) {
+    return false;
+  }
+  StaticDescriptor<0> staticDescriptor;
   Descriptor &descriptor{staticDescriptor.descriptor()};
   descriptor.Establish(
       TypeCategory::Complex, 8, reinterpret_cast<void *>(z), 0);
   return descr::DescriptorIO<Direction::Input>(*cookie, descriptor);
 }
 
-bool IONAME(OutputCharacter)(
+bool IODEF(OutputCharacter)(
     Cookie cookie, const char *x, std::size_t length, int kind) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputCharacter");
-  StaticDescriptor staticDescriptor;
+  if (!cookie->CheckFormattedStmtType<Direction::Output>("OutputCharacter")) {
+    return false;
+  }
+  StaticDescriptor<0> staticDescriptor;
   Descriptor &descriptor{staticDescriptor.descriptor()};
   descriptor.Establish(
       kind, length, reinterpret_cast<void *>(const_cast<char *>(x)), 0);
   return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
 }
 
-bool IONAME(OutputAscii)(Cookie cookie, const char *x, std::size_t length) {
-  return IONAME(OutputCharacter(cookie, x, length, 1));
-}
-
-bool IONAME(InputCharacter)(
+bool IODEF(InputCharacter)(
     Cookie cookie, char *x, std::size_t length, int kind) {
-  cookie->CheckFormattedStmtType<Direction::Input>("InputCharacter");
-  StaticDescriptor staticDescriptor;
+  if (!cookie->CheckFormattedStmtType<Direction::Input>("InputCharacter")) {
+    return false;
+  }
+  StaticDescriptor<0> staticDescriptor;
   Descriptor &descriptor{staticDescriptor.descriptor()};
   descriptor.Establish(kind, length, reinterpret_cast<void *>(x), 0);
   return descr::DescriptorIO<Direction::Input>(*cookie, descriptor);
 }
 
-bool IONAME(InputAscii)(Cookie cookie, char *x, std::size_t length) {
-  return IONAME(InputCharacter(cookie, x, length, 1));
+bool IODEF(InputAscii)(Cookie cookie, char *x, std::size_t length) {
+  return IONAME(InputCharacter)(cookie, x, length, 1);
 }
 
-bool IONAME(OutputLogical)(Cookie cookie, bool truth) {
-  cookie->CheckFormattedStmtType<Direction::Output>("OutputLogical");
-  StaticDescriptor staticDescriptor;
-  Descriptor &descriptor{staticDescriptor.descriptor()};
-  descriptor.Establish(
-      TypeCategory::Logical, sizeof truth, reinterpret_cast<void *>(&truth), 0);
-  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor);
-}
-
-bool IONAME(InputLogical)(Cookie cookie, bool &truth) {
-  cookie->CheckFormattedStmtType<Direction::Input>("InputLogical");
-  StaticDescriptor staticDescriptor;
+bool IODEF(InputLogical)(Cookie cookie, bool &truth) {
+  if (!cookie->CheckFormattedStmtType<Direction::Input>("InputLogical")) {
+    return false;
+  }
+  StaticDescriptor<0> staticDescriptor;
   Descriptor &descriptor{staticDescriptor.descriptor()};
   descriptor.Establish(
       TypeCategory::Logical, sizeof truth, reinterpret_cast<void *>(&truth), 0);
   return descr::DescriptorIO<Direction::Input>(*cookie, descriptor);
 }
 
-std::size_t IONAME(GetSize)(Cookie cookie) {
+bool IODEF(OutputDerivedType)(Cookie cookie, const Descriptor &descriptor,
+    const NonTbpDefinedIoTable *table) {
+  return descr::DescriptorIO<Direction::Output>(*cookie, descriptor, table);
+}
+
+bool IODEF(InputDerivedType)(Cookie cookie, const Descriptor &descriptor,
+    const NonTbpDefinedIoTable *table) {
+  return descr::DescriptorIO<Direction::Input>(*cookie, descriptor, table);
+}
+
+std::size_t IODEF(GetSize)(Cookie cookie) {
   IoStatementState &io{*cookie};
   IoErrorHandler &handler{io.GetIoErrorHandler()};
   if (!handler.InError()) {
@@ -1206,13 +1178,15 @@ std::size_t IONAME(GetSize)(Cookie cookie) {
   if (const auto *formatted{
           io.get_if<FormattedIoStatementState<Direction::Input>>()}) {
     return formatted->GetEditDescriptorChars();
+  } else if (!io.get_if<NoopStatementState>() &&
+      !io.get_if<ErroneousIoStatementState>()) {
+    handler.Crash("GetIoSize() called for an I/O statement that is not a "
+                  "formatted READ()");
   }
-  handler.Crash(
-      "GetIoSize() called for an I/O statement that is not a formatted READ()");
   return 0;
 }
 
-std::size_t IONAME(GetIoLength)(Cookie cookie) {
+std::size_t IODEF(GetIoLength)(Cookie cookie) {
   IoStatementState &io{*cookie};
   IoErrorHandler &handler{io.GetIoErrorHandler()};
   if (!handler.InError()) {
@@ -1220,13 +1194,15 @@ std::size_t IONAME(GetIoLength)(Cookie cookie) {
   }
   if (const auto *inq{io.get_if<InquireIOLengthState>()}) {
     return inq->bytes();
+  } else if (!io.get_if<NoopStatementState>() &&
+      !io.get_if<ErroneousIoStatementState>()) {
+    handler.Crash("GetIoLength() called for an I/O statement that is not "
+                  "INQUIRE(IOLENGTH=)");
   }
-  handler.Crash("GetIoLength() called for an I/O statement that is not "
-                "INQUIRE(IOLENGTH=)");
   return 0;
 }
 
-void IONAME(GetIoMsg)(Cookie cookie, char *msg, std::size_t length) {
+void IODEF(GetIoMsg)(Cookie cookie, char *msg, std::size_t length) {
   IoStatementState &io{*cookie};
   IoErrorHandler &handler{io.GetIoErrorHandler()};
   if (!handler.InError()) {
@@ -1237,49 +1213,59 @@ void IONAME(GetIoMsg)(Cookie cookie, char *msg, std::size_t length) {
   }
 }
 
-bool IONAME(InquireCharacter)(Cookie cookie, InquiryKeywordHash inquiry,
+AsynchronousId IODEF(GetAsynchronousId)(Cookie cookie) {
+  IoStatementState &io{*cookie};
+  IoErrorHandler &handler{io.GetIoErrorHandler()};
+  if (auto *ext{io.get_if<ExternalIoStatementBase>()}) {
+    return ext->asynchronousID();
+  } else if (!io.get_if<NoopStatementState>() &&
+      !io.get_if<ErroneousIoStatementState>()) {
+    handler.Crash(
+        "GetAsynchronousId() called when not in an external I/O statement");
+  }
+  return 0;
+}
+
+bool IODEF(InquireCharacter)(Cookie cookie, InquiryKeywordHash inquiry,
     char *result, std::size_t length) {
   IoStatementState &io{*cookie};
   return io.Inquire(inquiry, result, length);
 }
 
-bool IONAME(InquireLogical)(
+bool IODEF(InquireLogical)(
     Cookie cookie, InquiryKeywordHash inquiry, bool &result) {
   IoStatementState &io{*cookie};
   return io.Inquire(inquiry, result);
 }
 
-bool IONAME(InquirePendingId)(Cookie cookie, std::int64_t id, bool &result) {
+bool IODEF(InquirePendingId)(Cookie cookie, AsynchronousId id, bool &result) {
   IoStatementState &io{*cookie};
   return io.Inquire(HashInquiryKeyword("PENDING"), id, result);
 }
 
-bool IONAME(InquireInteger64)(
+bool IODEF(InquireInteger64)(
     Cookie cookie, InquiryKeywordHash inquiry, std::int64_t &result, int kind) {
   IoStatementState &io{*cookie};
-  std::int64_t n;
+  std::int64_t n{0}; // safe "undefined" value
   if (io.Inquire(inquiry, n)) {
     if (SetInteger(result, kind, n)) {
       return true;
     }
     io.GetIoErrorHandler().SignalError(
         "InquireInteger64(): bad INTEGER kind(%d) or out-of-range "
-        "value(%jd) "
-        "for result",
+        "value(%jd) for result",
         kind, static_cast<std::intmax_t>(n));
   }
   return false;
 }
 
-enum Iostat IONAME(EndIoStatement)(Cookie cookie) {
-  IoStatementState &io{*cookie};
-  return static_cast<enum Iostat>(io.EndIoStatement());
-}
-
 template <typename INT>
-static enum Iostat CheckUnitNumberInRangeImpl(INT unit, bool handleError,
-    char *ioMsg, std::size_t ioMsgLength, const char *sourceFile,
-    int sourceLine) {
+static RT_API_ATTRS enum Iostat CheckUnitNumberInRangeImpl(INT unit,
+    bool handleError, char *ioMsg, std::size_t ioMsgLength,
+    const char *sourceFile, int sourceLine) {
+  static_assert(sizeof(INT) >= sizeof(ExternalUnit),
+      "only intended to be used when the INT to ExternalUnit conversion is "
+      "narrowing");
   if (unit != static_cast<ExternalUnit>(unit)) {
     Terminator oom{sourceFile, sourceLine};
     IoErrorHandler errorHandler{oom};
@@ -1292,7 +1278,9 @@ static enum Iostat CheckUnitNumberInRangeImpl(INT unit, bool handleError,
     // Only provide the bad unit number in the message if SignalError can print
     // it accurately. Otherwise, the generic IostatUnitOverflow message will be
     // used.
-    if (static_cast<std::intmax_t>(unit) == unit) {
+    if constexpr (sizeof(INT) > sizeof(std::intmax_t)) {
+      errorHandler.SignalError(IostatUnitOverflow);
+    } else if (static_cast<std::intmax_t>(unit) == unit) {
       errorHandler.SignalError(IostatUnitOverflow,
           "UNIT number %jd is out of range", static_cast<std::intmax_t>(unit));
     } else {
@@ -1306,15 +1294,15 @@ static enum Iostat CheckUnitNumberInRangeImpl(INT unit, bool handleError,
   return IostatOk;
 }
 
-enum Iostat IONAME(CheckUnitNumberInRange64)(std::int64_t unit,
-    bool handleError, char *ioMsg, std::size_t ioMsgLength,
-    const char *sourceFile, int sourceLine) {
+enum Iostat IODEF(CheckUnitNumberInRange64)(std::int64_t unit, bool handleError,
+    char *ioMsg, std::size_t ioMsgLength, const char *sourceFile,
+    int sourceLine) {
   return CheckUnitNumberInRangeImpl(
       unit, handleError, ioMsg, ioMsgLength, sourceFile, sourceLine);
 }
 
 #ifdef __SIZEOF_INT128__
-enum Iostat IONAME(CheckUnitNumberInRange128)(common::int128_t unit,
+enum Iostat IODEF(CheckUnitNumberInRange128)(common::int128_t unit,
     bool handleError, char *ioMsg, std::size_t ioMsgLength,
     const char *sourceFile, int sourceLine) {
   return CheckUnitNumberInRangeImpl(
@@ -1322,4 +1310,5 @@ enum Iostat IONAME(CheckUnitNumberInRange128)(common::int128_t unit,
 }
 #endif
 
+RT_EXT_API_GROUP_END
 } // namespace Fortran::runtime::io

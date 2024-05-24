@@ -31,6 +31,8 @@
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/YAMLTraits.h"
 #include "llvm/Support/raw_ostream.h"
+#include <optional>
+#include <variant>
 
 using namespace llvm;
 
@@ -121,7 +123,7 @@ public:
     return encodeULEB128(Val, OS);
   }
 
-  template <typename T> void write(T Val, support::endianness E) {
+  template <typename T> void write(T Val, llvm::endianness E) {
     if (checkLimit(sizeof(T)))
       support::endian::write<T>(OS, Val, E);
   }
@@ -314,7 +316,7 @@ template <class ELFT> class ELFState {
 
   BumpPtrAllocator StringAlloc;
   uint64_t alignToOffset(ContiguousBlobAccumulator &CBA, uint64_t Align,
-                         llvm::Optional<llvm::yaml::Hex64> Offset);
+                         std::optional<llvm::yaml::Hex64> Offset);
 
   uint64_t getSectionNameOffset(StringRef Name);
 
@@ -412,7 +414,7 @@ ELFState<ELFT>::ELFState(ELFYAML::Object &D, yaml::ErrorHandler EH)
     }
   // TODO: Only create the .strtab here if any symbols have been requested.
   ImplicitSections.insert(".strtab");
-  if (!SecHdrTable || !SecHdrTable->NoHeaders.getValueOr(false))
+  if (!SecHdrTable || !SecHdrTable->NoHeaders.value_or(false))
     ImplicitSections.insert(SectionHeaderStringTableName);
 
   // Insert placeholders for implicit sections that are not
@@ -596,12 +598,11 @@ unsigned ELFState<ELFT>::toSectionIndex(StringRef S, StringRef LocSec,
   const ELFYAML::SectionHeaderTable &SectionHeaders =
       Doc.getSectionHeaderTable();
   if (SectionHeaders.IsImplicit ||
-      (SectionHeaders.NoHeaders && !SectionHeaders.NoHeaders.getValue()) ||
+      (SectionHeaders.NoHeaders && !*SectionHeaders.NoHeaders) ||
       SectionHeaders.isDefault())
     return Index;
 
-  assert(!SectionHeaders.NoHeaders.getValueOr(false) ||
-         !SectionHeaders.Sections);
+  assert(!SectionHeaders.NoHeaders.value_or(false) || !SectionHeaders.Sections);
   size_t FirstExcluded =
       SectionHeaders.Sections ? SectionHeaders.Sections->size() : 0;
   if (Index > FirstExcluded) {
@@ -666,7 +667,7 @@ bool ELFState<ELFT>::initImplicitHeader(ContiguousBlobAccumulator &CBA,
     initSymtabSectionHeader(Header, SymtabType::Static, CBA, YAMLSec);
   else if (SecName == ".dynsym")
     initSymtabSectionHeader(Header, SymtabType::Dynamic, CBA, YAMLSec);
-  else if (SecName.startswith(".debug_")) {
+  else if (SecName.starts_with(".debug_")) {
     // If a ".debug_*" section's type is a preserved one, e.g., SHT_DYNAMIC, we
     // will not treat it as a debug section.
     if (YAMLSec && !isa<ELFYAML::RawContentSection>(YAMLSec))
@@ -716,8 +717,8 @@ uint64_t ELFState<ELFT>::getSectionNameOffset(StringRef Name) {
 }
 
 static uint64_t writeContent(ContiguousBlobAccumulator &CBA,
-                             const Optional<yaml::BinaryRef> &Content,
-                             const Optional<llvm::yaml::Hex64> &Size) {
+                             const std::optional<yaml::BinaryRef> &Content,
+                             const std::optional<llvm::yaml::Hex64> &Size) {
   size_t ContentSize = 0;
   if (Content) {
     CBA.writeAsBinary(*Content);
@@ -771,12 +772,12 @@ void ELFState<ELFT>::initSectionHeaders(std::vector<Elf_Shdr> &SHeaders,
 
     if (ELFYAML::SectionHeaderTable *S =
             dyn_cast<ELFYAML::SectionHeaderTable>(D.get())) {
-      if (S->NoHeaders.getValueOr(false))
+      if (S->NoHeaders.value_or(false))
         continue;
 
       if (!S->Offset)
         S->Offset = alignToOffset(CBA, sizeof(typename ELFT::uint),
-                                  /*Offset=*/None);
+                                  /*Offset=*/std::nullopt);
       else
         S->Offset = alignToOffset(CBA, /*Align=*/1, S->Offset);
 
@@ -808,7 +809,7 @@ void ELFState<ELFT>::initSectionHeaders(std::vector<Elf_Shdr> &SHeaders,
       SHeader.sh_entsize = *Sec->EntSize;
     else
       SHeader.sh_entsize = ELFYAML::getDefaultShEntSize<ELFT>(
-          Doc.Header.Machine.getValueOr(ELF::EM_NONE), Sec->Type, Sec->Name);
+          Doc.Header.Machine.value_or(ELF::EM_NONE), Sec->Type, Sec->Name);
 
     // We have a few sections like string or symbol tables that are usually
     // added implicitly to the end. However, if they are explicitly specified
@@ -958,9 +959,9 @@ ELFState<ELFT>::toELFSymbols(ArrayRef<ELFYAML::Symbol> Symbols,
     else if (Sym.Index)
       Symbol.st_shndx = *Sym.Index;
 
-    Symbol.st_value = Sym.Value.getValueOr(yaml::Hex64(0));
+    Symbol.st_value = Sym.Value.value_or(yaml::Hex64(0));
     Symbol.st_other = Sym.Other ? *Sym.Other : 0;
-    Symbol.st_size = Sym.Size.getValueOr(yaml::Hex64(0));
+    Symbol.st_size = Sym.Size.value_or(yaml::Hex64(0));
   }
 
   return Ret;
@@ -1016,8 +1017,8 @@ void ELFState<ELFT>::initSymtabSectionHeader(Elf_Shdr &SHeader,
 
   assignSectionAddress(SHeader, YAMLSec);
 
-  SHeader.sh_offset =
-      alignToOffset(CBA, SHeader.sh_addralign, RawSec ? RawSec->Offset : None);
+  SHeader.sh_offset = alignToOffset(CBA, SHeader.sh_addralign,
+                                    RawSec ? RawSec->Offset : std::nullopt);
 
   if (RawSec && (RawSec->Content || RawSec->Size)) {
     assert(Symbols.empty());
@@ -1044,7 +1045,7 @@ void ELFState<ELFT>::initStrtabSectionHeader(Elf_Shdr &SHeader, StringRef Name,
       dyn_cast_or_null<ELFYAML::RawContentSection>(YAMLSec);
 
   SHeader.sh_offset = alignToOffset(CBA, SHeader.sh_addralign,
-                                    YAMLSec ? YAMLSec->Offset : None);
+                                    YAMLSec ? YAMLSec->Offset : std::nullopt);
 
   if (RawSec && (RawSec->Content || RawSec->Size)) {
     SHeader.sh_size = writeContent(CBA, RawSec->Content, RawSec->Size);
@@ -1098,7 +1099,7 @@ void ELFState<ELFT>::initDWARFSectionHeader(Elf_Shdr &SHeader, StringRef Name,
   SHeader.sh_type = YAMLSec ? YAMLSec->Type : ELF::SHT_PROGBITS;
   SHeader.sh_addralign = YAMLSec ? (uint64_t)YAMLSec->AddressAlign : 1;
   SHeader.sh_offset = alignToOffset(CBA, SHeader.sh_addralign,
-                                    YAMLSec ? YAMLSec->Offset : None);
+                                    YAMLSec ? YAMLSec->Offset : std::nullopt);
 
   ELFYAML::RawContentSection *RawSec =
       dyn_cast_or_null<ELFYAML::RawContentSection>(YAMLSec);
@@ -1313,7 +1314,7 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
     if (!ELFT::Is64Bits && E > UINT32_MAX)
       reportError(Section.Name + ": the value is too large for 32-bits: 0x" +
                   Twine::utohexstr(E));
-    CBA.write<uintX_t>(E, ELFT::TargetEndianness);
+    CBA.write<uintX_t>(E, ELFT::Endianness);
   }
 
   SHeader.sh_size = sizeof(uintX_t) * Section.Entries->size();
@@ -1332,7 +1333,7 @@ void ELFState<ELFT>::writeSectionContent(
     return;
 
   for (uint32_t E : *Shndx.Entries)
-    CBA.write<uint32_t>(E, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(E, ELFT::Endianness);
   SHeader.sh_size = Shndx.Entries->size() * SHeader.sh_entsize;
 }
 
@@ -1356,7 +1357,7 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
       SectionIndex = llvm::ELF::GRP_COMDAT;
     else
       SectionIndex = toSectionIndex(Member.sectionNameOrType, Section.Name);
-    CBA.write<uint32_t>(SectionIndex, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(SectionIndex, ELFT::Endianness);
   }
   SHeader.sh_size = SHeader.sh_entsize * Section.Members->size();
 }
@@ -1369,7 +1370,7 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
     return;
 
   for (uint16_t Version : *Section.Entries)
-    CBA.write<uint16_t>(Version, ELFT::TargetEndianness);
+    CBA.write<uint16_t>(Version, ELFT::Endianness);
   SHeader.sh_size = Section.Entries->size() * SHeader.sh_entsize;
 }
 
@@ -1381,7 +1382,7 @@ void ELFState<ELFT>::writeSectionContent(
     return;
 
   for (const ELFYAML::StackSizeEntry &E : *Section.Entries) {
-    CBA.write<uintX_t>(E.Address, ELFT::TargetEndianness);
+    CBA.write<uintX_t>(E.Address, ELFT::Endianness);
     SHeader.sh_size += sizeof(uintX_t) + CBA.writeULEB128(E.Size);
   }
 }
@@ -1390,24 +1391,108 @@ template <class ELFT>
 void ELFState<ELFT>::writeSectionContent(
     Elf_Shdr &SHeader, const ELFYAML::BBAddrMapSection &Section,
     ContiguousBlobAccumulator &CBA) {
-  if (!Section.Entries)
+  if (!Section.Entries) {
+    if (Section.PGOAnalyses)
+      WithColor::warning()
+          << "PGOAnalyses should not exist in SHT_LLVM_BB_ADDR_MAP when "
+             "Entries does not exist";
     return;
+  }
 
-  for (const ELFYAML::BBAddrMapEntry &E : *Section.Entries) {
-    // Write the address of the function.
-    CBA.write<uintX_t>(E.Address, ELFT::TargetEndianness);
-    // Write number of BBEntries (number of basic blocks in the function). This
-    // is overridden by the 'NumBlocks' YAML field when specified.
-    uint64_t NumBlocks =
-        E.NumBlocks.getValueOr(E.BBEntries ? E.BBEntries->size() : 0);
-    SHeader.sh_size += sizeof(uintX_t) + CBA.writeULEB128(NumBlocks);
-    // Write all BBEntries.
-    if (!E.BBEntries)
+  const std::vector<ELFYAML::PGOAnalysisMapEntry> *PGOAnalyses = nullptr;
+  if (Section.PGOAnalyses) {
+    if (Section.Entries->size() != Section.PGOAnalyses->size())
+      WithColor::warning() << "PGOAnalyses must be the same length as Entries "
+                              "in SHT_LLVM_BB_ADDR_MAP";
+    else
+      PGOAnalyses = &Section.PGOAnalyses.value();
+  }
+
+  for (const auto &[Idx, E] : llvm::enumerate(*Section.Entries)) {
+    // Write version and feature values.
+    if (Section.Type == llvm::ELF::SHT_LLVM_BB_ADDR_MAP) {
+      if (E.Version > 2)
+        WithColor::warning() << "unsupported SHT_LLVM_BB_ADDR_MAP version: "
+                             << static_cast<int>(E.Version)
+                             << "; encoding using the most recent version";
+      CBA.write(E.Version);
+      CBA.write(E.Feature);
+      SHeader.sh_size += 2;
+    }
+    auto FeatureOrErr = llvm::object::BBAddrMap::Features::decode(E.Feature);
+    bool MultiBBRangeFeatureEnabled = false;
+    if (!FeatureOrErr)
+      WithColor::warning() << toString(FeatureOrErr.takeError());
+    else
+      MultiBBRangeFeatureEnabled = FeatureOrErr->MultiBBRange;
+    bool MultiBBRange =
+        MultiBBRangeFeatureEnabled ||
+        (E.NumBBRanges.has_value() && E.NumBBRanges.value() != 1) ||
+        (E.BBRanges && E.BBRanges->size() != 1);
+    if (MultiBBRange && !MultiBBRangeFeatureEnabled)
+      WithColor::warning() << "feature value(" << E.Feature
+                           << ") does not support multiple BB ranges.";
+    if (MultiBBRange) {
+      // Write the number of basic block ranges, which is overridden by the
+      // 'NumBBRanges' field when specified.
+      uint64_t NumBBRanges =
+          E.NumBBRanges.value_or(E.BBRanges ? E.BBRanges->size() : 0);
+      SHeader.sh_size += CBA.writeULEB128(NumBBRanges);
+    }
+    if (!E.BBRanges)
       continue;
-    for (const ELFYAML::BBAddrMapEntry::BBEntry &BBE : *E.BBEntries)
-      SHeader.sh_size += CBA.writeULEB128(BBE.AddressOffset) +
-                         CBA.writeULEB128(BBE.Size) +
-                         CBA.writeULEB128(BBE.Metadata);
+    uint64_t TotalNumBlocks = 0;
+    for (const ELFYAML::BBAddrMapEntry::BBRangeEntry &BBR : *E.BBRanges) {
+      // Write the base address of the range.
+      CBA.write<uintX_t>(BBR.BaseAddress, ELFT::Endianness);
+      // Write number of BBEntries (number of basic blocks in this basic block
+      // range). This is overridden by the 'NumBlocks' YAML field when
+      // specified.
+      uint64_t NumBlocks =
+          BBR.NumBlocks.value_or(BBR.BBEntries ? BBR.BBEntries->size() : 0);
+      SHeader.sh_size += sizeof(uintX_t) + CBA.writeULEB128(NumBlocks);
+      // Write all BBEntries in this BBRange.
+      if (!BBR.BBEntries)
+        continue;
+      for (const ELFYAML::BBAddrMapEntry::BBEntry &BBE : *BBR.BBEntries) {
+        ++TotalNumBlocks;
+        if (Section.Type == llvm::ELF::SHT_LLVM_BB_ADDR_MAP && E.Version > 1)
+          SHeader.sh_size += CBA.writeULEB128(BBE.ID);
+        SHeader.sh_size += CBA.writeULEB128(BBE.AddressOffset);
+        SHeader.sh_size += CBA.writeULEB128(BBE.Size);
+        SHeader.sh_size += CBA.writeULEB128(BBE.Metadata);
+      }
+    }
+    if (!PGOAnalyses)
+      continue;
+    const ELFYAML::PGOAnalysisMapEntry &PGOEntry = PGOAnalyses->at(Idx);
+
+    if (PGOEntry.FuncEntryCount)
+      SHeader.sh_size += CBA.writeULEB128(*PGOEntry.FuncEntryCount);
+
+    if (!PGOEntry.PGOBBEntries)
+      continue;
+
+    const auto &PGOBBEntries = PGOEntry.PGOBBEntries.value();
+    if (TotalNumBlocks != PGOBBEntries.size()) {
+      WithColor::warning() << "PBOBBEntries must be the same length as "
+                              "BBEntries in SHT_LLVM_BB_ADDR_MAP.\n"
+                           << "Mismatch on function with address: "
+                           << E.getFunctionAddress();
+      continue;
+    }
+
+    for (const auto &PGOBBE : PGOBBEntries) {
+      if (PGOBBE.BBFreq)
+        SHeader.sh_size += CBA.writeULEB128(*PGOBBE.BBFreq);
+      if (PGOBBE.Successors) {
+        SHeader.sh_size += CBA.writeULEB128(PGOBBE.Successors->size());
+        for (const auto &[ID, BrProb] : *PGOBBE.Successors) {
+          SHeader.sh_size += CBA.writeULEB128(ID);
+          SHeader.sh_size += CBA.writeULEB128(BrProb);
+        }
+      }
+    }
   }
 }
 
@@ -1444,7 +1529,7 @@ void ELFState<ELFT>::writeSectionContent(
 template <class ELFT>
 uint64_t
 ELFState<ELFT>::alignToOffset(ContiguousBlobAccumulator &CBA, uint64_t Align,
-                              llvm::Optional<llvm::yaml::Hex64> Offset) {
+                              std::optional<llvm::yaml::Hex64> Offset) {
   uint64_t CurrentOffset = CBA.getOffset();
   uint64_t AlignedOffset;
 
@@ -1473,7 +1558,7 @@ void ELFState<ELFT>::writeSectionContent(
     return;
 
   for (const ELFYAML::CallGraphEntryWeight &E : *Section.Entries) {
-    CBA.write<uint64_t>(E.Weight, ELFT::TargetEndianness);
+    CBA.write<uint64_t>(E.Weight, ELFT::Endianness);
     SHeader.sh_size += sizeof(object::Elf_CGProfile_Impl<ELFT>);
   }
 }
@@ -1486,16 +1571,16 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
     return;
 
   CBA.write<uint32_t>(
-      Section.NBucket.getValueOr(llvm::yaml::Hex64(Section.Bucket->size())),
-      ELFT::TargetEndianness);
+      Section.NBucket.value_or(llvm::yaml::Hex64(Section.Bucket->size())),
+      ELFT::Endianness);
   CBA.write<uint32_t>(
-      Section.NChain.getValueOr(llvm::yaml::Hex64(Section.Chain->size())),
-      ELFT::TargetEndianness);
+      Section.NChain.value_or(llvm::yaml::Hex64(Section.Chain->size())),
+      ELFT::Endianness);
 
   for (uint32_t Val : *Section.Bucket)
-    CBA.write<uint32_t>(Val, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(Val, ELFT::Endianness);
   for (uint32_t Val : *Section.Chain)
-    CBA.write<uint32_t>(Val, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(Val, ELFT::Endianness);
 
   SHeader.sh_size = (2 + Section.Bucket->size() + Section.Chain->size()) * 4;
 }
@@ -1518,10 +1603,10 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
     const ELFYAML::VerdefEntry &E = (*Section.Entries)[I];
 
     Elf_Verdef VerDef;
-    VerDef.vd_version = E.Version.getValueOr(1);
-    VerDef.vd_flags = E.Flags.getValueOr(0);
-    VerDef.vd_ndx = E.VersionNdx.getValueOr(0);
-    VerDef.vd_hash = E.Hash.getValueOr(0);
+    VerDef.vd_version = E.Version.value_or(1);
+    VerDef.vd_flags = E.Flags.value_or(0);
+    VerDef.vd_ndx = E.VersionNdx.value_or(0);
+    VerDef.vd_hash = E.Hash.value_or(0);
     VerDef.vd_aux = sizeof(Elf_Verdef);
     VerDef.vd_cnt = E.VerNames.size();
     if (I == Section.Entries->size() - 1)
@@ -1602,8 +1687,8 @@ void ELFState<ELFT>::writeSectionContent(
     return;
 
   for (const ELFYAML::ARMIndexTableEntry &E : *Section.Entries) {
-    CBA.write<uint32_t>(E.Offset, ELFT::TargetEndianness);
-    CBA.write<uint32_t>(E.Value, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(E.Offset, ELFT::Endianness);
+    CBA.write<uint32_t>(E.Value, ELFT::Endianness);
   }
   SHeader.sh_size = Section.Entries->size() * 8;
 }
@@ -1644,8 +1729,8 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
     return;
 
   for (const ELFYAML::DynamicEntry &DE : *Section.Entries) {
-    CBA.write<uintX_t>(DE.Tag, ELFT::TargetEndianness);
-    CBA.write<uintX_t>(DE.Val, ELFT::TargetEndianness);
+    CBA.write<uintX_t>(DE.Tag, ELFT::Endianness);
+    CBA.write<uintX_t>(DE.Val, ELFT::Endianness);
   }
   SHeader.sh_size = 2 * sizeof(uintX_t) * Section.Entries->size();
 }
@@ -1673,18 +1758,18 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
   for (const ELFYAML::NoteEntry &NE : *Section.Notes) {
     // Write name size.
     if (NE.Name.empty())
-      CBA.write<uint32_t>(0, ELFT::TargetEndianness);
+      CBA.write<uint32_t>(0, ELFT::Endianness);
     else
-      CBA.write<uint32_t>(NE.Name.size() + 1, ELFT::TargetEndianness);
+      CBA.write<uint32_t>(NE.Name.size() + 1, ELFT::Endianness);
 
     // Write description size.
     if (NE.Desc.binary_size() == 0)
-      CBA.write<uint32_t>(0, ELFT::TargetEndianness);
+      CBA.write<uint32_t>(0, ELFT::Endianness);
     else
-      CBA.write<uint32_t>(NE.Desc.binary_size(), ELFT::TargetEndianness);
+      CBA.write<uint32_t>(NE.Desc.binary_size(), ELFT::Endianness);
 
     // Write type.
-    CBA.write<uint32_t>(NE.Type, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(NE.Type, ELFT::Endianness);
 
     // Write name, null terminator and padding.
     if (!NE.Name.empty()) {
@@ -1718,35 +1803,35 @@ void ELFState<ELFT>::writeSectionContent(Elf_Shdr &SHeader,
   // be used to override this field, which is useful for producing broken
   // objects.
   if (Section.Header->NBuckets)
-    CBA.write<uint32_t>(*Section.Header->NBuckets, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(*Section.Header->NBuckets, ELFT::Endianness);
   else
-    CBA.write<uint32_t>(Section.HashBuckets->size(), ELFT::TargetEndianness);
+    CBA.write<uint32_t>(Section.HashBuckets->size(), ELFT::Endianness);
 
   // Write the index of the first symbol in the dynamic symbol table accessible
   // via the hash table.
-  CBA.write<uint32_t>(Section.Header->SymNdx, ELFT::TargetEndianness);
+  CBA.write<uint32_t>(Section.Header->SymNdx, ELFT::Endianness);
 
   // Write the number of words in the Bloom filter. As above, the "MaskWords"
   // property can be used to set this field to any value.
   if (Section.Header->MaskWords)
-    CBA.write<uint32_t>(*Section.Header->MaskWords, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(*Section.Header->MaskWords, ELFT::Endianness);
   else
-    CBA.write<uint32_t>(Section.BloomFilter->size(), ELFT::TargetEndianness);
+    CBA.write<uint32_t>(Section.BloomFilter->size(), ELFT::Endianness);
 
   // Write the shift constant used by the Bloom filter.
-  CBA.write<uint32_t>(Section.Header->Shift2, ELFT::TargetEndianness);
+  CBA.write<uint32_t>(Section.Header->Shift2, ELFT::Endianness);
 
   // We've finished writing the header. Now write the Bloom filter.
   for (llvm::yaml::Hex64 Val : *Section.BloomFilter)
-    CBA.write<uintX_t>(Val, ELFT::TargetEndianness);
+    CBA.write<uintX_t>(Val, ELFT::Endianness);
 
   // Write an array of hash buckets.
   for (llvm::yaml::Hex32 Val : *Section.HashBuckets)
-    CBA.write<uint32_t>(Val, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(Val, ELFT::Endianness);
 
   // Write an array of hash values.
   for (llvm::yaml::Hex32 Val : *Section.HashValues)
-    CBA.write<uint32_t>(Val, ELFT::TargetEndianness);
+    CBA.write<uint32_t>(Val, ELFT::Endianness);
 
   SHeader.sh_size = 16 /*Header size*/ +
                     Section.BloomFilter->size() * sizeof(typename ELFT::uint) +
@@ -1830,7 +1915,7 @@ template <class ELFT> void ELFState<ELFT>::buildSectionIndex() {
       if (!ExcludedSectionHeaders.insert(Hdr.Name).second)
         llvm_unreachable("buildSectionIndex() failed");
 
-  if (SectionHeaders.NoHeaders.getValueOr(false))
+  if (SectionHeaders.NoHeaders.value_or(false))
     for (const ELFYAML::Section *S : Sections)
       if (!ExcludedSectionHeaders.insert(S->Name).second)
         llvm_unreachable("buildSectionIndex() failed");
@@ -1957,10 +2042,10 @@ bool ELFState<ELFT>::writeELF(raw_ostream &OS, ELFYAML::Object &Doc,
     return false;
 
   State.writeELFHeader(OS);
-  writeArrayData(OS, makeArrayRef(PHeaders));
+  writeArrayData(OS, ArrayRef(PHeaders));
 
   const ELFYAML::SectionHeaderTable &SHT = Doc.getSectionHeaderTable();
-  if (!SHT.NoHeaders.getValueOr(false))
+  if (!SHT.NoHeaders.value_or(false))
     CBA.updateDataAt(*SHT.Offset, SHeaders.data(),
                      SHT.getNumHeaders(SHeaders.size()) * sizeof(Elf_Shdr));
 

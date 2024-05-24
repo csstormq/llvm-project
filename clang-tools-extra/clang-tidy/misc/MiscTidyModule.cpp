@@ -9,7 +9,12 @@
 #include "../ClangTidy.h"
 #include "../ClangTidyModule.h"
 #include "../ClangTidyModuleRegistry.h"
+#include "ConfusableIdentifierCheck.h"
+#include "ConstCorrectnessCheck.h"
+#include "CoroutineHostileRAIICheck.h"
 #include "DefinitionsInHeadersCheck.h"
+#include "HeaderIncludeCycleCheck.h"
+#include "IncludeCleanerCheck.h"
 #include "MisleadingBidirectional.h"
 #include "MisleadingIdentifier.h"
 #include "MisplacedConstCheck.h"
@@ -25,16 +30,25 @@
 #include "UnusedAliasDeclsCheck.h"
 #include "UnusedParametersCheck.h"
 #include "UnusedUsingDeclsCheck.h"
+#include "UseAnonymousNamespaceCheck.h"
 
-namespace clang {
-namespace tidy {
+namespace clang::tidy {
 namespace misc {
 
 class MiscModule : public ClangTidyModule {
 public:
   void addCheckFactories(ClangTidyCheckFactories &CheckFactories) override {
+    CheckFactories.registerCheck<ConfusableIdentifierCheck>(
+        "misc-confusable-identifiers");
+    CheckFactories.registerCheck<ConstCorrectnessCheck>(
+        "misc-const-correctness");
+    CheckFactories.registerCheck<CoroutineHostileRAIICheck>(
+        "misc-coroutine-hostile-raii");
     CheckFactories.registerCheck<DefinitionsInHeadersCheck>(
         "misc-definitions-in-headers");
+    CheckFactories.registerCheck<HeaderIncludeCycleCheck>(
+        "misc-header-include-cycle");
+    CheckFactories.registerCheck<IncludeCleanerCheck>("misc-include-cleaner");
     CheckFactories.registerCheck<MisleadingBidirectionalCheck>(
         "misc-misleading-bidirectional");
     CheckFactories.registerCheck<MisleadingIdentifierCheck>(
@@ -62,6 +76,8 @@ public:
         "misc-unused-parameters");
     CheckFactories.registerCheck<UnusedUsingDeclsCheck>(
         "misc-unused-using-decls");
+    CheckFactories.registerCheck<UseAnonymousNamespaceCheck>(
+        "misc-use-anonymous-namespace");
   }
 };
 
@@ -75,5 +91,4 @@ static ClangTidyModuleRegistry::Add<misc::MiscModule>
 // and thus register the MiscModule.
 volatile int MiscModuleAnchorSource = 0;
 
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy

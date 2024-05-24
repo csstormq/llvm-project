@@ -47,6 +47,8 @@ static cl::opt<int> CodeGrowthLimit("hexagon-amode-growth-limit",
   cl::Hidden, cl::init(0), cl::desc("Code growth limit for address mode "
   "optimization"));
 
+extern cl::opt<unsigned> RDFFuncBlockLimit;
+
 namespace llvm {
 
   FunctionPass *createHexagonOptAddrMode();
@@ -856,6 +858,14 @@ bool HexagonOptAddrMode::runOnMachineFunction(MachineFunction &MF) {
   if (skipFunction(MF.getFunction()))
     return false;
 
+  // Perform RDF optimizations only if number of basic blocks in the
+  // function is less than the limit
+  if (MF.size() > RDFFuncBlockLimit) {
+    LLVM_DEBUG(dbgs() << "Skipping " << getPassName()
+                      << ": too many basic blocks\n");
+    return false;
+  }
+
   bool Changed = false;
   auto &HST = MF.getSubtarget<HexagonSubtarget>();
   MRI = &MF.getRegInfo();
@@ -863,9 +873,8 @@ bool HexagonOptAddrMode::runOnMachineFunction(MachineFunction &MF) {
   HRI = HST.getRegisterInfo();
   const auto &MDF = getAnalysis<MachineDominanceFrontier>();
   MDT = &getAnalysis<MachineDominatorTree>();
-  const TargetOperandInfo TOI(*HII);
 
-  DataFlowGraph G(MF, *HII, *HRI, *MDT, MDF, TOI);
+  DataFlowGraph G(MF, *HII, *HRI, *MDT, MDF);
   // Need to keep dead phis because we can propagate uses of registers into
   // nodes dominated by those would-be phis.
   G.build(BuildOptions::KeepDeadPhis);
@@ -883,7 +892,7 @@ bool HexagonOptAddrMode::runOnMachineFunction(MachineFunction &MF) {
   for (NodeAddr<BlockNode *> BA : FA.Addr->members(*DFG))
     Changed |= processBlock(BA);
 
-  for (auto MI : Deleted)
+  for (auto *MI : Deleted)
     MI->eraseFromParent();
 
   if (Changed) {

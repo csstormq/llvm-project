@@ -26,7 +26,7 @@ namespace lldb_private {
 
 class ModuleSpec {
 public:
-  ModuleSpec() {}
+  ModuleSpec() = default;
 
   /// If the \c data argument is passed, its contents will be used
   /// as the module contents instead of trying to read them from
@@ -194,7 +194,7 @@ public:
       if (dumped_something)
         strm.PutCString(", ");
       strm.PutCString("uuid = ");
-      m_uuid.Dump(&strm);
+      m_uuid.Dump(strm);
       dumped_something = true;
     }
     if (m_object_name) {
@@ -274,7 +274,7 @@ protected:
 
 class ModuleSpecList {
 public:
-  ModuleSpecList() {}
+  ModuleSpecList() = default;
 
   ModuleSpecList(const ModuleSpecList &rhs) {
     std::lock_guard<std::recursive_mutex> lhs_guard(m_mutex);

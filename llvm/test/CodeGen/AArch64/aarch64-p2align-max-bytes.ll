@@ -7,23 +7,23 @@
 ; is padded as expected. The key interest in the CHECK-OBJ-* sections is the size of the padding region (the nops),
 ; and not the exact instructions either side of them (But the last instruction of the EXPLICIT and IMPLICIT checks
 ; should be the same, at different locations)
-define i32 @a(i32 %x, i32* nocapture readonly %y, i32* nocapture readonly %z) {
+define i32 @a(i32 %x, ptr nocapture readonly %y, ptr nocapture readonly %z) {
 ; CHECK-LABEL: a:
-; CHECK-EXPLICIT:    .p2align 5, 0x0, 8
+; CHECK-EXPLICIT:    .p2align 5, , 8
 ; CHECK-IMPLICIT:    .p2align 5
 ; CHECK-NEXT:  .LBB0_5: // %vector.body
-; CHECK-EXPLICIT:    .p2align 5, 0x0, 8
+; CHECK-EXPLICIT:    .p2align 5, , 8
 ; CHECK-IMPLICIT:    .p2align 5
 ; CHECK-NEXT:  .LBB0_8: // %for.body
 ; CHECK-OBJ;Disassembly of section .text:
-; CHECK-OBJ:               88: 2a 00 0a 8b   add
-; CHECK-OBJ-IMPLICIT-NEXT: 8c: 1f 20 03 d5   nop
-; CHECK-OBJ-IMPLICIT-NEXT: 90: 1f 20 03 d5   nop
-; CHECK-OBJ-IMPLICIT-NEXT: 94: 1f 20 03 d5   nop
-; CHECK-OBJ-IMPLICIT-NEXT: 98: 1f 20 03 d5   nop
-; CHECK-OBJ-IMPLICIT-NEXT: 9c: 1f 20 03 d5   nop
-; CHECK-OBJ-IMPLICIT-NEXT: a0: 4b 45 40 b8   ldr
-; CHECK-OBJ-EXPLICIT-NEXT: 8c: 4b 45 40 b8   ldr
+; CHECK-OBJ:               88: 8b0a002a      add
+; CHECK-OBJ-IMPLICIT-NEXT: 8c: d503201f      nop
+; CHECK-OBJ-IMPLICIT-NEXT: 90: d503201f      nop
+; CHECK-OBJ-IMPLICIT-NEXT: 94: d503201f      nop
+; CHECK-OBJ-IMPLICIT-NEXT: 98: d503201f      nop
+; CHECK-OBJ-IMPLICIT-NEXT: 9c: d503201f      nop
+; CHECK-OBJ-IMPLICIT-NEXT: a0: b840454b      ldr
+; CHECK-OBJ-EXPLICIT-NEXT: 8c: b840454b      ldr
 entry:
   %cmp10 = icmp sgt i32 %x, 0
   br i1 %cmp10, label %for.body.preheader, label %for.cond.cleanup
@@ -41,18 +41,18 @@ vector.body:                                      ; preds = %vector.body, %vecto
   %index = phi i64 [ 0, %vector.ph ], [ %index.next, %vector.body ]
   %vec.phi = phi <4 x i32> [ zeroinitializer, %vector.ph ], [ %10, %vector.body ]
   %vec.phi13 = phi <4 x i32> [ zeroinitializer, %vector.ph ], [ %11, %vector.body ]
-  %0 = getelementptr inbounds i32, i32* %y, i64 %index
-  %1 = bitcast i32* %0 to <4 x i32>*
-  %wide.load = load <4 x i32>, <4 x i32>* %1, align 4
-  %2 = getelementptr inbounds i32, i32* %0, i64 4
-  %3 = bitcast i32* %2 to <4 x i32>*
-  %wide.load14 = load <4 x i32>, <4 x i32>* %3, align 4
-  %4 = getelementptr inbounds i32, i32* %z, i64 %index
-  %5 = bitcast i32* %4 to <4 x i32>*
-  %wide.load15 = load <4 x i32>, <4 x i32>* %5, align 4
-  %6 = getelementptr inbounds i32, i32* %4, i64 4
-  %7 = bitcast i32* %6 to <4 x i32>*
-  %wide.load16 = load <4 x i32>, <4 x i32>* %7, align 4
+  %0 = getelementptr inbounds i32, ptr %y, i64 %index
+  %1 = bitcast ptr %0 to ptr
+  %wide.load = load <4 x i32>, ptr %1, align 4
+  %2 = getelementptr inbounds i32, ptr %0, i64 4
+  %3 = bitcast ptr %2 to ptr
+  %wide.load14 = load <4 x i32>, ptr %3, align 4
+  %4 = getelementptr inbounds i32, ptr %z, i64 %index
+  %5 = bitcast ptr %4 to ptr
+  %wide.load15 = load <4 x i32>, ptr %5, align 4
+  %6 = getelementptr inbounds i32, ptr %4, i64 4
+  %7 = bitcast ptr %6 to ptr
+  %wide.load16 = load <4 x i32>, ptr %7, align 4
   %8 = add <4 x i32> %wide.load, %vec.phi
   %9 = add <4 x i32> %wide.load14, %vec.phi13
   %10 = add <4 x i32> %8, %wide.load15
@@ -79,10 +79,10 @@ for.cond.cleanup:                                 ; preds = %for.body, %middle.b
 for.body:                                         ; preds = %for.body.preheader17, %for.body
   %indvars.iv = phi i64 [ %indvars.iv.next, %for.body ], [ %indvars.iv.ph, %for.body.preheader17 ]
   %b.011 = phi i32 [ %add3, %for.body ], [ %b.011.ph, %for.body.preheader17 ]
-  %arrayidx = getelementptr inbounds i32, i32* %y, i64 %indvars.iv
-  %14 = load i32, i32* %arrayidx, align 4
-  %arrayidx2 = getelementptr inbounds i32, i32* %z, i64 %indvars.iv
-  %15 = load i32, i32* %arrayidx2, align 4
+  %arrayidx = getelementptr inbounds i32, ptr %y, i64 %indvars.iv
+  %14 = load i32, ptr %arrayidx, align 4
+  %arrayidx2 = getelementptr inbounds i32, ptr %z, i64 %indvars.iv
+  %15 = load i32, ptr %arrayidx2, align 4
   %add = add i32 %14, %b.011
   %add3 = add i32 %add, %15
   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1

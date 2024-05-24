@@ -27,7 +27,7 @@ class StringChecker : public Checker<check::PreCall> {
   mutable const FunctionDecl *StringConstCharPtrCtor = nullptr;
   mutable CanQualType SizeTypeTy;
   const CallDescription TwoParamStdStringCtor = {
-      {"std", "basic_string", "basic_string"}, 2, 2};
+      CDM::CXXMethod, {"std", "basic_string", "basic_string"}, 2, 2};
 
   bool isCharToStringCtor(const CallEvent &Call, const ASTContext &ACtx) const;
 
@@ -69,7 +69,7 @@ void StringChecker::checkPreCall(const CallEvent &Call,
   if (!isCharToStringCtor(Call, C.getASTContext()))
     return;
   const auto Param = Call.getArgSVal(0).getAs<Loc>();
-  if (!Param.hasValue())
+  if (!Param)
     return;
 
   // We managed to constrain the parameter to non-null.

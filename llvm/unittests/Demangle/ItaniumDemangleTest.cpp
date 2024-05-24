@@ -11,6 +11,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include <cstdlib>
+#include <string_view>
 #include <vector>
 
 using namespace llvm;
@@ -56,6 +57,14 @@ void Visitor() {
 }
 } // namespace NodeMatcher
 
+// Verify Operator table is ordered
+TEST(ItaniumDemangle, OperatorOrdering) {
+  struct TestParser : AbstractManglingParser<TestParser, TestAllocator> {};
+  for (const auto *Op = &TestParser::Ops[0];
+       Op != &TestParser::Ops[TestParser::NumOps - 1]; Op++)
+    ASSERT_LT(Op[0], Op[1]);
+}
+
 TEST(ItaniumDemangle, MethodOverride) {
   struct TestParser : AbstractManglingParser<TestParser, TestAllocator> {
     std::vector<char> Types;
@@ -75,7 +84,7 @@ TEST(ItaniumDemangle, MethodOverride) {
 }
 
 static std::string toString(OutputBuffer &OB) {
-  StringView SV = OB;
+  std::string_view SV = OB;
   return {SV.begin(), SV.end()};
 }
 
@@ -90,7 +99,7 @@ TEST(ItaniumDemangle, HalfType) {
       OutputBuffer OB;
       Node *N = AbstractManglingParser<TestParser, TestAllocator>::parseType();
       N->printLeft(OB);
-      StringView Name = N->getBaseName();
+      std::string_view Name = N->getBaseName();
       if (!Name.empty())
         Types.push_back(std::string(Name.begin(), Name.end()));
       else

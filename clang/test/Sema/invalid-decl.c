@@ -6,7 +6,7 @@ void test(void) {
 
 
 // PR2400
-typedef xtype (*x)(void* handle); // expected-error {{function cannot return function type}} expected-warning {{type specifier missing, defaults to 'int'}} expected-warning {{type specifier missing, defaults to 'int'}}
+typedef xtype (*x)(void* handle); // expected-error {{function cannot return function type}} expected-error 2{{type specifier missing, defaults to 'int'}}
 
 typedef void ytype();
 
@@ -20,7 +20,6 @@ zend_module_entry openssl_module_entry = {
     sizeof(zend_module_entry)
 };
 
-// <rdar://problem/11067144>
 typedef int (FunctionType)(int *value);
 typedef struct {
   UndefinedType undef; // expected-error {{unknown type name 'UndefinedType'}}
@@ -30,7 +29,6 @@ void f(StructType *buf) {
   buf->fun = 0;
 }
 
-// rdar://11743706
 static void bar(hid_t, char); // expected-error {{expected identifier}}
 
 static void bar(hid_t p, char); // expected-error {{unknown type name 'hid_t'}}

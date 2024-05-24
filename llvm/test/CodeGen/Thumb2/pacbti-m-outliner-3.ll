@@ -33,7 +33,8 @@ entry:
 
 if.end:                                           ; preds = %entry
   %mul = mul nsw i32 %a, 11
-  %sub = sub nsw i32 %mul, %b
+  %xor = xor i32 %mul, 100
+  %sub = sub nsw i32 %xor, %b
   %call = tail call i32 @h(i32 %sub, i32 %b)
   %add = add nsw i32 %call, %b
   %mul1 = mul nsw i32 %add, %call
@@ -81,7 +82,8 @@ entry:
 
 if.end:                                           ; preds = %entry
   %mul = mul nsw i32 %a, 11
-  %sub = sub nsw i32 %mul, %b
+  %xor = xor i32 %mul, 100
+  %sub = sub nsw i32 %xor, %b
   %call = tail call i32 @h(i32 %sub, i32 %b)
   %add = add nsw i32 %call, %b
   %mul1 = mul nsw i32 %add, %call
@@ -138,9 +140,9 @@ attributes #0 = { minsize noinline norecurse nounwind optsize readnone uwtable }
 
 !llvm.module.flags = !{!0, !1, !2}
 
-!0 = !{i32 1, !"branch-target-enforcement", i32 0}
-!1 = !{i32 1, !"sign-return-address", i32 1}
-!2 = !{i32 1, !"sign-return-address-all", i32 0}
+!0 = !{i32 8, !"branch-target-enforcement", i32 0}
+!1 = !{i32 8, !"sign-return-address", i32 1}
+!2 = !{i32 8, !"sign-return-address-all", i32 0}
 
 
 ; UNWIND-LABEL: FunctionAddress: 0x4

@@ -14,7 +14,6 @@
 #ifndef BOLT_PASSES_REORDER_UTILS_H
 #define BOLT_PASSES_REORDER_UTILS_H
 
-#include <memory>
 #include <vector>
 
 #include "llvm/ADT/BitVector.h"
@@ -36,8 +35,7 @@ public:
   }
 
   template <typename F> void forAllAdjacent(const Cluster *C, F Func) {
-    for (int I = Bits[C->id()].find_first(); I != -1;
-         I = Bits[C->id()].find_next(I))
+    for (int I : Bits[C->id()].set_bits())
       Func(Clusters[I]);
   }
 
@@ -48,8 +46,7 @@ public:
     Bits[A->id()][A->id()] = false;
     Bits[A->id()][B->id()] = false;
     Bits[B->id()][A->id()] = false;
-    for (int I = Bits[B->id()].find_first(); I != -1;
-         I = Bits[B->id()].find_next(I)) {
+    for (int I : Bits[B->id()].set_bits()) {
       Bits[I][A->id()] = true;
       Bits[I][B->id()] = false;
     }

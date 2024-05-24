@@ -11,20 +11,21 @@
 
 #include "internal_defs.h"
 
-#if SCUDO_LINUX
+#if SCUDO_CAN_USE_MTE
 #include <sys/auxv.h>
 #include <sys/prctl.h>
 #endif
 
 namespace scudo {
 
-#if (__clang_major__ >= 12 && defined(__aarch64__)) || defined(SCUDO_FUZZ)
+#if (__clang_major__ >= 12 && defined(__aarch64__) && !defined(__ILP32__)) ||  \
+    defined(SCUDO_FUZZ)
 
 // We assume that Top-Byte Ignore is enabled if the architecture supports memory
 // tagging. Not all operating systems enable TBI, so we only claim architectural
 // support for memory tagging if the operating system enables TBI.
 // HWASan uses the top byte for its own purpose and Scudo should not touch it.
-#if SCUDO_LINUX && !defined(SCUDO_DISABLE_TBI) &&                              \
+#if SCUDO_CAN_USE_MTE && !defined(SCUDO_DISABLE_TBI) &&                        \
     !__has_feature(hwaddress_sanitizer)
 inline constexpr bool archSupportsMemoryTagging() { return true; }
 #else
@@ -57,9 +58,9 @@ inline NORETURN uint8_t extractTag(uptr Ptr) {
 
 #endif
 
-#if __clang_major__ >= 12 && defined(__aarch64__)
+#if __clang_major__ >= 12 && defined(__aarch64__) && !defined(__ILP32__)
 
-#if SCUDO_LINUX
+#if SCUDO_CAN_USE_MTE
 
 inline bool systemSupportsMemoryTagging() {
 #ifndef HWCAP2_MTE
@@ -105,7 +106,7 @@ inline void enableSystemMemoryTaggingTestOnly() {
         0, 0, 0);
 }
 
-#else // !SCUDO_LINUX
+#else // !SCUDO_CAN_USE_MTE
 
 inline bool systemSupportsMemoryTagging() { return false; }
 
@@ -117,7 +118,7 @@ inline NORETURN void enableSystemMemoryTaggingTestOnly() {
   UNREACHABLE("memory tagging not supported");
 }
 
-#endif // SCUDO_LINUX
+#endif // SCUDO_CAN_USE_MTE
 
 class ScopedDisableMemoryTagChecks {
   uptr PrevTCO;
@@ -325,7 +326,7 @@ inline void *addFixedTag(void *Ptr, uptr Tag) {
 
 template <typename Config>
 inline constexpr bool allocatorSupportsMemoryTagging() {
-  return archSupportsMemoryTagging() && Config::MaySupportMemoryTagging &&
+  return archSupportsMemoryTagging() && Config::getMaySupportMemoryTagging() &&
          (1 << SCUDO_MIN_ALIGNMENT_LOG) >= archMemoryTagGranuleSize();
 }
 

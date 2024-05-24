@@ -1,5 +1,4 @@
 // RUN: %clang_cc1  -fsyntax-only -verify %s
-// rdar://10904488
 
 @interface Test
 - (int)objectAtIndexedSubscript:(int)index; // expected-note {{method 'objectAtIndexedSubscript:' declared here}}
@@ -19,7 +18,7 @@ int main(void) {
    NSMutableDictionary *dict;
    id key, val;
    val = dict[key]; // expected-error {{method for accessing dictionary element must have Objective-C object return type instead of 'int'}} \
-                    // expected-warning {{incompatible integer to pointer conversion assigning to 'id' from 'int'}}
+                    // expected-error {{incompatible integer to pointer conversion assigning to 'id' from 'int'}}
    dict[key] = val; // expected-error {{method object parameter type 'int' is not object type}}
 }
 

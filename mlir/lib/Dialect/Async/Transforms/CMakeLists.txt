@@ -12,12 +12,13 @@ add_mlir_dialect_library(MLIRAsyncTransforms
   MLIRAsyncPassIncGen
 
   LINK_LIBS PUBLIC
-  MLIRArithmetic
-  MLIRAsync
-  MLIRFunc
+  MLIRArithDialect
+  MLIRAsyncDialect
+  MLIRFuncDialect
+  MLIRFunctionInterfaces
   MLIRIR
   MLIRPass
-  MLIRSCF
+  MLIRSCFDialect
   MLIRSCFToControlFlow
   MLIRTransforms
   MLIRTransformUtils

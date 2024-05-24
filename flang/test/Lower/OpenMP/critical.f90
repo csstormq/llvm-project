@@ -1,41 +1,30 @@
-!RUN: %flang_fc1 -emit-fir -fopenmp %s -o - | FileCheck %s --check-prefix="FIRDialect"
-!RUN: %flang_fc1 -emit-fir -fopenmp %s -o - | fir-opt --fir-to-llvm-ir | FileCheck %s --check-prefix="LLVMDialect"
-!RUN: %flang_fc1 -emit-fir -fopenmp %s -o - | fir-opt --fir-to-llvm-ir | tco | FileCheck %s --check-prefix="LLVMIR"
+! REQUIRES: openmp_runtime
+
+!RUN: %flang_fc1 -emit-hlfir %openmp_flags %s -o - | FileCheck %s
+
+!CHECK: omp.critical.declare @help2
+!CHECK: omp.critical.declare @help1 hint(contended)
 
 subroutine omp_critical()
   use omp_lib
   integer :: x, y
-!FIRDialect: omp.critical.declare @help hint(contended)
-!LLVMDialect: omp.critical.declare @help hint(contended)
-!FIRDialect: omp.critical(@help)
-!LLVMDialect: omp.critical(@help)
-!LLVMIR: call void @__kmpc_critical_with_hint({{.*}}, {{.*}}, {{.*}} @{{.*}}help.var, i32 2)
-!$OMP CRITICAL(help) HINT(omp_lock_hint_contended)
+!CHECK: omp.critical(@help1)
+!$OMP CRITICAL(help1) HINT(omp_lock_hint_contended)
   x = x + y
-!FIRDialect: omp.terminator
-!LLVMDialect: omp.terminator
-!LLVMIR: call void @__kmpc_end_critical({{.*}}, {{.*}}, {{.*}} @{{.*}}help.var)
-!$OMP END CRITICAL(help)
+!CHECK: omp.terminator
+!$OMP END CRITICAL(help1)
 
 ! Test that the same name can be used again
 ! Also test with the zero hint expression
-!FIRDialect: omp.critical(@help)
-!LLVMDialect: omp.critical(@help)
-!LLVMIR: call void @__kmpc_critical_with_hint({{.*}}, {{.*}}, {{.*}} @{{.*}}help.var, i32 2)
-!$OMP CRITICAL(help) HINT(omp_lock_hint_none)
+!CHECK: omp.critical(@help2)
+!$OMP CRITICAL(help2) HINT(omp_lock_hint_none)
   x = x - y
-!FIRDialect: omp.terminator
-!LLVMDialect: omp.terminator
-!LLVMIR: call void @__kmpc_end_critical({{.*}}, {{.*}}, {{.*}} @{{.*}}help.var)
-!$OMP END CRITICAL(help)
+!CHECK: omp.terminator
+!$OMP END CRITICAL(help2)
 
-!FIRDialect: omp.critical
-!LLVMDialect: omp.critical
-!LLVMIR: call void @__kmpc_critical({{.*}}, {{.*}}, {{.*}} @{{.*}}_.var)
+!CHECK: omp.critical
 !$OMP CRITICAL
   y = x + y
-!FIRDialect: omp.terminator
-!LLVMDialect: omp.terminator
-!LLVMIR: call void @__kmpc_end_critical({{.*}}, {{.*}}, {{.*}} @{{.*}}_.var)
+!CHECK: omp.terminator
 !$OMP END CRITICAL
 end subroutine omp_critical

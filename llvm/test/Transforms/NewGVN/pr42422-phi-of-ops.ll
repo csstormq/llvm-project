@@ -35,13 +35,13 @@ define void @d() {
 ; CHECK:       if.then11:
 ; CHECK-NEXT:    br label [[CLEANUP]]
 ; CHECK:       if.end12:
-; CHECK-NEXT:    store i8 poison, i8* null, align 1
+; CHECK-NEXT:    store i8 poison, ptr null, align 1
 ; CHECK-NEXT:    br label [[CLEANUP]]
 ; CHECK:       cleanup:
 ; CHECK-NEXT:    [[CLEANUP_DEST:%.*]] = phi i32 [ poison, [[IF_END12]] ], [ 1, [[IF_THEN11]] ], [ 9, [[IF_THEN]] ]
 ; CHECK-NEXT:    switch i32 [[CLEANUP_DEST]], label [[CLEANUP14]] [
-; CHECK-NEXT:    i32 0, label [[FOR_COND4]]
-; CHECK-NEXT:    i32 9, label [[FOR_END13:%.*]]
+; CHECK-NEXT:      i32 0, label [[FOR_COND4]]
+; CHECK-NEXT:      i32 9, label [[FOR_END13:%.*]]
 ; CHECK-NEXT:    ]
 ; CHECK:       for.end13:
 ; CHECK-NEXT:    br label [[CLEANUP14]]

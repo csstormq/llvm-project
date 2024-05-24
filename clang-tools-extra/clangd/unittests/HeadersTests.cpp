@@ -9,18 +9,22 @@
 #include "Headers.h"
 
 #include "Compiler.h"
+#include "Matchers.h"
 #include "TestFS.h"
 #include "TestTU.h"
 #include "clang/Basic/TokenKinds.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendActions.h"
+#include "clang/Tooling/Inclusions/HeaderIncludes.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Testing/Support/Error.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include <optional>
 
 namespace clang {
 namespace clangd {
@@ -68,8 +72,8 @@ protected:
   IncludeStructure::HeaderID getID(StringRef Filename,
                                    IncludeStructure &Includes) {
     auto &SM = Clang->getSourceManager();
-    auto Entry = SM.getFileManager().getFile(Filename);
-    EXPECT_TRUE(Entry);
+    auto Entry = SM.getFileManager().getFileRef(Filename);
+    EXPECT_THAT_EXPECTED(Entry, llvm::Succeeded());
     return Includes.getOrCreateID(*Entry);
   }
 
@@ -111,10 +115,11 @@ protected:
       return "";
     auto Path = Inserter.calculateIncludePath(Inserted, MainFile);
     Action.EndSourceFile();
-    return Path.getValueOr("");
+    return Path.value_or("");
   }
 
-  llvm::Optional<TextEdit> insert(llvm::StringRef VerbatimHeader) {
+  std::optional<TextEdit> insert(llvm::StringRef VerbatimHeader,
+                                 tooling::IncludeDirective Directive) {
     Clang = setupClang();
     PreprocessOnlyAction Action;
     EXPECT_TRUE(
@@ -123,7 +128,7 @@ protected:
     IncludeInserter Inserter(MainFile, /*Code=*/"", format::getLLVMStyle(),
                              CDB.getCompileCommand(MainFile)->Directory,
                              &Clang->getPreprocessor().getHeaderSearchInfo());
-    auto Edit = Inserter.insert(VerbatimHeader);
+    auto Edit = Inserter.insert(VerbatimHeader, Directive);
     Action.EndSourceFile();
     return Edit;
   }
@@ -141,7 +146,6 @@ MATCHER_P(written, Name, "") { return arg.Written == Name; }
 MATCHER_P(resolved, Name, "") { return arg.Resolved == Name; }
 MATCHER_P(includeLine, N, "") { return arg.HashLine == N; }
 MATCHER_P(directive, D, "") { return arg.Directive == D; }
-MATCHER_P(hasPragmaKeep, H, "") { return arg.BehindPragmaKeep == H; }
 
 MATCHER_P2(Distance, File, D, "") {
   if (arg.getFirst() != File)
@@ -189,6 +193,36 @@ TEST_F(HeadersTest, OnlyCollectInclusionsInMain) {
   EXPECT_THAT(Includes.includeDepth(getID(BarHeader, Includes)),
               UnorderedElementsAre(Distance(getID(BarHeader, Includes), 0u),
                                    Distance(getID(BazHeader, Includes), 1u)));
+}
+
+TEST_F(HeadersTest, CacheBySpellingIsBuiltForMainInclusions) {
+  std::string FooHeader = testPath("foo.h");
+  FS.Files[FooHeader] = R"cpp(
+  void foo();
+)cpp";
+  std::string BarHeader = testPath("bar.h");
+  FS.Files[BarHeader] = R"cpp(
+  void bar();
+)cpp";
+  std::string BazHeader = testPath("baz.h");
+  FS.Files[BazHeader] = R"cpp(
+  void baz();
+)cpp";
+  FS.Files[MainFile] = R"cpp(
+#include "foo.h"
+#include "bar.h"
+#include "baz.h"
+)cpp";
+  auto Includes = collectIncludes();
+  EXPECT_THAT(Includes.MainFileIncludes,
+              UnorderedElementsAre(written("\"foo.h\""), written("\"bar.h\""),
+                                   written("\"baz.h\"")));
+  EXPECT_THAT(Includes.mainFileIncludesWithSpelling("\"foo.h\""),
+              UnorderedElementsAre(&Includes.MainFileIncludes[0]));
+  EXPECT_THAT(Includes.mainFileIncludesWithSpelling("\"bar.h\""),
+              UnorderedElementsAre(&Includes.MainFileIncludes[1]));
+  EXPECT_THAT(Includes.mainFileIncludesWithSpelling("\"baz.h\""),
+              UnorderedElementsAre(&Includes.MainFileIncludes[2]));
 }
 
 TEST_F(HeadersTest, PreambleIncludesPresentOnce) {
@@ -257,16 +291,13 @@ TEST_F(HeadersTest, IncludeDirective) {
                                    directive(tok::pp_include_next)));
 }
 
-TEST_F(HeadersTest, IWYUPragmaKeep) {
-  FS.Files[MainFile] = R"cpp(
-#include "bar.h" // IWYU pragma: keep
-#include "foo.h"
-)cpp";
-
-  EXPECT_THAT(
-      collectIncludes().MainFileIncludes,
-      UnorderedElementsAre(AllOf(written("\"foo.h\""), hasPragmaKeep(false)),
-                           AllOf(written("\"bar.h\""), hasPragmaKeep(true))));
+TEST_F(HeadersTest, SearchPath) {
+  FS.Files["foo/bar.h"] = "x";
+  FS.Files["foo/bar/baz.h"] = "y";
+  CDB.ExtraClangFlags.push_back("-Ifoo/bar");
+  CDB.ExtraClangFlags.push_back("-Ifoo/bar/..");
+  EXPECT_THAT(collectIncludes().SearchPathsCanonical,
+              ElementsAre(Subdir, testPath("foo/bar"), testPath("foo")));
 }
 
 TEST_F(HeadersTest, InsertInclude) {
@@ -327,9 +358,13 @@ TEST_F(HeadersTest, DontInsertDuplicateResolved) {
 }
 
 TEST_F(HeadersTest, PreferInserted) {
-  auto Edit = insert("<y>");
-  EXPECT_TRUE(Edit.hasValue());
-  EXPECT_TRUE(StringRef(Edit->newText).contains("<y>"));
+  auto Edit = insert("<y>", tooling::IncludeDirective::Include);
+  ASSERT_TRUE(Edit);
+  EXPECT_EQ(Edit->newText, "#include <y>\n");
+
+  Edit = insert("\"header.h\"", tooling::IncludeDirective::Import);
+  ASSERT_TRUE(Edit);
+  EXPECT_EQ(Edit->newText, "#import \"header.h\"\n");
 }
 
 TEST(Headers, NoHeaderSearchInfo) {
@@ -350,7 +385,7 @@ TEST(Headers, NoHeaderSearchInfo) {
   EXPECT_EQ(Inserter.shouldInsertInclude(HeaderPath, Verbatim), true);
 
   EXPECT_EQ(Inserter.calculateIncludePath(Inserting, "sub2/main2.cpp"),
-            llvm::None);
+            std::nullopt);
 }
 
 TEST_F(HeadersTest, PresumedLocations) {
@@ -373,38 +408,6 @@ TEST_F(HeadersTest, PresumedLocations) {
   CDB.ExtraClangFlags = {"-include", testPath(HeaderFile)};
   EXPECT_THAT(collectIncludes().MainFileIncludes,
               Contains(AllOf(includeLine(2), written("<a.h>"))));
-}
-
-TEST_F(HeadersTest, SelfContainedHeaders) {
-  // Including through non-builtin file has no effects.
-  FS.Files[MainFile] = R"cpp(
-#include "includeguarded.h"
-#include "nonguarded.h"
-#include "pp_depend.h"
-#include "pragmaguarded.h"
-)cpp";
-  FS.Files["pragmaguarded.h"] = R"cpp(
-#pragma once
-)cpp";
-  FS.Files["includeguarded.h"] = R"cpp(
-#ifndef INCLUDE_GUARDED_H
-#define INCLUDE_GUARDED_H
-void foo();
-#endif // INCLUDE_GUARDED_H
-)cpp";
-  FS.Files["nonguarded.h"] = R"cpp(
-)cpp";
-  FS.Files["pp_depend.h"] = R"cpp(
-  #ifndef REQUIRED_PP_DIRECTIVE
-  # error You have to have PP directive set to include this one!
-  #endif
-)cpp";
-
-  auto Includes = collectIncludes();
-  EXPECT_TRUE(Includes.isSelfContained(getID("pragmaguarded.h", Includes)));
-  EXPECT_TRUE(Includes.isSelfContained(getID("includeguarded.h", Includes)));
-  EXPECT_FALSE(Includes.isSelfContained(getID("nonguarded.h", Includes)));
-  EXPECT_FALSE(Includes.isSelfContained(getID("pp_depend.h", Includes)));
 }
 
 } // namespace

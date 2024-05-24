@@ -10,6 +10,7 @@
 #define ATOMIC_HELPERS_H
 
 #include <cassert>
+#include <cstdint>
 
 #include "test_macros.h"
 
@@ -81,18 +82,16 @@ struct TestEachIntegralType {
 #if TEST_STD_VER > 17 && defined(__cpp_char8_t)
     TestFunctor<char8_t>()();
 #endif
-#ifndef TEST_HAS_NO_UNICODE_CHARS
     TestFunctor<char16_t>()();
     TestFunctor<char32_t>()();
-#endif
-    TestFunctor<int8_t>()();
-    TestFunctor<uint8_t>()();
-    TestFunctor<int16_t>()();
-    TestFunctor<uint16_t>()();
-    TestFunctor<int32_t>()();
-    TestFunctor<uint32_t>()();
-    TestFunctor<int64_t>()();
-    TestFunctor<uint64_t>()();
+    TestFunctor<std::int8_t>()();
+    TestFunctor<std::uint8_t>()();
+    TestFunctor<std::int16_t>()();
+    TestFunctor<std::uint16_t>()();
+    TestFunctor<std::int32_t>()();
+    TestFunctor<std::uint32_t>()();
+    TestFunctor<std::int64_t>()();
+    TestFunctor<std::uint64_t>()();
   }
 };
 
@@ -117,13 +116,11 @@ template <template <class TestArg> class TestFunctor>
 struct TestEachAtomicType {
   void operator()() const {
     TestEachIntegralType<TestFunctor>()();
+    TestEachPointerType<TestFunctor>()();
     TestFunctor<UserAtomicType>()();
     /*
             Note: These aren't going to be lock-free,
-            so some libatomic.a is necessary. To handle
-            the case where the support functions are
-            missing, all tests that use this file should add:
-            XFAIL: !non-lockfree-atomics
+            so some libatomic.a is necessary.
         */
     TestFunctor<LargeUserAtomicType>()();
     /*
@@ -132,8 +129,6 @@ struct TestEachAtomicType {
         TestFunctor<PaddedUserAtomicType>()();
         TestFunctor<WeirdUserAtomicType>()();
 */
-    TestFunctor<int*>()();
-    TestFunctor<const int*>()();
     TestFunctor<float>()();
     TestFunctor<double>()();
   }

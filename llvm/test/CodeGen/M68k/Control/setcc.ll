@@ -40,13 +40,12 @@ define fastcc i64 @t3(i64 %x) nounwind readnone ssp {
 ; CHECK:       ; %bb.0: ; %entry
 ; CHECK-NEXT:    suba.l #4, %sp
 ; CHECK-NEXT:    movem.l %d2, (0,%sp) ; 8-byte Folded Spill
-; CHECK-NEXT:    move.l #0, %d2
+; CHECK-NEXT:    moveq #0, %d2
 ; CHECK-NEXT:    sub.l #18, %d1
 ; CHECK-NEXT:    subx.l %d2, %d0
 ; CHECK-NEXT:    scs %d0
 ; CHECK-NEXT:    move.l %d0, %d1
 ; CHECK-NEXT:    and.l #255, %d1
-; CHECK-NEXT:    and.l #1, %d1
 ; CHECK-NEXT:    lsl.l #6, %d1
 ; CHECK-NEXT:    move.l %d2, %d0
 ; CHECK-NEXT:    movem.l (0,%sp), %d2 ; 8-byte Folded Reload
@@ -62,7 +61,7 @@ define i8 @t5(i32 %a) {
 ; CHECK-LABEL: t5:
 ; CHECK:         .cfi_startproc
 ; CHECK-NEXT:  ; %bb.0: ; %entry
-; CHECK-NEXT:    move.l #31, %d1
+; CHECK-NEXT:    moveq #31, %d1
 ; CHECK-NEXT:    move.l (4,%sp), %d0
 ; CHECK-NEXT:    lsr.l %d1, %d0
 ; CHECK-NEXT:    eori.b #1, %d0
@@ -87,7 +86,7 @@ define zeroext i1 @t6(i32 %a) {
 ; CHECK-LABEL: t6:
 ; CHECK:         .cfi_startproc
 ; CHECK-NEXT:  ; %bb.0: ; %entry
-; CHECK-NEXT:    move.l #31, %d0
+; CHECK-NEXT:    moveq #31, %d0
 ; CHECK-NEXT:    move.l (4,%sp), %d1
 ; CHECK-NEXT:    lsr.l %d0, %d1
 ; CHECK-NEXT:    eori.b #1, %d1

@@ -1,16 +1,36 @@
-// RUN: mlir-opt %s --sparse-compiler | \
-// RUN: mlir-cpu-runner -e entry -entry-point-result=void \
-// RUN:  -shared-libs=%mlir_integration_test_dir/libmlir_c_runner_utils%shlibext | \
-// RUN: FileCheck %s
+//--------------------------------------------------------------------------------------------------
+// WHEN CREATING A NEW TEST, PLEASE JUST COPY & PASTE WITHOUT EDITS.
 //
-// Do the same run, but now with SIMDization as well. This should not change the outcome.
+// Set-up that's shared across all tests in this directory. In principle, this
+// config could be moved to lit.local.cfg. However, there are downstream users that
+//  do not use these LIT config files. Hence why this is kept inline.
 //
-// RUN: mlir-opt %s --sparse-compiler="vectorization-strategy=2 vl=8" | \
-// RUN: mlir-cpu-runner -e entry -entry-point-result=void \
-// RUN:  -shared-libs=%mlir_integration_test_dir/libmlir_c_runner_utils%shlibext | \
-// RUN: FileCheck %s
+// DEFINE: %{sparsifier_opts} = enable-runtime-library=true
+// DEFINE: %{sparsifier_opts_sve} = enable-arm-sve=true %{sparsifier_opts}
+// DEFINE: %{compile} = mlir-opt %s --sparsifier="%{sparsifier_opts}"
+// DEFINE: %{compile_sve} = mlir-opt %s --sparsifier="%{sparsifier_opts_sve}"
+// DEFINE: %{run_libs} = -shared-libs=%mlir_c_runner_utils,%mlir_runner_utils
+// DEFINE: %{run_opts} = -e main -entry-point-result=void
+// DEFINE: %{run} = mlir-cpu-runner %{run_opts} %{run_libs}
+// DEFINE: %{run_sve} = %mcr_aarch64_cmd --march=aarch64 --mattr="+sve" %{run_opts} %{run_libs}
+//
+// DEFINE: %{env} =
+//--------------------------------------------------------------------------------------------------
 
-#SM = #sparse_tensor.encoding<{ dimLevelType = [ "compressed", "compressed" ] }>
+// RUN: %{compile} | %{run} | FileCheck %s
+//
+// Do the same run, but now with direct IR generation.
+// REDEFINE: %{sparsifier_opts} = enable-runtime-library=false enable-buffer-initialization=true
+// RUN: %{compile} | %{run} | FileCheck %s
+//
+// Do the same run, but now with direct IR generation and vectorization.
+// REDEFINE: %{sparsifier_opts} = enable-runtime-library=false enable-buffer-initialization=true vl=2 reassociate-fp-reductions=true enable-index-optimizations=true
+// RUN: %{compile} | %{run} | FileCheck %s
+//
+// Do the same run, but now with direct IR generation and VLA vectorization.
+// RUN: %if mlir_arm_sve_tests %{ %{compile_sve} | %{run_sve} | FileCheck %s %}
+
+#SM = #sparse_tensor.encoding<{ map = (d0, d1) -> (d0 : compressed, d1 : compressed) }>
 
 #trait_sampled_dense_dense = {
   indexing_maps = [
@@ -49,9 +69,9 @@ module {
   // A kernel that computes a direct sampled matrix matrix multiplication
   // (with dense result).
   //
-  func @sampled_dd(%args: tensor<8x8xf64, #SM>,
-                   %arga: tensor<8x8xf64>,
-                   %argb: tensor<8x8xf64>) -> tensor<8x8xf64> {
+  func.func @sampled_dd(%args: tensor<8x8xf64, #SM>,
+                        %arga: tensor<8x8xf64>,
+                        %argb: tensor<8x8xf64>) -> tensor<8x8xf64> {
     %1 = arith.constant dense<0.0> : tensor<8x8xf64>
     %2 = linalg.generic #trait_sampled_dense_dense
       ins(%args, %arga, %argb: tensor<8x8xf64, #SM>,
@@ -70,9 +90,9 @@ module {
   // A kernel that computes an unfused sampled matrix matrix multiplication
   // (with dense result).
   //
-  func @sampled_dd_unfused(%args: tensor<8x8xf64, #SM>,
-                           %arga: tensor<8x8xf64>,
-                           %argb: tensor<8x8xf64>) -> tensor<8x8xf64> {
+  func.func @sampled_dd_unfused(%args: tensor<8x8xf64, #SM>,
+                                %arga: tensor<8x8xf64>,
+                                %argb: tensor<8x8xf64>) -> tensor<8x8xf64> {
     // Perform dense-dense matrix matrix multiplication.
     %1 = arith.constant dense<0.0> : tensor<8x8xf64>
     %2 = linalg.generic #trait_matmul
@@ -91,6 +111,7 @@ module {
           %r = arith.mulf %t, %s : f64
           linalg.yield %r : f64
     } -> tensor<8x8xf64>
+    bufferization.dealloc_tensor %2 : tensor<8x8xf64>
     return %3 : tensor<8x8xf64>
   }
 
@@ -98,11 +119,10 @@ module {
   // A kernel that computes a direct sampled matrix matrix multiplication
   // (with sparse result).
   //
-  func @sparse_sampled_dd(%args: tensor<8x8xf64, #SM>,
-                          %arga: tensor<8x8xf64>,
-                          %argb: tensor<8x8xf64>) -> tensor<8x8xf64, #SM> {
-    %c8 = arith.constant 8 : index
-    %1 = sparse_tensor.init [%c8, %c8] : tensor<8x8xf64, #SM>
+  func.func @sparse_sampled_dd(%args: tensor<8x8xf64, #SM>,
+                               %arga: tensor<8x8xf64>,
+                               %argb: tensor<8x8xf64>) -> tensor<8x8xf64, #SM> {
+    %1 = tensor.empty() : tensor<8x8xf64, #SM>
     %2 = linalg.generic #trait_sampled_dense_dense
       ins(%args, %arga, %argb: tensor<8x8xf64, #SM>,
                                tensor<8x8xf64>, tensor<8x8xf64>)
@@ -120,7 +140,7 @@ module {
   // A kernel that computes an unfused sampled matrix matrix multiplication
   // (with sparse result).
   //
-  func @sparse_sampled_dd_unfused(
+  func.func @sparse_sampled_dd_unfused(
         %args: tensor<8x8xf64, #SM>,
         %arga: tensor<8x8xf64>,
         %argb: tensor<8x8xf64>) -> tensor<8x8xf64, #SM> {
@@ -135,8 +155,7 @@ module {
           linalg.yield %q : f64
     } -> tensor<8x8xf64>
     // Sample the result with elements-wise multiplication with sparse matrix.
-    %c8 = arith.constant 8 : index
-    %3 = sparse_tensor.init [%c8, %c8] : tensor<8x8xf64, #SM>
+    %3 = tensor.empty() : tensor<8x8xf64, #SM>
     %4 = linalg.generic #trait_scale
       ins(%2, %args : tensor<8x8xf64>, tensor<8x8xf64, #SM>)
       outs(%3 : tensor<8x8xf64, #SM>) {
@@ -150,7 +169,7 @@ module {
   //
   // Main driver.
   //
-  func @entry() {
+  func.func @main() {
     %d0 = arith.constant 0.0 : f64
     %c0 = arith.constant 0 : index
 
@@ -188,31 +207,43 @@ module {
     // CHECK-SAME: ( 0, 0, 0, 0, 0, 0, 0, 0 ), ( 0, 0, 0, 0, 0, 0, 0, 0 ),
     // CHECK-SAME: ( 0, 0, 0, 0, 0, 0, 0, 0 ), ( 0, 0, 0, 0, 0, 0, 0, 192 ) )
     //
-    // CHECK-NEXT: ( 96, 192, 0, 0 )
+    // CHECK:      ---- Sparse Tensor ----
+    // CHECK-NEXT: nse = 2
+    // CHECK-NEXT: dim = ( 8, 8 )
+    // CHECK-NEXT: lvl = ( 8, 8 )
+    // CHECK-NEXT: pos[0] : ( 0, 2 )
+    // CHECK-NEXT: crd[0] : ( 0, 7 )
+    // CHECK-NEXT: pos[1] : ( 0, 1, 2 )
+    // CHECK-NEXT: crd[1] : ( 0, 7 )
+    // CHECK-NEXT: values : ( 96, 192 )
+    // CHECK-NEXT: ----
     //
-    // CHECK-NEXT: ( 96, 192, 0, 0 )
+    // CHECK:      ---- Sparse Tensor ----
+    // CHECK-NEXT: nse = 2
+    // CHECK-NEXT: dim = ( 8, 8 )
+    // CHECK-NEXT: lvl = ( 8, 8 )
+    // CHECK-NEXT: pos[0] : ( 0, 2 )
+    // CHECK-NEXT: crd[0] : ( 0, 7 )
+    // CHECK-NEXT: pos[1] : ( 0, 1, 2 )
+    // CHECK-NEXT: crd[1] : ( 0, 7 )
+    // CHECK-NEXT: values : ( 96, 192 )
+    // CHECK-NEXT: ----
     //
-    %m0 = bufferization.to_memref %0 : memref<8x8xf64>
-    %m1 = bufferization.to_memref %1 : memref<8x8xf64>
-    %m2 = sparse_tensor.values %2 : tensor<8x8xf64, #SM> to memref<?xf64>
-    %m3 = sparse_tensor.values %3 : tensor<8x8xf64, #SM> to memref<?xf64>
-    %v0 = vector.transfer_read %m0[%c0, %c0], %d0
-        : memref<8x8xf64>, vector<8x8xf64>
-    %v1 = vector.transfer_read %m1[%c0, %c0], %d0
-        : memref<8x8xf64>, vector<8x8xf64>
-    %v2 = vector.transfer_read %m2[%c0], %d0 : memref<?xf64>, vector<4xf64>
-    %v3 = vector.transfer_read %m3[%c0], %d0 : memref<?xf64>, vector<4xf64>
+    %v0 = vector.transfer_read %0[%c0, %c0], %d0
+        : tensor<8x8xf64>, vector<8x8xf64>
+    %v1 = vector.transfer_read %1[%c0, %c0], %d0
+        : tensor<8x8xf64>, vector<8x8xf64>
     vector.print %v0 : vector<8x8xf64>
     vector.print %v1 : vector<8x8xf64>
-    vector.print %v2 : vector<4xf64>
-    vector.print %v3 : vector<4xf64>
+    sparse_tensor.print %2 : tensor<8x8xf64, #SM>
+    sparse_tensor.print %3 : tensor<8x8xf64, #SM>
 
     // Release the resources.
-    sparse_tensor.release %s : tensor<8x8xf64, #SM>
-    memref.dealloc %m0 : memref<8x8xf64>
-    memref.dealloc %m1 : memref<8x8xf64>
-    sparse_tensor.release %2 : tensor<8x8xf64, #SM>
-    sparse_tensor.release %3 : tensor<8x8xf64, #SM>
+    bufferization.dealloc_tensor %s : tensor<8x8xf64, #SM>
+    bufferization.dealloc_tensor %0 : tensor<8x8xf64>
+    bufferization.dealloc_tensor %1 : tensor<8x8xf64>
+    bufferization.dealloc_tensor %2 : tensor<8x8xf64, #SM>
+    bufferization.dealloc_tensor %3 : tensor<8x8xf64, #SM>
 
     return
   }

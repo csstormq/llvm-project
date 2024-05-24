@@ -9,10 +9,14 @@
 #ifndef LLVM_LIBC_SRC_STDLIB_ATEXIT_H
 #define LLVM_LIBC_SRC_STDLIB_ATEXIT_H
 
-namespace __llvm_libc {
+#include <stddef.h> // For size_t
+
+namespace LIBC_NAMESPACE {
+
+constexpr size_t CALLBACK_LIST_SIZE_FOR_TESTS = 1024;
 
 int atexit(void (*function)());
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE
 
 #endif // LLVM_LIBC_SRC_STDLIB_ATEXIT_H

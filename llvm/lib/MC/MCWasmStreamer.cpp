@@ -121,6 +121,7 @@ bool MCWasmStreamer::emitSymbolAttribute(MCSymbol *S, MCSymbolAttr Attribute) {
   case MCSA_Invalid:
   case MCSA_IndirectSymbol:
   case MCSA_Protected:
+  case MCSA_Exported:
     return false;
 
   case MCSA_Hidden:
@@ -163,7 +164,7 @@ bool MCWasmStreamer::emitSymbolAttribute(MCSymbol *S, MCSymbolAttr Attribute) {
 }
 
 void MCWasmStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,
-                                      unsigned ByteAlignment) {
+                                      Align ByteAlignment) {
   llvm_unreachable("Common symbols are not yet implemented for Wasm");
 }
 
@@ -172,7 +173,7 @@ void MCWasmStreamer::emitELFSize(MCSymbol *Symbol, const MCExpr *Value) {
 }
 
 void MCWasmStreamer::emitLocalCommonSymbol(MCSymbol *S, uint64_t Size,
-                                           unsigned ByteAlignment) {
+                                           Align ByteAlignment) {
   llvm_unreachable("Local common symbols are not yet implemented for Wasm");
 }
 
@@ -195,8 +196,7 @@ void MCWasmStreamer::emitInstToData(const MCInst &Inst,
   MCAssembler &Assembler = getAssembler();
   SmallVector<MCFixup, 4> Fixups;
   SmallString<256> Code;
-  raw_svector_ostream VecOS(Code);
-  Assembler.getEmitter().encodeInstruction(Inst, VecOS, Fixups, STI);
+  Assembler.getEmitter().encodeInstruction(Inst, Code, Fixups, STI);
 
   for (auto &Fixup : Fixups)
     fixSymbolsInTLSFixups(Fixup.getValue());
@@ -262,24 +262,21 @@ void MCWasmStreamer::emitSymbolDesc(MCSymbol *Symbol, unsigned DescValue) {
 }
 
 void MCWasmStreamer::emitZerofill(MCSection *Section, MCSymbol *Symbol,
-                                  uint64_t Size, unsigned ByteAlignment,
+                                  uint64_t Size, Align ByteAlignment,
                                   SMLoc Loc) {
   llvm_unreachable("Wasm doesn't support this directive");
 }
 
 void MCWasmStreamer::emitTBSSSymbol(MCSection *Section, MCSymbol *Symbol,
-                                    uint64_t Size, unsigned ByteAlignment) {
+                                    uint64_t Size, Align ByteAlignment) {
   llvm_unreachable("Wasm doesn't support this directive");
 }
 
 MCStreamer *llvm::createWasmStreamer(MCContext &Context,
                                      std::unique_ptr<MCAsmBackend> &&MAB,
                                      std::unique_ptr<MCObjectWriter> &&OW,
-                                     std::unique_ptr<MCCodeEmitter> &&CE,
-                                     bool RelaxAll) {
+                                     std::unique_ptr<MCCodeEmitter> &&CE) {
   MCWasmStreamer *S =
       new MCWasmStreamer(Context, std::move(MAB), std::move(OW), std::move(CE));
-  if (RelaxAll)
-    S->getAssembler().setRelaxAll(true);
   return S;
 }

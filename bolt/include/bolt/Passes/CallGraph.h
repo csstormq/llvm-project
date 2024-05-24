@@ -9,9 +9,10 @@
 #ifndef BOLT_PASSES_CALLGRAPH_H
 #define BOLT_PASSES_CALLGRAPH_H
 
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
-#include <cstdio>
 #include <unordered_set>
 #include <vector>
 
@@ -147,7 +148,7 @@ public:
   // samples for every node
   void adjustArcWeights();
 
-  template <typename L> void printDot(char *fileName, L getLabel) const;
+  template <typename L> void printDot(StringRef FileName, L getLabel) const;
 
 private:
   void setSamples(const NodeId Id, uint64_t Samples) {
@@ -159,32 +160,33 @@ private:
   ArcsType Arcs;
 };
 
-template <class L> void CallGraph::printDot(char *FileName, L GetLabel) const {
-  FILE *File = fopen(FileName, "wt");
-  if (!File)
+template <class L>
+void CallGraph::printDot(StringRef FileName, L GetLabel) const {
+  std::error_code EC;
+  raw_fd_ostream OS(FileName, EC, sys::fs::OF_None);
+  if (EC)
     return;
 
-  fprintf(File, "digraph g {\n");
+  OS << "digraph g {\n";
   for (NodeId F = 0; F < Nodes.size(); F++) {
     if (Nodes[F].samples() == 0)
       continue;
-    fprintf(File, "f%lu [label=\"%s\\nsamples=%u\\nsize=%u\"];\n", F,
-            GetLabel(F), Nodes[F].samples(), Nodes[F].size());
+    OS << "f" << F << " [label=\"" << GetLabel(F)
+       << "\\nsamples=" << Nodes[F].samples() << "\\nsize=" << Nodes[F].size()
+       << "\"];\n";
   }
   for (NodeId F = 0; F < Nodes.size(); F++) {
     if (Nodes[F].samples() == 0)
       continue;
     for (NodeId Dst : Nodes[F].successors()) {
       ArcConstIterator Arc = findArc(F, Dst);
-      fprintf(
-          File,
-          "f%lu -> f%u [label=\"normWgt=%.3lf,weight=%.0lf,callOffset=%.1lf\"];"
-          "\n",
-          F, Dst, Arc->normalizedWeight(), Arc->weight(), Arc->avgCallOffset());
+      OS << "f" << F << " -> f" << Dst
+         << " [label=\"normWgt=" << format("%.3lf", Arc->normalizedWeight())
+         << ",weight=" << format("%.0lf", Arc->weight())
+         << ",callOffset=" << format("%.1lf", Arc->avgCallOffset()) << "\"];\n";
     }
   }
-  fprintf(File, "}\n");
-  fclose(File);
+  OS << "}\n";
 }
 
 } // namespace bolt

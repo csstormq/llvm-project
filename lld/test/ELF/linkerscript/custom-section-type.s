@@ -37,7 +37,7 @@
 ## Mismatched progbits and expr are changed to SHT_PROGBITS.
 # MISMATCH: progbits PROGBITS
 # MISMATCH: note     NOTE
-# MISMATCH: expr     PROGBITS
+# MISMATCH: expr     0x42: <unknown>
 
 # RUN: not ld.lld -T %t/unknown1.lds %t/a.o -o /dev/null 2>&1 | FileCheck %s --check-prefix=UNKNOWN1
 # UNKNOWN1: error: {{.*}}.lds:1: symbol not found: foo
@@ -76,7 +76,7 @@ SECTIONS {
 .section progbits,"a",@note
 .byte 0
 
-.section expr,"a",@12345
+.section expr,"a",@0x60000000
 .byte 0
 
 #--- unknown1.lds

@@ -42,12 +42,23 @@ void Block::insertBefore(Block *block) {
   block->getParent()->getBlocks().insert(block->getIterator(), this);
 }
 
+void Block::insertAfter(Block *block) {
+  assert(!getParent() && "already inserted into a block!");
+  assert(block->getParent() && "cannot insert before a block without a parent");
+  block->getParent()->getBlocks().insertAfter(block->getIterator(), this);
+}
+
 /// Unlink this block from its current region and insert it right before the
 /// specific block.
 void Block::moveBefore(Block *block) {
   assert(block->getParent() && "cannot insert before a block without a parent");
-  block->getParent()->getBlocks().splice(
-      block->getIterator(), getParent()->getBlocks(), getIterator());
+  moveBefore(block->getParent(), block->getIterator());
+}
+
+/// Unlink this block from its current region and insert it right before the
+/// block that the given iterator points to in the region region.
+void Block::moveBefore(Region *region, llvm::iplist<Block>::iterator iterator) {
+  region->getBlocks().splice(iterator, getParent()->getBlocks(), getIterator());
 }
 
 /// Unlink this Block from its parent Region and delete it.
@@ -173,7 +184,7 @@ BlockArgument Block::insertArgument(unsigned index, Type type, Location loc) {
 /// Insert one value to the given position of the argument list. The existing
 /// arguments are shifted. The block is expected not to have predecessors.
 BlockArgument Block::insertArgument(args_iterator it, Type type, Location loc) {
-  assert(llvm::empty(getPredecessors()) &&
+  assert(getPredecessors().empty() &&
          "cannot insert arguments to blocks with predecessors");
   return insertArgument(it->getArgNumber(), type, loc);
 }
@@ -186,11 +197,13 @@ void Block::eraseArgument(unsigned index) {
     arg.setArgNumber(index++);
 }
 
-void Block::eraseArguments(ArrayRef<unsigned> argIndices) {
-  BitVector eraseIndices(getNumArguments());
-  for (unsigned i : argIndices)
-    eraseIndices.set(i);
-  eraseArguments(eraseIndices);
+void Block::eraseArguments(unsigned start, unsigned num) {
+  assert(start + num <= arguments.size());
+  for (unsigned i = 0; i < num; ++i)
+    arguments[start + i].destroy();
+  arguments.erase(arguments.begin() + start, arguments.begin() + start + num);
+  for (BlockArgument arg : llvm::drop_begin(arguments, start))
+    arg.setArgNumber(start++);
 }
 
 void Block::eraseArguments(const BitVector &eraseIndices) {
@@ -226,10 +239,15 @@ void Block::eraseArguments(function_ref<bool(BlockArgument)> shouldEraseFn) {
 //===----------------------------------------------------------------------===//
 
 /// Get the terminator operation of this block. This function asserts that
-/// the block has a valid terminator operation.
+/// the block might have a valid terminator operation.
 Operation *Block::getTerminator() {
-  assert(!empty() && back().mightHaveTrait<OpTrait::IsTerminator>());
+  assert(mightHaveTerminator());
   return &back();
+}
+
+/// Check whether this block might have a terminator.
+bool Block::mightHaveTerminator() {
+  return !empty() && back().mightHaveTrait<OpTrait::IsTerminator>();
 }
 
 // Indexed successor access.
@@ -319,11 +337,11 @@ unsigned PredecessorIterator::getSuccessorIndex() const {
 SuccessorRange::SuccessorRange() : SuccessorRange(nullptr, 0) {}
 
 SuccessorRange::SuccessorRange(Block *block) : SuccessorRange() {
- if (block->empty() || llvm::hasSingleElement(*block->getParent()))
-  return;
- Operation *term = &block->back();
- if ((count = term->getNumSuccessors()))
-   base = term->getBlockOperands().data();
+  if (block->empty() || llvm::hasSingleElement(*block->getParent()))
+    return;
+  Operation *term = &block->back();
+  if ((count = term->getNumSuccessors()))
+    base = term->getBlockOperands().data();
 }
 
 SuccessorRange::SuccessorRange(Operation *term) : SuccessorRange() {
@@ -345,14 +363,14 @@ BlockRange::BlockRange(SuccessorRange successors)
 
 /// See `llvm::detail::indexed_accessor_range_base` for details.
 BlockRange::OwnerT BlockRange::offset_base(OwnerT object, ptrdiff_t index) {
-  if (auto *operand = object.dyn_cast<BlockOperand *>())
+  if (auto *operand = llvm::dyn_cast_if_present<BlockOperand *>(object))
     return {operand + index};
-  return {object.dyn_cast<Block *const *>() + index};
+  return {llvm::dyn_cast_if_present<Block *const *>(object) + index};
 }
 
 /// See `llvm::detail::indexed_accessor_range_base` for details.
 Block *BlockRange::dereference_iterator(OwnerT object, ptrdiff_t index) {
-  if (const auto *operand = object.dyn_cast<BlockOperand *>())
+  if (const auto *operand = llvm::dyn_cast_if_present<BlockOperand *>(object))
     return operand[index].get();
-  return object.dyn_cast<Block *const *>()[index];
+  return llvm::dyn_cast_if_present<Block *const *>(object)[index];
 }

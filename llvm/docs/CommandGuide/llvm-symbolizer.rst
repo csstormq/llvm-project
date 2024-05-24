@@ -12,12 +12,14 @@ DESCRIPTION
 -----------
 
 :program:`llvm-symbolizer` reads input names and addresses from the command-line
-and prints corresponding source code locations to standard output.
+and prints corresponding source code locations to standard output. It can also
+symbolize logs containing :doc:`Symbolizer Markup </SymbolizerMarkupFormat>` via
+:option:`--filter-markup`. Addresses may be specified as numbers or symbol names.
 
 If no address is specified on the command-line, it reads the addresses from
 standard input. If no input name is specified on the command-line, but addresses
-are, or if at any time an input value is not recognized, the input is simply
-echoed to the output.
+are, the first address value is treated as an input name. If an input value is not
+recognized, it reports that source information is not found.
 
 Input names can be specified together with the addresses either on standard
 input or as positional arguments on the command-line. By default, input names
@@ -194,6 +196,17 @@ shows --relativenames.
   main
   foo/test.cpp:15:0
 
+Example 7 - Addresses as symbol names:
+
+.. code-block:: console
+
+  $ llvm-symbolizer --obj=test.elf main
+  main
+  /tmp/test.cpp:14:0
+  $ llvm-symbolizer --obj=test.elf "CODE foz"
+  foz
+  /tmp/test.h:1:0
+
 OPTIONS
 -------
 
@@ -212,6 +225,18 @@ OPTIONS
 
   Look up the object using the given build ID, specified as a hexadecimal
   string. Mutually exclusive with :option:`--obj`.
+
+.. option:: --color [=<always|auto|never>]
+
+  Specify whether to use color in :option:`--filter-markup` mode. Defaults to
+  ``auto``, which detects whether standard output supports color. Specifying
+  ``--color`` alone is equivalent to ``--color=always``.
+
+.. option:: --debug-file-directory <path>
+
+  Provide a path to a directory with a `.build-id` subdirectory to search for
+  debug information for stripped binaries. Multiple instances of this argument
+  are searched in the order given.
 
 .. option:: --debuginfod, --no-debuginfod
 
@@ -238,6 +263,29 @@ OPTIONS
   When a separate file contains debug data, and is referenced by a GNU debug
   link section, use the specified path as a basis for locating the debug data if
   it cannot be found relative to the object.
+
+.. option:: --filter-markup
+
+  Reads from standard input, converts contained
+  :doc:`Symbolizer Markup </SymbolizerMarkupFormat>` into human-readable form,
+  and prints the results to standard output. The following markup elements are
+  not yet supported:
+
+  * ``{{{hexdict}}}``
+  * ``{{{dumpfile}}}``
+
+  The ``{{{bt}}}`` backtrace element reports frames using the following syntax:
+
+  ``#<number>[.<inline>] <address> <function> <file>:<line>:<col> (<module>+<relative address>)``
+
+  ``<inline>`` provides frame numbers for calls inlined into the caller
+  corresponding to ``<number>``. The inlined call numbers start at 1 and increase
+  from callee to caller.
+
+  ``<address>`` is an address inside the call instruction to the function.  The
+  address may not be the start of the instruction.  ``<relative address>`` is
+  the corresponding virtual offset in the ``<module>`` loaded at that address.
+
 
 .. _llvm-symbolizer-opt-f:
 

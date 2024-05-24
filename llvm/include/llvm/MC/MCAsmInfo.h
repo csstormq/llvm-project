@@ -240,6 +240,9 @@ protected:
   /// True if the target supports LEB128 directives.
   bool HasLEB128Directives = true;
 
+  /// True if full register names are printed.
+  bool PPCUseFullRegisterNames = false;
+
   //===--- Data Emission Directives -------------------------------------===//
 
   /// This should be set to the directive used to get some number of zero (and
@@ -430,6 +433,10 @@ protected:
   /// hidden visibility.  Defaults to MCSA_Hidden.
   MCSymbolAttr HiddenVisibilityAttr = MCSA_Hidden;
 
+  /// This attribute, if not MCSA_Invalid, is used to declare a symbol as having
+  /// exported visibility.  Defaults to MCSA_Exported.
+  MCSymbolAttr ExportedVisibilityAttr = MCSA_Exported;
+
   /// This attribute, if not MCSA_Invalid, is used to declare an undefined
   /// symbol as having hidden visibility. Defaults to MCSA_Hidden.
   MCSymbolAttr HiddenDeclarationVisibilityAttr = MCSA_Hidden;
@@ -437,6 +444,8 @@ protected:
   /// This attribute, if not MCSA_Invalid, is used to declare a symbol as having
   /// protected visibility.  Defaults to MCSA_Protected
   MCSymbolAttr ProtectedVisibilityAttr = MCSA_Protected;
+
+  MCSymbolAttr MemtagAttr = MCSA_Memtag;
 
   //===--- Dwarf Emission Directives -----------------------------------===//
 
@@ -447,9 +456,9 @@ protected:
   /// Exception handling format for the target.  Defaults to None.
   ExceptionHandling ExceptionsType = ExceptionHandling::None;
 
-  /// True if target uses CFI unwind information for debugging purpose when
-  /// `ExceptionsType == ExceptionHandling::None`.
-  bool UsesCFIForDebug = false;
+  /// True if target uses CFI unwind information for other purposes than EH
+  /// (debugging / sanitizers) when `ExceptionsType == ExceptionHandling::None`.
+  bool UsesCFIWithoutEH = false;
 
   /// Windows exception handling data (.pdata) encoding.  Defaults to Invalid.
   WinEH::EncodingType WinEHEncodingType = WinEH::EncodingType::Invalid;
@@ -466,6 +475,10 @@ protected:
   /// the .loc/.file directives. Defaults to true.
   bool UsesDwarfFileAndLocDirectives = true;
 
+  /// True if DWARF `.file directory' directive syntax is used by
+  /// default.
+  bool EnableDwarfFileDirectoryDefault = true;
+
   /// True if the target needs the DWARF section length in the header (if any)
   /// of the DWARF section in the assembly file. Defaults to true.
   bool DwarfSectionSizeRequired = true;
@@ -477,6 +490,10 @@ protected:
   /// True if target uses parens to indicate the symbol variant instead of @.
   /// For example, foo(plt) instead of foo@plt.  Defaults to false.
   bool UseParensForSymbolVariant = false;
+
+  /// True if the target uses parens for symbol names starting with
+  /// '$' character to distinguish them from absolute names.
+  bool UseParensForDollarSignNames = true;
 
   /// True if the target supports flags in ".loc" directive, false if only
   /// location is allowed.
@@ -507,16 +524,9 @@ protected:
   /// Preserve Comments in assembly
   bool PreserveAsmComments;
 
-  /// Compress DWARF debug sections. Defaults to no compression.
-  DebugCompressionType CompressDebugSections = DebugCompressionType::None;
-
   /// True if the integrated assembler should interpret 'a >> b' constant
   /// expressions as logical rather than arithmetic.
   bool UseLogicalShr = true;
-
-  // If true, emit GOTPCRELX/REX_GOTPCRELX instead of GOTPCREL, on
-  // X86_64 ELF.
-  bool RelaxELFRelocations = true;
 
   // If true, then the lexer and expression parser will support %neg(),
   // %hi(), and similar unary operators.
@@ -696,6 +706,9 @@ public:
 
   bool hasLEB128Directives() const { return HasLEB128Directives; }
 
+  bool useFullRegisterNames() const { return PPCUseFullRegisterNames; }
+  void setFullRegisterNames(bool V) { PPCUseFullRegisterNames = V; }
+
   const char *getZeroDirective() const { return ZeroDirective; }
   bool doesZeroDirectiveSupportNonZeroValue() const {
     return ZeroDirectiveSupportsNonZeroValue;
@@ -750,6 +763,8 @@ public:
 
   MCSymbolAttr getHiddenVisibilityAttr() const { return HiddenVisibilityAttr; }
 
+  MCSymbolAttr getExportedVisibilityAttr() const { return ExportedVisibilityAttr; }
+
   MCSymbolAttr getHiddenDeclarationVisibilityAttr() const {
     return HiddenDeclarationVisibilityAttr;
   }
@@ -757,6 +772,8 @@ public:
   MCSymbolAttr getProtectedVisibilityAttr() const {
     return ProtectedVisibilityAttr;
   }
+
+  MCSymbolAttr getMemtagAttr() const { return MemtagAttr; }
 
   bool doesSupportDebugInformation() const { return SupportsDebugInformation; }
 
@@ -767,13 +784,16 @@ public:
     ExceptionsType = EH;
   }
 
-  bool doesUseCFIForDebug() const { return UsesCFIForDebug; }
+  bool usesCFIWithoutEH() const {
+    return ExceptionsType == ExceptionHandling::None && UsesCFIWithoutEH;
+  }
 
   /// Returns true if the exception handling method for the platform uses call
   /// frame information to unwind.
   bool usesCFIForEH() const {
     return (ExceptionsType == ExceptionHandling::DwarfCFI ||
-            ExceptionsType == ExceptionHandling::ARM || usesWindowsCFI());
+            ExceptionsType == ExceptionHandling::ARM ||
+            ExceptionsType == ExceptionHandling::ZOS || usesWindowsCFI());
   }
 
   bool usesWindowsCFI() const {
@@ -789,6 +809,9 @@ public:
   bool doDwarfFDESymbolsUseAbsDiff() const { return DwarfFDESymbolsUseAbsDiff; }
   bool useDwarfRegNumForCFI() const { return DwarfRegNumForCFI; }
   bool useParensForSymbolVariant() const { return UseParensForSymbolVariant; }
+  bool useParensForDollarSignNames() const {
+    return UseParensForDollarSignNames;
+  }
   bool supportsExtendedDwarfLocDirective() const {
     return SupportsExtendedDwarfLocDirective;
   }
@@ -799,6 +822,10 @@ public:
 
   bool needsDwarfSectionSizeInHeader() const {
     return DwarfSectionSizeRequired;
+  }
+
+  bool enableDwarfFileDirectoryDefault() const {
+    return EnableDwarfFileDirectoryDefault;
   }
 
   void addInitialFrameState(const MCCFIInstruction &Inst);
@@ -841,18 +868,9 @@ public:
     PreserveAsmComments = Value;
   }
 
-  DebugCompressionType compressDebugSections() const {
-    return CompressDebugSections;
-  }
-
-  void setCompressDebugSections(DebugCompressionType CompressDebugSections) {
-    this->CompressDebugSections = CompressDebugSections;
-  }
 
   bool shouldUseLogicalShr() const { return UseLogicalShr; }
 
-  bool canRelaxRelocations() const { return RelaxELFRelocations; }
-  void setRelaxELFRelocations(bool V) { RelaxELFRelocations = V; }
   bool hasMipsExpressions() const { return HasMipsExpressions; }
   bool needsFunctionDescriptors() const { return NeedsFunctionDescriptors; }
   bool shouldUseMotorolaIntegers() const { return UseMotorolaIntegers; }

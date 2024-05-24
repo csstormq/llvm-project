@@ -1,4 +1,6 @@
-add_mlir_dialect_library(MLIRQuant
+add_mlir_dialect_library(MLIRQuantDialect
+  QuantDialectBytecode.h
+  QuantDialectBytecode.cpp
   QuantOps.cpp
   QuantTypes.cpp
   TypeDetail.h
@@ -9,9 +11,11 @@ add_mlir_dialect_library(MLIRQuant
 
   DEPENDS
   MLIRQuantOpsIncGen
+  MLIRQuantDialectBytecodeIncGen
 
   LINK_LIBS PUBLIC
   MLIRIR
+  MLIRInferTypeOpInterface
   MLIRSideEffectInterfaces
   MLIRSupport
   )
