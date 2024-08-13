@@ -63,7 +63,7 @@ std::optional<Expr<SubscriptInteger>> DynamicTypeWithLength::LEN() const {
 }
 
 static std::optional<DynamicTypeWithLength> AnalyzeTypeSpec(
-    const std::optional<parser::TypeSpec> &spec) {
+    const std::optional<parser::TypeSpec> &spec, FoldingContext &context) {
   if (spec) {
     if (const semantics::DeclTypeSpec *typeSpec{spec->declTypeSpec}) {
       // Name resolution sets TypeSpec::declTypeSpec only when it's valid
@@ -80,7 +80,13 @@ static std::optional<DynamicTypeWithLength> AnalyzeTypeSpec(
             const semantics::ParamValue &len{cts.length()};
             // N.B. CHARACTER(LEN=*) is allowed in type-specs in ALLOCATE() &
             // type guards, but not in array constructors.
-            return DynamicTypeWithLength{DynamicType{kind, len}};
+            DynamicTypeWithLength type{DynamicType{kind, len}};
+            if (auto lenExpr{type.LEN()}) {
+              type.length = Fold(context,
+                  AsExpr(Extremum<SubscriptInteger>{Ordering::Greater,
+                      Expr<SubscriptInteger>{0}, std::move(*lenExpr)}));
+            }
+            return type;
           } else {
             return DynamicTypeWithLength{DynamicType{category, kind}};
           }
@@ -1940,7 +1946,8 @@ MaybeExpr ArrayConstructorContext::ToExpr() {
 
 MaybeExpr ExpressionAnalyzer::Analyze(const parser::ArrayConstructor &array) {
   const parser::AcSpec &acSpec{array.v};
-  ArrayConstructorContext acContext{*this, AnalyzeTypeSpec(acSpec.type)};
+  ArrayConstructorContext acContext{
+      *this, AnalyzeTypeSpec(acSpec.type, GetFoldingContext())};
   for (const parser::AcValue &value : acSpec.values) {
     acContext.Add(value);
   }
@@ -3019,8 +3026,7 @@ const Symbol *AssumedTypeDummy<parser::PointerObject>(
 bool ExpressionAnalyzer::CheckIsValidForwardReference(
     const semantics::DerivedTypeSpec &dtSpec) {
   if (dtSpec.IsForwardReferenced()) {
-    Say("Cannot construct value for derived type '%s' "
-        "before it is defined"_err_en_US,
+    Say("Cannot construct value for derived type '%s' before it is defined"_err_en_US,
         dtSpec.name());
     return false;
   }
@@ -3580,8 +3586,12 @@ MaybeExpr RelationHelper(ExpressionAnalyzer &context, RelationalOperator opr,
         analyzer.IsIntrinsicRelational(opr, *leftType, *rightType)) {
       analyzer.CheckForNullPointer("as a relational operand");
       analyzer.CheckForAssumedRank("as a relational operand");
-      return AsMaybeExpr(Relate(context.GetContextualMessages(), opr,
-          analyzer.MoveExpr(0), analyzer.MoveExpr(1)));
+      if (auto cmp{Relate(context.GetContextualMessages(), opr,
+              analyzer.MoveExpr(0), analyzer.MoveExpr(1))}) {
+        return AsMaybeExpr(ConvertToKind<TypeCategory::Logical>(
+            context.GetDefaultKind(TypeCategory::Logical),
+            AsExpr(std::move(*cmp))));
+      }
     } else {
       return analyzer.TryDefinedOp(opr,
           leftType && leftType->category() == TypeCategory::Logical &&
@@ -4526,6 +4536,8 @@ std::optional<ProcedureRef> ArgumentAnalyzer::TryDefinedAssignment() {
         !OkLogicalIntegerAssignment(lhsType->category(), rhsType->category())) {
       SayNoMatch("ASSIGNMENT(=)", true);
     }
+  } else if (!fatalErrors_) {
+    CheckAssignmentConformance();
   }
   return std::nullopt;
 }

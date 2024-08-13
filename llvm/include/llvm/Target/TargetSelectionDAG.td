@@ -266,6 +266,12 @@ def SDTMaskedScatter : SDTypeProfile<0, 4, [
   SDTCisSameNumEltsAs<0, 1>, SDTCisSameNumEltsAs<0, 3>
 ]>;
 
+def SDTVectorCompress : SDTypeProfile<1, 3, [
+  SDTCisVec<0>, SDTCisSameAs<0, 1>,
+  SDTCisVec<2>, SDTCisSameNumEltsAs<1, 2>,
+  SDTCisSameAs<1, 3>
+]>;
+
 def SDTVecShuffle : SDTypeProfile<1, 2, [
   SDTCisSameAs<0, 1>, SDTCisSameAs<1, 2>
 ]>;
@@ -757,6 +763,8 @@ def masked_gather : SDNode<"ISD::MGATHER", SDTMaskedGather,
 def masked_scatter : SDNode<"ISD::MSCATTER", SDTMaskedScatter,
                             [SDNPHasChain, SDNPMayStore, SDNPMemOperand]>;
 
+def vector_compress : SDNode<"ISD::VECTOR_COMPRESS", SDTVectorCompress>;
+
 // Do not use ld, st directly. Use load, extload, sextload, zextload, store,
 // and truncst (see below).
 def ld         : SDNode<"ISD::LOAD"       , SDTLoad,
@@ -1070,6 +1078,13 @@ def ineg : PatFrag<(ops node:$in), (sub 0, node:$in)>;
 def zanyext : PatFrags<(ops node:$op),
                        [(zext node:$op),
                         (anyext node:$op)]>;
+
+def zext_nneg : PatFrag<(ops node:$src), (zext node:$src), [{
+  return N->getFlags().hasNonNeg();
+}]>;
+def sext_like : PatFrags<(ops node:$src),
+                         [(zext_nneg node:$src),
+                          (sext node:$src)]>;
 
 // null_frag - The null pattern operator is used in multiclass instantiations
 // which accept an SDPatternOperator for use in matching patterns for internal
@@ -1740,6 +1755,8 @@ multiclass binary_atomic_op_fp<SDNode atomic_op> {
       let IsAtomic = true;
       let MemoryVT = vt;
     }
+
+    defm NAME#_#vt : binary_atomic_op_ord;
   }
 }
 
