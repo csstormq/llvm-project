@@ -453,6 +453,13 @@ public:
     return true;
   }
 
+  /// Return true if the @llvm.experimental.vector.partial.reduce.* intrinsic
+  /// should be expanded using generic code in SelectionDAGBuilder.
+  virtual bool
+  shouldExpandPartialReductionIntrinsic(const IntrinsicInst *I) const {
+    return true;
+  }
+
   /// Return true if the @llvm.get.active.lane.mask intrinsic should be expanded
   /// using generic code in SelectionDAGBuilder.
   virtual bool shouldExpandGetActiveLaneMask(EVT VT, EVT OpVT) const {
@@ -2908,6 +2915,8 @@ public:
     case ISD::FMAXNUM_IEEE:
     case ISD::FMINIMUM:
     case ISD::FMAXIMUM:
+    case ISD::FMINIMUMNUM:
+    case ISD::FMAXIMUMNUM:
     case ISD::AVGFLOORS:
     case ISD::AVGFLOORU:
     case ISD::AVGCEILS:
@@ -3297,7 +3306,7 @@ public:
   /// Return true if it's profitable to narrow operations of type SrcVT to
   /// DestVT. e.g. on x86, it's profitable to narrow from i32 to i8 but not from
   /// i32 to i16.
-  virtual bool isNarrowingProfitable(EVT SrcVT, EVT DestVT) const {
+  virtual bool isNarrowingProfitable(SDNode *N, EVT SrcVT, EVT DestVT) const {
     return false;
   }
 
@@ -3400,7 +3409,7 @@ public:
 
   /// Should we expand [US]CMP nodes using two selects and two compares, or by
   /// doing arithmetic on boolean types
-  virtual bool shouldExpandCmpUsingSelects() const { return false; }
+  virtual bool shouldExpandCmpUsingSelects(EVT VT) const { return false; }
 
   /// Does this target support complex deinterleaving
   virtual bool isComplexDeinterleavingSupported() const { return false; }
@@ -5282,6 +5291,9 @@ public:
 
   /// Expand fminimum/fmaximum into multiple comparison with selects.
   SDValue expandFMINIMUM_FMAXIMUM(SDNode *N, SelectionDAG &DAG) const;
+
+  /// Expand fminimumnum/fmaximumnum into multiple comparison with selects.
+  SDValue expandFMINIMUMNUM_FMAXIMUMNUM(SDNode *N, SelectionDAG &DAG) const;
 
   /// Expand FP_TO_[US]INT_SAT into FP_TO_[US]INT and selects or min/max.
   /// \param N Node to expand

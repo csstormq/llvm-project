@@ -745,6 +745,11 @@ public:
   bool generateFMAsInMachineCombiner(EVT VT,
                                      CodeGenOptLevel OptLevel) const override;
 
+  /// Return true if the target has native support for
+  /// the specified value type and it is 'desirable' to use the type for the
+  /// given node type.
+  bool isTypeDesirableForOp(unsigned Opc, EVT VT) const override;
+
   const MCPhysReg *getScratchRegisters(CallingConv::ID CC) const override;
   ArrayRef<MCPhysReg> getRoundingControlRegisters() const override;
 
@@ -909,7 +914,7 @@ public:
 
   bool shouldConvertFpToSat(unsigned Op, EVT FPVT, EVT VT) const override;
 
-  bool shouldExpandCmpUsingSelects() const override { return true; }
+  bool shouldExpandCmpUsingSelects(EVT VT) const override;
 
   bool isComplexDeinterleavingSupported() const override;
   bool isComplexDeinterleavingOperationSupported(
@@ -992,6 +997,9 @@ public:
                              bool AllowUnknown = false) const override;
 
   bool shouldExpandGetActiveLaneMask(EVT VT, EVT OpVT) const override;
+
+  bool
+  shouldExpandPartialReductionIntrinsic(const IntrinsicInst *I) const override;
 
   bool shouldExpandCttzElements(EVT VT) const override;
 
