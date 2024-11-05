@@ -62,50 +62,44 @@ void ContainerContainsCheck::registerMatchers(MatchFinder *Finder) {
                          .bind("positiveComparison"),
                      this);
   AddSimpleMatcher(
-      binaryOperator(hasLHS(CountCall), hasOperatorName("!="), hasRHS(Literal0))
+      binaryOperation(hasOperatorName("!="), hasOperands(CountCall, Literal0))
           .bind("positiveComparison"));
   AddSimpleMatcher(
-      binaryOperator(hasLHS(Literal0), hasOperatorName("!="), hasRHS(CountCall))
+      binaryOperation(hasLHS(CountCall), hasOperatorName(">"), hasRHS(Literal0))
           .bind("positiveComparison"));
   AddSimpleMatcher(
-      binaryOperator(hasLHS(CountCall), hasOperatorName(">"), hasRHS(Literal0))
+      binaryOperation(hasLHS(Literal0), hasOperatorName("<"), hasRHS(CountCall))
           .bind("positiveComparison"));
-  AddSimpleMatcher(
-      binaryOperator(hasLHS(Literal0), hasOperatorName("<"), hasRHS(CountCall))
-          .bind("positiveComparison"));
-  AddSimpleMatcher(
-      binaryOperator(hasLHS(CountCall), hasOperatorName(">="), hasRHS(Literal1))
-          .bind("positiveComparison"));
-  AddSimpleMatcher(
-      binaryOperator(hasLHS(Literal1), hasOperatorName("<="), hasRHS(CountCall))
-          .bind("positiveComparison"));
+  AddSimpleMatcher(binaryOperation(hasLHS(CountCall), hasOperatorName(">="),
+                                   hasRHS(Literal1))
+                       .bind("positiveComparison"));
+  AddSimpleMatcher(binaryOperation(hasLHS(Literal1), hasOperatorName("<="),
+                                   hasRHS(CountCall))
+                       .bind("positiveComparison"));
 
   // Find inverted membership tests which use `count()`.
   AddSimpleMatcher(
-      binaryOperator(hasLHS(CountCall), hasOperatorName("=="), hasRHS(Literal0))
+      binaryOperation(hasOperatorName("=="), hasOperands(CountCall, Literal0))
+          .bind("negativeComparison"));
+  AddSimpleMatcher(binaryOperation(hasLHS(CountCall), hasOperatorName("<="),
+                                   hasRHS(Literal0))
+                       .bind("negativeComparison"));
+  AddSimpleMatcher(binaryOperation(hasLHS(Literal0), hasOperatorName(">="),
+                                   hasRHS(CountCall))
+                       .bind("negativeComparison"));
+  AddSimpleMatcher(
+      binaryOperation(hasLHS(CountCall), hasOperatorName("<"), hasRHS(Literal1))
           .bind("negativeComparison"));
   AddSimpleMatcher(
-      binaryOperator(hasLHS(Literal0), hasOperatorName("=="), hasRHS(CountCall))
-          .bind("negativeComparison"));
-  AddSimpleMatcher(
-      binaryOperator(hasLHS(CountCall), hasOperatorName("<="), hasRHS(Literal0))
-          .bind("negativeComparison"));
-  AddSimpleMatcher(
-      binaryOperator(hasLHS(Literal0), hasOperatorName(">="), hasRHS(CountCall))
-          .bind("negativeComparison"));
-  AddSimpleMatcher(
-      binaryOperator(hasLHS(CountCall), hasOperatorName("<"), hasRHS(Literal1))
-          .bind("negativeComparison"));
-  AddSimpleMatcher(
-      binaryOperator(hasLHS(Literal1), hasOperatorName(">"), hasRHS(CountCall))
+      binaryOperation(hasLHS(Literal1), hasOperatorName(">"), hasRHS(CountCall))
           .bind("negativeComparison"));
 
   // Find membership tests based on `find() == end()`.
   AddSimpleMatcher(
-      binaryOperator(hasLHS(FindCall), hasOperatorName("!="), hasRHS(EndCall))
+      binaryOperation(hasOperatorName("!="), hasOperands(FindCall, EndCall))
           .bind("positiveComparison"));
   AddSimpleMatcher(
-      binaryOperator(hasLHS(FindCall), hasOperatorName("=="), hasRHS(EndCall))
+      binaryOperation(hasOperatorName("=="), hasOperands(FindCall, EndCall))
           .bind("negativeComparison"));
 }
 

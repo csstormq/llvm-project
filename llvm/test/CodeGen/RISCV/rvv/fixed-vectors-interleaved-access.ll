@@ -12,46 +12,20 @@ define {<3 x i32>, <3 x i32>} @load_factor2_v3(ptr %ptr) {
 ; RV32:       # %bb.0:
 ; RV32-NEXT:    vsetivli zero, 6, e32, m2, ta, ma
 ; RV32-NEXT:    vle32.v v10, (a0)
-; RV32-NEXT:    vsetivli zero, 2, e32, m1, ta, ma
-; RV32-NEXT:    vslidedown.vi v9, v10, 2
-; RV32-NEXT:    vsetivli zero, 2, e32, mf2, ta, ma
-; RV32-NEXT:    vwaddu.vv v8, v10, v9
-; RV32-NEXT:    li a0, -1
-; RV32-NEXT:    vwmaccu.vx v8, a0, v9
-; RV32-NEXT:    vmv.v.i v0, 4
-; RV32-NEXT:    vsetivli zero, 4, e32, m2, ta, ma
-; RV32-NEXT:    vslidedown.vi v12, v10, 4
-; RV32-NEXT:    vsetivli zero, 4, e32, m1, ta, mu
-; RV32-NEXT:    vrgather.vi v8, v12, 0, v0.t
-; RV32-NEXT:    vid.v v9
-; RV32-NEXT:    vadd.vv v9, v9, v9
-; RV32-NEXT:    vadd.vi v11, v9, 1
-; RV32-NEXT:    vrgather.vv v9, v10, v11
-; RV32-NEXT:    vrgather.vi v9, v12, 1, v0.t
+; RV32-NEXT:    vsetivli zero, 4, e32, m1, ta, ma
+; RV32-NEXT:    vnsrl.wi v8, v10, 0
+; RV32-NEXT:    li a0, 32
+; RV32-NEXT:    vnsrl.wx v9, v10, a0
 ; RV32-NEXT:    ret
 ;
 ; RV64-LABEL: load_factor2_v3:
 ; RV64:       # %bb.0:
 ; RV64-NEXT:    vsetivli zero, 6, e32, m2, ta, ma
 ; RV64-NEXT:    vle32.v v10, (a0)
+; RV64-NEXT:    li a0, 32
 ; RV64-NEXT:    vsetivli zero, 4, e32, m1, ta, ma
-; RV64-NEXT:    vid.v v8
-; RV64-NEXT:    vadd.vv v8, v8, v8
-; RV64-NEXT:    vadd.vi v8, v8, 1
-; RV64-NEXT:    vrgather.vv v9, v10, v8
-; RV64-NEXT:    vmv.v.i v0, 4
-; RV64-NEXT:    vsetivli zero, 4, e32, m2, ta, ma
-; RV64-NEXT:    vslidedown.vi v12, v10, 4
-; RV64-NEXT:    vsetivli zero, 4, e32, m1, ta, mu
-; RV64-NEXT:    vrgather.vi v9, v12, 1, v0.t
-; RV64-NEXT:    vsetivli zero, 2, e32, m1, ta, ma
-; RV64-NEXT:    vslidedown.vi v11, v10, 2
-; RV64-NEXT:    vsetivli zero, 2, e32, mf2, ta, ma
-; RV64-NEXT:    vwaddu.vv v8, v10, v11
-; RV64-NEXT:    li a0, -1
-; RV64-NEXT:    vwmaccu.vx v8, a0, v11
-; RV64-NEXT:    vsetivli zero, 4, e32, m1, ta, mu
-; RV64-NEXT:    vrgather.vi v8, v12, 0, v0.t
+; RV64-NEXT:    vnsrl.wx v9, v10, a0
+; RV64-NEXT:    vnsrl.wi v8, v10, 0
 ; RV64-NEXT:    ret
   %interleaved.vec = load <6 x i32>, ptr %ptr
   %v0 = shufflevector <6 x i32> %interleaved.vec, <6 x i32> poison, <3 x i32> <i32 0, i32 2, i32 4>
@@ -641,10 +615,10 @@ define {<8 x i64>, <8 x i64>, <8 x i64>, <8 x i64>, <8 x i64>, <8 x i64>} @load_
 ; RV64-NEXT:    addi sp, sp, -16
 ; RV64-NEXT:    .cfi_def_cfa_offset 16
 ; RV64-NEXT:    csrr a2, vlenb
-; RV64-NEXT:    li a3, 66
-; RV64-NEXT:    mul a2, a2, a3
+; RV64-NEXT:    slli a3, a2, 6
+; RV64-NEXT:    add a2, a3, a2
 ; RV64-NEXT:    sub sp, sp, a2
-; RV64-NEXT:    .cfi_escape 0x0f, 0x0e, 0x72, 0x00, 0x11, 0x10, 0x22, 0x11, 0xc2, 0x00, 0x92, 0xa2, 0x38, 0x00, 0x1e, 0x22 # sp + 16 + 66 * vlenb
+; RV64-NEXT:    .cfi_escape 0x0f, 0x0e, 0x72, 0x00, 0x11, 0x10, 0x22, 0x11, 0xc1, 0x00, 0x92, 0xa2, 0x38, 0x00, 0x1e, 0x22 # sp + 16 + 65 * vlenb
 ; RV64-NEXT:    addi a2, a1, 256
 ; RV64-NEXT:    vsetivli zero, 16, e64, m8, ta, ma
 ; RV64-NEXT:    vle64.v v16, (a2)
@@ -1065,8 +1039,8 @@ define {<8 x i64>, <8 x i64>, <8 x i64>, <8 x i64>, <8 x i64>, <8 x i64>} @load_
 ; RV64-NEXT:    vl4r.v v8, (a1) # Unknown-size Folded Reload
 ; RV64-NEXT:    vse64.v v8, (a0)
 ; RV64-NEXT:    csrr a0, vlenb
-; RV64-NEXT:    li a1, 66
-; RV64-NEXT:    mul a0, a0, a1
+; RV64-NEXT:    slli a1, a0, 6
+; RV64-NEXT:    add a0, a1, a0
 ; RV64-NEXT:    add sp, sp, a0
 ; RV64-NEXT:    addi sp, sp, 16
 ; RV64-NEXT:    ret

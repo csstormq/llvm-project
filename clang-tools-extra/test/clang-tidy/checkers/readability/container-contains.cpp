@@ -1,14 +1,19 @@
-// RUN: %check_clang_tidy -std=c++20-or-later %s readability-container-contains %t
+// RUN: %check_clang_tidy -std=c++11-or-later %s readability-container-contains %t
 
 // Some *very* simplified versions of `map` etc.
 namespace std {
 
 template <class Key, class T>
 struct map {
+  struct iterator {
+    bool operator==(const iterator &Other) const;
+    bool operator!=(const iterator &Other) const;
+  };
+
   unsigned count(const Key &K) const;
   bool contains(const Key &K) const;
-  void *find(const Key &K);
-  void *end();
+  iterator find(const Key &K);
+  iterator end();
 };
 
 template <class Key>
@@ -425,4 +430,31 @@ void testBox() {
   if (Set.count(0)) {};
   // CHECK-MESSAGES: :[[@LINE-1]]:{{[0-9]+}}: warning: use 'contains' to check for membership [readability-container-contains]
   // CHECK-FIXES: if (Set.contains(0)) {};
+}
+
+void testOperandPermutations(std::map<int, int>& Map) {
+  if (Map.count(0) != 0) {};
+  // CHECK-MESSAGES: :[[@LINE-1]]:{{[0-9]+}}: warning: use 'contains' to check for membership [readability-container-contains]
+  // CHECK-FIXES: if (Map.contains(0)) {};
+  if (0 != Map.count(0)) {};
+  // CHECK-MESSAGES: :[[@LINE-1]]:{{[0-9]+}}: warning: use 'contains' to check for membership [readability-container-contains]
+  // CHECK-FIXES: if (Map.contains(0)) {};
+  if (Map.count(0) == 0) {};
+  // CHECK-MESSAGES: :[[@LINE-1]]:{{[0-9]+}}: warning: use 'contains' to check for membership [readability-container-contains]
+  // CHECK-FIXES: if (!Map.contains(0)) {};
+  if (0 == Map.count(0)) {};
+  // CHECK-MESSAGES: :[[@LINE-1]]:{{[0-9]+}}: warning: use 'contains' to check for membership [readability-container-contains]
+  // CHECK-FIXES: if (!Map.contains(0)) {};
+  if (Map.find(0) != Map.end()) {};
+  // CHECK-MESSAGES: :[[@LINE-1]]:{{[0-9]+}}: warning: use 'contains' to check for membership [readability-container-contains]
+  // CHECK-FIXES: if (Map.contains(0)) {};
+  if (Map.end() != Map.find(0)) {};
+  // CHECK-MESSAGES: :[[@LINE-1]]:{{[0-9]+}}: warning: use 'contains' to check for membership [readability-container-contains]
+  // CHECK-FIXES: if (Map.contains(0)) {};
+  if (Map.find(0) == Map.end()) {};
+  // CHECK-MESSAGES: :[[@LINE-1]]:{{[0-9]+}}: warning: use 'contains' to check for membership [readability-container-contains]
+  // CHECK-FIXES: if (!Map.contains(0)) {};
+  if (Map.end() == Map.find(0)) {};
+  // CHECK-MESSAGES: :[[@LINE-1]]:{{[0-9]+}}: warning: use 'contains' to check for membership [readability-container-contains]
+  // CHECK-FIXES: if (!Map.contains(0)) {};
 }
